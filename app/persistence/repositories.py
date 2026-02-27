@@ -122,8 +122,14 @@ class SettingsRepository:
         base = AppSettings()
         for field_name in base.__dataclass_fields__.keys():
             if field_name in values:
-                field_type = type(getattr(base, field_name))
-                casted = int(values[field_name]) if field_type is int else values[field_name]
+                field_type = AppSettings.__dataclass_fields__[field_name].type
+                raw_value = values[field_name]
+                if field_type is int:
+                    casted = int(raw_value)
+                elif field_type is str:
+                    casted = str(raw_value)
+                else:
+                    casted = raw_value
                 setattr(base, field_name, casted)
         return base
 
