@@ -1,0 +1,61 @@
+"""SQLite database management and migrations."""
+
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+
+class Database:
+    """Simple SQLite wrapper with schema migrations."""
+
+    def __init__(self, db_path: Path):
+        self.db_path = db_path
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def connect(self) -> sqlite3.Connection:
+        """Create a connection with row factory enabled."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def migrate(self) -> None:
+        """Apply schema migrations (idempotent)."""
+        with self.connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS notes_local (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    source_id TEXT NOT NULL UNIQUE,
+                    title TEXT NOT NULL,
+                    raw_text TEXT NOT NULL,
+                    area TEXT NOT NULL,
+                    tipo TEXT NOT NULL,
+                    estado TEXT NOT NULL,
+                    prioridad TEXT NOT NULL,
+                    fecha TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    notion_page_id TEXT,
+                    last_error TEXT,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    next_retry_at TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+                """
+            )
+            conn.commit()
+
+
+def default_data_dir() -> Path:
+    """Return default AppData directory for user data on Windows-compatible layout."""
+    appdata = Path.home() / "AppData" / "Roaming"
+    return appdata / "NotionSecondBrain"
