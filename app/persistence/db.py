@@ -15,7 +15,11 @@ class Database:
 
     def connect(self) -> sqlite3.Connection:
         """Create a connection with row factory enabled."""
-        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        conn = sqlite3.connect(
+            database=str(self.db_path),
+            check_same_thread=False,
+            timeout=30.0,
+        )
         conn.row_factory = sqlite3.Row
         return conn
 
