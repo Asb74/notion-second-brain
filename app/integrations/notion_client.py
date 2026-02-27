@@ -34,9 +34,10 @@ class NotionClient:
             "Content-Type": "application/json",
         }
 
-    def validate_database_schema(self, settings: AppSettings) -> NotionSchemaValidation:
-        url = f"https://api.notion.com/v1/databases/{settings.notion_database_id}"
+    def validate_database_schema(self, settings: AppSettings, database_id: str) -> NotionSchemaValidation:
+        url = f"https://api.notion.com/v1/databases/{database_id}"
         import requests
+
         resp = requests.get(url, headers=self._headers, timeout=15)
         if resp.status_code >= 400:
             return NotionSchemaValidation(False, f"No se pudo leer la base de datos de Notion: {resp.text}")
@@ -62,12 +63,9 @@ class NotionClient:
                 )
         return NotionSchemaValidation(True, "Esquema válido")
 
-    def create_page(self, settings: AppSettings, note: Note) -> str:
-        if not settings.notion_database_id:
-            raise NotionError("Falta configurar notion_database_id.")
-
+    def create_page(self, settings: AppSettings, note: Note, database_id: str) -> str:
         payload: dict[str, Any] = {
-            "parent": {"database_id": settings.notion_database_id},
+            "parent": {"database_id": database_id},
             "properties": {
                 settings.prop_title: {"title": [{"text": {"content": note.title}}]},
                 settings.prop_area: {"select": {"name": note.area}},
@@ -88,6 +86,7 @@ class NotionClient:
         }
 
         import requests
+
         resp = requests.post("https://api.notion.com/v1/pages", headers=self._headers, json=payload, timeout=20)
         if resp.status_code >= 400:
             raise NotionError(f"Error creando página en Notion: {resp.text}")
