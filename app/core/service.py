@@ -95,7 +95,10 @@ class NoteService:
 
         client = NotionClient(settings.notion_token)
 
-        schema = client.validate_database_schema(settings)
+        schema = client.validate_database_schema(
+            settings.notion_database_id,
+            settings,
+        )
         if not schema.ok:
             raise NotionError(schema.message)
 
@@ -106,7 +109,11 @@ class NoteService:
 
         for note in self.note_repo.list_retryable(now_iso):
             try:
-                page_id = client.create_page(settings, note)
+                page_id = client.create_page(
+                    settings.notion_database_id,
+                    settings,
+                    note,
+                )
                 self.note_repo.mark_sent(note.id, page_id)
                 sent += 1
             except Exception as exc:  # noqa: BLE001
