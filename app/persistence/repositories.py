@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import fields
 from datetime import datetime, timedelta
 from typing import Iterable, Optional
 
@@ -134,12 +135,11 @@ class SettingsRepository:
         return base
 
     def save(self, settings: AppSettings) -> None:
-        print("SAVE() llamado")
-        for key, value in settings.__dict__.items():
-            print("  -> guardando:", key, value)
+        for f in fields(settings):
+            key = f.name
+            value = getattr(settings, key)
             self.conn.execute(
                 "INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (key, str(value)),
             )
         self.conn.commit()
-        print("COMMIT hecho")
