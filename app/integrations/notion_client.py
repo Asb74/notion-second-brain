@@ -34,16 +34,25 @@ class NotionClient:
             "Content-Type": "application/json",
         }
 
-    def validate_database_schema(self, settings: AppSettings, database_id: str) -> NotionSchemaValidation:
-        url = f"https://api.notion.com/v1/databases/{database_id}"
+    def validate_database_schema(
+        self,
+        database_id: str,
+        settings: AppSettings,
+    ) -> NotionSchemaValidation:
         import requests
 
+        url = f"https://api.notion.com/v1/databases/{database_id}"
         resp = requests.get(url, headers=self._headers, timeout=15)
+
         if resp.status_code >= 400:
-            return NotionSchemaValidation(False, f"No se pudo leer la base de datos de Notion: {resp.text}")
+            return NotionSchemaValidation(
+                False,
+                f"No se pudo leer la base de datos de Notion: {resp.text}",
+            )
 
         data = resp.json()
         props = data.get("properties", {})
+
         expected = {
             settings.prop_title: "title",
             settings.prop_area: "select",
@@ -52,42 +61,69 @@ class NotionClient:
             settings.prop_fecha: "date",
             settings.prop_prioridad: "select",
         }
+
         for prop_name, expected_type in expected.items():
             if prop_name not in props:
-                return NotionSchemaValidation(False, f"Falta la propiedad '{prop_name}' en Notion.")
+                return NotionSchemaValidation(
+                    False,
+                    f"Falta la propiedad '{prop_name}' en Notion.",
+                )
+
             found_type = props[prop_name].get("type")
             if found_type != expected_type:
                 return NotionSchemaValidation(
                     False,
                     f"La propiedad '{prop_name}' debe ser tipo '{expected_type}', encontrado '{found_type}'.",
                 )
+
         return NotionSchemaValidation(True, "Esquema válido")
 
-    def create_page(self, settings: AppSettings, note: Note, database_id: str) -> str:
+    def create_page(
+        self,
+        database_id: str,
+        settings: AppSettings,
+        note: Note,
+    ) -> str:
+        import requests
+
         payload: dict[str, Any] = {
             "parent": {"database_id": database_id},
             "properties": {
-                settings.prop_title: {"title": [{"text": {"content": note.title}}]},
+                settings.prop_title: {
+                    "title": [{"text": {"content": note.title}}]
+                },
                 settings.prop_area: {"select": {"name": note.area}},
                 settings.prop_tipo: {"select": {"name": note.tipo}},
                 settings.prop_estado: {"status": {"name": note.estado}},
                 settings.prop_fecha: {"date": {"start": note.fecha}},
-                settings.prop_prioridad: {"select": {"name": note.prioridad}},
+                settings.prop_prioridad: {
+                    "select": {"name": note.prioridad}
+                },
             },
             "children": [
                 {
                     "object": "block",
                     "type": "paragraph",
                     "paragraph": {
-                        "rich_text": [{"type": "text", "text": {"content": note.raw_text[:1900]}}]
+                        "rich_text": [
+                            {
+                                "type": "text",
+                                "text": {"content": note.raw_text[:1900]},
+                            }
+                        ]
                     },
                 }
             ],
         }
 
-        import requests
+        resp = requests.post(
+            "https://api.notion.com/v1/pages",
+            headers=self._headers,
+            json=payload,
+            timeout=20,
+        )
 
-        resp = requests.post("https://api.notion.com/v1/pages", headers=self._headers, json=payload, timeout=20)
         if resp.status_code >= 400:
             raise NotionError(f"Error creando página en Notion: {resp.text}")
+
         return resp.json()["id"]
