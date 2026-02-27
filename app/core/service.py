@@ -85,15 +85,17 @@ class NoteService:
     def sync_pending(self) -> tuple[int, int]:
         settings = self.get_settings()
 
-        database_id = self.get_setting("notion_database_id")
-        if not database_id:
+        if not settings.notion_database_id.strip():
             raise NotionError("Debe crear la base Notion antes de sincronizar.")
+
+        if not settings.notion_token.strip():
+            raise NotionError("Falta Notion token en Configuración.")
 
         self._validate_notion_settings(settings)
 
         client = NotionClient(settings.notion_token)
 
-        schema = client.validate_database_schema(database_id, settings)
+        schema = client.validate_database_schema(settings)
         if not schema.ok:
             raise NotionError(schema.message)
 
@@ -104,7 +106,7 @@ class NoteService:
 
         for note in self.note_repo.list_retryable(now_iso):
             try:
-                page_id = client.create_page(database_id, settings, note)
+                page_id = client.create_page(settings, note)
                 self.note_repo.mark_sent(note.id, page_id)
                 sent += 1
             except Exception as exc:  # noqa: BLE001
