@@ -1,6 +1,49 @@
+# --- Python ---
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
 .venv/
-tests/tmp_test.db
+venv/
+ENV/
+env/
+pip-wheel-metadata/
+*.egg-info/
+dist/
+build/
+
+# --- Logs / runtime ---
+*.log
+logs/
+*.pid
+
+# --- IDEs ---
+.vscode/
+.idea/
+
+# --- OS / thumbnails ---
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# --- Secrets / local config ---
+.env
+.env.*
+*.key
+*.pem
+*.pfx
+*.p12
+*.crt
+secrets/
+config.local.*
+settings.local.*
+
+# --- Tkinter / temporales ---
+*.tmp
+*.bak
+*.swp
+
+# --- Packaging ---
+*.spec
+release/
+output/
+installer/
