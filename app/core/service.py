@@ -125,4 +125,5 @@ class NoteService:
         database_id = create_database(token, page_id)
         validate_database_schema(token, database_id)
         self.settings_repo.set_setting("notion_database_id", database_id)
+        self.settings_repo.set_setting("notion_token", token)
         return database_id
