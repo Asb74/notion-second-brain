@@ -22,10 +22,12 @@ class MainWindow(ttk.Frame):
         self.master = master
         self.service = service
         self.msg_queue: queue.Queue[tuple[str, str]] = queue.Queue()
+        self.status_var = tk.StringVar(value="Listo")
         self.pack(fill="both", expand=True)
 
         self._build_form()
         self._build_list()
+        self._refresh_database_button_state()
         self.refresh_notes()
         self.after(150, self._poll_queue)
 
@@ -69,6 +71,8 @@ class MainWindow(ttk.Frame):
         ttk.Button(actions, text="Enviar", command=self._sync).pack(side="left", padx=3)
         ttk.Button(actions, text="Reintentar", command=self._sync).pack(side="left", padx=3)
         ttk.Button(actions, text="Abrir en Notion", command=self._open_notion).pack(side="left", padx=3)
+        self.create_db_button = ttk.Button(actions, text="Crear Base Notion", command=self._create_notion_database)
+        self.create_db_button.pack(side="left", padx=3)
 
     def _build_list(self) -> None:
         frame = ttk.LabelFrame(self, text="Notas")
@@ -84,12 +88,15 @@ class MainWindow(ttk.Frame):
         self.tree.column("notion_page_id", width=220)
         self.tree.pack(fill="both", expand=True)
 
+        ttk.Label(self, textvariable=self.status_var, anchor="w").pack(fill="x", pady=(2, 0))
+
     def _open_settings(self) -> None:
         current = self.service.get_settings()
 
         def on_save(new_settings: AppSettings) -> None:
             self.service.save_settings(new_settings)
             self._apply_defaults(new_settings)
+            self._refresh_database_button_state()
 
         SettingsDialog(self.master, current, on_save)
 
@@ -133,10 +140,23 @@ class MainWindow(ttk.Frame):
 
     def _sync_worker(self) -> None:
         try:
+            self.msg_queue.put(("status", "Sincronizando notas pendientes..."))
             sent, failed = self.service.sync_pending()
             self.msg_queue.put(("info", f"Sincronización completada. Enviadas: {sent}, Errores: {failed}"))
         except Exception as exc:  # noqa: BLE001
             self.msg_queue.put(("error", str(exc)))
+
+    def _create_notion_database(self) -> None:
+        self.create_db_button.config(state="disabled")
+        self.status_var.set("Creando base de datos en Notion...")
+        threading.Thread(target=self._create_notion_database_worker, daemon=True).start()
+
+    def _create_notion_database_worker(self) -> None:
+        try:
+            database_id = self.service.create_notion_database_from_config()
+            self.msg_queue.put(("db_success", f"Base Notion lista. DATABASE_ID: {database_id}"))
+        except Exception as exc:  # noqa: BLE001
+            self.msg_queue.put(("db_error", str(exc)))
 
     def _poll_queue(self) -> None:
         while True:
@@ -145,11 +165,31 @@ class MainWindow(ttk.Frame):
             except queue.Empty:
                 break
             if kind == "error":
+                self.status_var.set(f"Error: {msg}")
                 messagebox.showerror("Error", msg)
+            elif kind == "db_error":
+                self.status_var.set(f"Error al crear base: {msg}")
+                self.create_db_button.config(state="normal")
+                messagebox.showerror("Error", msg)
+            elif kind == "db_success":
+                self.status_var.set("Base Notion creada correctamente")
+                self.create_db_button.config(state="disabled")
+                messagebox.showinfo("Éxito", msg)
+            elif kind == "status":
+                self.status_var.set(msg)
             else:
+                self.status_var.set(msg)
                 messagebox.showinfo("Resultado", msg)
             self.refresh_notes()
         self.after(150, self._poll_queue)
+
+    def _refresh_database_button_state(self) -> None:
+        database_id = self.service.get_setting("notion_database_id")
+        if database_id:
+            self.create_db_button.config(state="disabled")
+            self.status_var.set("DATABASE_ID detectado en SQLite. Base lista para usar.")
+        else:
+            self.create_db_button.config(state="normal")
 
     def refresh_notes(self) -> None:
         for row in self.tree.get_children():

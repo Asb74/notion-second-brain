@@ -48,9 +48,24 @@ class Database:
                 """
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
+                    value TEXT
                 )
                 """
+            )
+            conn.commit()
+
+    def get_setting(self, key: str) -> str | None:
+        """Return a setting value from settings table or None if missing."""
+        with self.connect() as conn:
+            row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+            return row["value"] if row else None
+
+    def set_setting(self, key: str, value: str) -> None:
+        """Insert or update one setting in settings table."""
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, value),
             )
             conn.commit()
 
