@@ -42,7 +42,10 @@ class NotionClient:
         import requests
 
         url = f"https://api.notion.com/v1/databases/{database_id}"
-        resp = requests.get(url, headers=self._headers, timeout=15)
+        try:
+            resp = requests.get(url, headers=self._headers, timeout=15)
+        except requests.RequestException as exc:
+            return NotionSchemaValidation(False, f"Error de red al validar base de Notion: {exc}")
 
         if resp.status_code >= 400:
             return NotionSchemaValidation(
@@ -116,12 +119,15 @@ class NotionClient:
             ],
         }
 
-        resp = requests.post(
-            "https://api.notion.com/v1/pages",
-            headers=self._headers,
-            json=payload,
-            timeout=20,
-        )
+        try:
+            resp = requests.post(
+                "https://api.notion.com/v1/pages",
+                headers=self._headers,
+                json=payload,
+                timeout=20,
+            )
+        except requests.RequestException as exc:
+            raise NotionError(f"Error de red creando página en Notion: {exc}") from None
 
         if resp.status_code >= 400:
             raise NotionError(f"Error creando página en Notion: {resp.text}")
