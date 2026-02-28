@@ -153,6 +153,9 @@ class NoteService:
         if not note:
             return
 
+        if self.actions_repo.pending_count_by_note(note.id) == 0:
+            self.note_repo.update_estado(note.id, "Finalizado")
+
         settings = self.get_settings()
         if not settings.notion_token.strip():
             logger.warning(
@@ -168,6 +171,7 @@ class NoteService:
 
             if (
                 note.notion_page_id
+                and note.tipo == "Nota"
                 and note.source_id.strip()
                 and settings.notion_database_id.strip()
                 and client.count_open_tasks_by_fuente_id(
@@ -186,6 +190,27 @@ class NoteService:
                 action_id,
                 action.notion_page_id,
             )
+
+    def mark_note_done(self, note_id: int) -> None:
+        note = self.note_repo.get_note(note_id)
+        if not note:
+            return
+
+        pending_tasks = self.actions_repo.pending_count_by_note(note_id)
+        if pending_tasks > 0:
+            raise ValueError("No se puede finalizar la nota porque tiene tareas pendientes.")
+
+        self.note_repo.update_estado(note_id, "Finalizado")
+
+        settings = self.get_settings()
+        if not settings.notion_token.strip() or not note.notion_page_id:
+            return
+
+        try:
+            client = NotionClient(settings.notion_token)
+            client.update_page_status(note.notion_page_id, "Finalizado", settings.prop_estado)
+        except Exception:  # noqa: BLE001
+            logger.exception("No se pudo sincronizar estado en Notion para la nota id=%s", note_id)
 
     def create_note(self, req: NoteCreateRequest) -> tuple[int | None, str]:
         normalized = normalize_text(req.raw_text, req.source)
