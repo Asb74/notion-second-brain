@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from typing import Any
 
 from app.utils.openai_client import MODEL_NAME, build_openai_client
 
@@ -24,13 +25,13 @@ SYSTEM_PROMPT = (
 @dataclass(slots=True)
 class ProcessedNote:
     resumen: str
-    acciones: str
+    acciones: Any
     tipo_sugerido: str
     prioridad_sugerida: str
 
 
 def _empty_processed_note() -> ProcessedNote:
-    return ProcessedNote("", "", "", "")
+    return ProcessedNote("", [], "", "")
 
 
 def _extract_json_object(content: str) -> dict:
@@ -64,9 +65,13 @@ def process_text(text: str) -> ProcessedNote:
         logger.exception("No se pudo procesar texto con OpenAI: %s", exc)
         return _empty_processed_note()
 
+    acciones = payload.get("acciones", [])
+    if not isinstance(acciones, list):
+        acciones = str(acciones or "").strip()
+
     return ProcessedNote(
         resumen=str(payload.get("resumen", "") or "").strip(),
-        acciones=str(payload.get("acciones", "") or "").strip(),
+        acciones=acciones,
         tipo_sugerido=str(payload.get("tipo_sugerido", "") or "").strip(),
         prioridad_sugerida=str(payload.get("prioridad_sugerida", "") or "").strip(),
     )

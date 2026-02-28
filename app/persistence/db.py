@@ -62,6 +62,25 @@ class Database:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS actions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    note_id INTEGER NOT NULL,
+                    description TEXT NOT NULL,
+                    area TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pendiente',
+                    created_at TEXT NOT NULL,
+                    completed_at TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_actions_status_area
+                ON actions(status, area)
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS masters (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     field_name TEXT NOT NULL,

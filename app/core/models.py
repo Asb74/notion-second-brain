@@ -79,3 +79,16 @@ class AppSettings:
     def now_iso() -> str:
         """Return current UTC datetime in ISO format."""
         return datetime.utcnow().isoformat(timespec="seconds")
+
+
+@dataclass(slots=True)
+class Action:
+    """Persisted action item extracted from a note."""
+
+    id: int
+    note_id: int
+    description: str
+    area: str
+    status: str
+    created_at: str
+    completed_at: Optional[str]

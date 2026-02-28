@@ -9,7 +9,7 @@ from app.core.processor import ProcessedNote
 from app.core.service import NoteService
 from app.persistence.db import Database
 from app.persistence.masters_repository import MastersRepository
-from app.persistence.repositories import NoteRepository, SettingsRepository
+from app.persistence.repositories import ActionsRepository, NoteRepository, SettingsRepository
 
 
 class NormalizerTests(unittest.TestCase):
@@ -39,12 +39,13 @@ class DedupTests(unittest.TestCase):
             NoteRepository(self.conn),
             SettingsRepository(self.conn),
             MastersRepository(self.conn),
+            ActionsRepository(self.conn),
         )
 
     def tearDown(self):
         self.conn.close()
 
-    @patch("app.core.service.process_text", return_value=ProcessedNote("", "", "", ""))
+    @patch("app.core.service.process_text", return_value=ProcessedNote("", [], "", ""))
     def test_duplicate_note_is_blocked(self, _mock_process_text):
         req = NoteCreateRequest(
             title="",
@@ -67,7 +68,7 @@ class DedupTests(unittest.TestCase):
     def test_create_note_applies_ai_enrichment(self, mock_process_text):
         mock_process_text.return_value = ProcessedNote(
             resumen="Resumen AI",
-            acciones="- Acción 1",
+            acciones=["Acción 1", "Acción 2"],
             tipo_sugerido="Incidencia",
             prioridad_sugerida="Alta",
         )
@@ -85,9 +86,61 @@ class DedupTests(unittest.TestCase):
         note = self.service.note_repo.get_note(note_id)
 
         self.assertEqual(note.resumen, "Resumen AI")
-        self.assertEqual(note.acciones, "- Acción 1")
+        self.assertEqual(note.acciones, "Acción 1\nAcción 2")
         self.assertEqual(note.tipo, "Incidencia")
         self.assertEqual(note.prioridad, "Alta")
+
+
+    @patch("app.core.service.process_text")
+    def test_create_note_creates_pending_actions(self, mock_process_text):
+        mock_process_text.return_value = ProcessedNote(
+            resumen="Resumen AI",
+            acciones=["Tarea 1", "Tarea 2"],
+            tipo_sugerido="Nota",
+            prioridad_sugerida="Media",
+        )
+        req = NoteCreateRequest(
+            title="",
+            raw_text="Texto con tareas",
+            source="manual",
+            area="Operaciones",
+            tipo="",
+            estado="Pendiente",
+            prioridad="",
+            fecha=datetime.now().date().isoformat(),
+        )
+        note_id, _ = self.service.create_note(req)
+        actions = self.service.actions_repo.get_actions_by_note(note_id)
+
+        self.assertEqual(len(actions), 2)
+        self.assertTrue(all(action.status == "pendiente" for action in actions))
+
+    @patch("app.core.service.process_text")
+    def test_mark_action_done_updates_status(self, mock_process_text):
+        mock_process_text.return_value = ProcessedNote(
+            resumen="Resumen AI",
+            acciones=["Tarea única"],
+            tipo_sugerido="Nota",
+            prioridad_sugerida="Media",
+        )
+        req = NoteCreateRequest(
+            title="",
+            raw_text="Texto con una tarea",
+            source="manual",
+            area="Ventas",
+            tipo="",
+            estado="Pendiente",
+            prioridad="",
+            fecha=datetime.now().date().isoformat(),
+        )
+        note_id, _ = self.service.create_note(req)
+        action = self.service.actions_repo.get_actions_by_note(note_id)[0]
+
+        self.service.mark_action_done(action.id)
+
+        updated = self.service.actions_repo.get_actions_by_note(note_id)[0]
+        self.assertEqual(updated.status, "hecha")
+        self.assertIsNotNone(updated.completed_at)
 
     @patch("app.core.service.process_text")
     def test_create_note_keeps_manual_tipo_prioridad(self, mock_process_text):
