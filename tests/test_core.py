@@ -115,6 +115,31 @@ class DedupTests(unittest.TestCase):
         self.assertEqual(len(actions), 2)
         self.assertTrue(all(action.status == "pendiente" for action in actions))
 
+
+    @patch("app.core.service.process_text")
+    def test_note_without_actions_starts_as_finalizado(self, mock_process_text):
+        mock_process_text.return_value = ProcessedNote(
+            resumen="Resumen",
+            acciones=[],
+            tipo_sugerido="Nota",
+            prioridad_sugerida="Media",
+        )
+        req = NoteCreateRequest(
+            title="",
+            raw_text="Texto informativo",
+            source="manual",
+            area="A",
+            tipo="",
+            estado="Pendiente",
+            prioridad="",
+            fecha=datetime.now().date().isoformat(),
+        )
+
+        note_id, _ = self.service.create_note(req)
+        note = self.service.note_repo.get_note(note_id)
+
+        self.assertEqual(note.estado, "Finalizado")
+
     @patch("app.core.service.process_text")
     def test_mark_action_done_updates_status(self, mock_process_text):
         mock_process_text.return_value = ProcessedNote(
@@ -166,12 +191,15 @@ class DedupTests(unittest.TestCase):
         self.service.settings_repo.set_setting("notion_token", "token")
         self.service.note_repo.mark_sent(note_id, "notion-page-123")
         action = self.service.actions_repo.get_actions_by_note(note_id)[0]
+        self.service.actions_repo.set_notion_page_id(action.id, "task-page-1")
+        mock_notion_client.return_value.count_open_tasks_by_fuente_id.return_value = 1
 
         self.service.mark_action_done(action.id)
 
         mock_notion_client.return_value.update_page_status.assert_called_once_with(
-            "notion-page-123",
+            "task-page-1",
             "Finalizado",
+            "Estado",
         )
 
     @patch("app.core.service.NotionClient")
@@ -198,11 +226,44 @@ class DedupTests(unittest.TestCase):
         self.service.settings_repo.set_setting("notion_token", "token")
         self.service.note_repo.mark_sent(note_id, "notion-page-123")
         action = self.service.actions_repo.get_actions_by_note(note_id)[0]
+        self.service.actions_repo.set_notion_page_id(action.id, "task-page-1")
 
         self.service.mark_action_done(action.id)
 
         updated = self.service.actions_repo.get_actions_by_note(note_id)[0]
         self.assertEqual(updated.status, "hecha")
+
+    @patch("app.core.service.NotionClient")
+    @patch("app.core.service.process_text")
+    def test_mark_action_done_closes_parent_note_when_all_tasks_are_done(self, mock_process_text, mock_notion_client):
+        mock_process_text.return_value = ProcessedNote(
+            resumen="Resumen AI",
+            acciones=["Tarea Notion"],
+            tipo_sugerido="Nota",
+            prioridad_sugerida="Media",
+        )
+        req = NoteCreateRequest(
+            title="",
+            raw_text="Texto con una tarea",
+            source="manual",
+            area="Ventas",
+            tipo="",
+            estado="Pendiente",
+            prioridad="",
+            fecha=datetime.now().date().isoformat(),
+        )
+        note_id, _ = self.service.create_note(req)
+        self.service.settings_repo.set_setting("notion_token", "token")
+        self.service.settings_repo.set_setting("notion_database_id", "db")
+        self.service.note_repo.mark_sent(note_id, "notion-page-123")
+        action = self.service.actions_repo.get_actions_by_note(note_id)[0]
+        self.service.actions_repo.set_notion_page_id(action.id, "task-page-1")
+        mock_notion_client.return_value.count_open_tasks_by_fuente_id.return_value = 0
+
+        self.service.mark_action_done(action.id)
+
+        self.assertEqual(mock_notion_client.return_value.update_page_status.call_count, 2)
+
     @patch("app.core.service.process_text")
     def test_create_note_keeps_manual_tipo_prioridad(self, mock_process_text):
         mock_process_text.return_value = ProcessedNote(

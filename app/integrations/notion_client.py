@@ -167,12 +167,12 @@ class NotionClient:
             raise NotionError(f"Error actualizando esquema de Notion: {resp.text}")
 
 
-    def update_page_status(self, page_id: str, new_status: str) -> None:
+    def update_page_status(self, page_id: str, new_status: str, estado_property: str = "Estado") -> None:
         import requests
 
         payload = {
             "properties": {
-                "Estado": {
+                estado_property: {
                     "select": {"name": new_status}
                 }
             }
@@ -190,6 +190,55 @@ class NotionClient:
 
         if resp.status_code >= 400:
             raise NotionError(f"Error actualizando estado de página en Notion: {resp.text}")
+
+
+    def count_open_tasks_by_fuente_id(
+        self,
+        database_id: str,
+        fuente_id: str,
+        tipo_property: str,
+        estado_property: str,
+        estado_finalizado: str = "Finalizado",
+    ) -> int:
+        import requests
+
+        count = 0
+        has_more = True
+        next_cursor: str | None = None
+
+        while has_more:
+            payload: dict[str, Any] = {
+                "page_size": 100,
+                "filter": {
+                    "and": [
+                        {"property": tipo_property, "select": {"equals": "Tarea"}},
+                        {"property": "Fuente_ID", "rich_text": {"contains": fuente_id}},
+                        {"property": estado_property, "select": {"does_not_equal": estado_finalizado}},
+                    ]
+                },
+            }
+            if next_cursor:
+                payload["start_cursor"] = next_cursor
+
+            try:
+                resp = requests.post(
+                    f"https://api.notion.com/v1/databases/{database_id}/query",
+                    headers=self._headers,
+                    json=payload,
+                    timeout=20,
+                )
+            except requests.RequestException as exc:
+                raise NotionError(f"Error de red consultando tareas por Fuente_ID en Notion: {exc}") from None
+
+            if resp.status_code >= 400:
+                raise NotionError(f"Error consultando tareas por Fuente_ID en Notion: {resp.text}")
+
+            data = resp.json()
+            count += len(data.get("results", []))
+            has_more = bool(data.get("has_more", False))
+            next_cursor = data.get("next_cursor")
+
+        return count
 
     def create_page(
         self,
@@ -313,9 +362,10 @@ class NotionClient:
                 settings.prop_estado: {"select": {"name": "Pendiente"}},
                 settings.prop_area: {"select": {"name": parent_note.area}},
                 settings.prop_fecha: {"date": {"start": parent_note.fecha}},
+                settings.prop_prioridad: {"select": {"name": parent_note.prioridad}},
                 "Origen": {"select": {"name": "Sistema"}},
                 "Fuente_ID": {
-                    "rich_text": [{"type": "text", "text": {"content": str(parent_note.id)}}]
+                    "rich_text": [{"type": "text", "text": {"content": str(parent_note.source_id)}}]
                 },
                 "Raw": {
                     "rich_text": [{"type": "text", "text": {"content": raw_action[:1900]}}]
