@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any
 
 from app.utils.openai_client import MODEL_NAME, build_openai_client
 
@@ -15,9 +15,10 @@ SYSTEM_PROMPT = (
     "Eres un asistente que analiza notas empresariales.\n"
     "Devuelve SOLO JSON válido con:\n"
     "- resumen (máx 4 líneas)\n"
-    "- acciones (lista clara si existen)\n"
+    "- acciones (array JSON real si existen, nunca string)\n"
     "- tipo_sugerido (Nota, Decisión, Incidencia)\n"
     "- prioridad_sugerida (Baja, Media, Alta)\n"
+    "El campo 'acciones' debe ser un array JSON real, no un string.\n"
     "No añadas texto fuera del JSON."
 )
 
@@ -25,7 +26,7 @@ SYSTEM_PROMPT = (
 @dataclass(slots=True)
 class ProcessedNote:
     resumen: str
-    acciones: Any
+    acciones: list[str]
     tipo_sugerido: str
     prioridad_sugerida: str
 
@@ -66,8 +67,19 @@ def process_text(text: str) -> ProcessedNote:
         return _empty_processed_note()
 
     acciones = payload.get("acciones", [])
+    if isinstance(acciones, str):
+        try:
+            acciones = ast.literal_eval(acciones)
+        except Exception:  # noqa: BLE001
+            acciones = [acciones]
+
+    if acciones is None:
+        acciones = []
+
     if not isinstance(acciones, list):
-        acciones = str(acciones or "").strip()
+        acciones = [str(acciones)]
+
+    acciones = [a.strip() for a in acciones if isinstance(a, str) and a.strip()]
 
     return ProcessedNote(
         resumen=str(payload.get("resumen", "") or "").strip(),
