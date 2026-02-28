@@ -89,6 +89,8 @@ class NotionClient:
     ) -> str:
         import requests
 
+        title_content = ((note.title or "").strip() or "Sin título")[:200]
+
         children = []
         if note.resumen.strip():
             children.append(
@@ -152,7 +154,7 @@ class NotionClient:
             "parent": {"database_id": database_id},
             "properties": {
                 settings.prop_title: {
-                    "title": [{"text": {"content": note.title}}]
+                    "title": [{"text": {"content": title_content}}]
                 },
                 settings.prop_area: {"select": {"name": note.area}},
                 settings.prop_tipo: {"select": {"name": note.tipo}},
