@@ -7,6 +7,7 @@ import tkinter as tk
 
 from app.core.service import NoteService
 from app.persistence.db import Database, default_data_dir
+from app.persistence.masters_repository import MastersRepository
 from app.persistence.repositories import NoteRepository, SettingsRepository
 from app.ui.main_window import MainWindow
 from app.utils.logging_config import configure_logging
@@ -19,8 +20,10 @@ def main() -> None:
     db = Database(data_dir / "notes.db")
     db.migrate()
     conn = db.connect()
+    masters_repo = MastersRepository(conn)
+    masters_repo.ensure_default_values()
 
-    service = NoteService(NoteRepository(conn), SettingsRepository(conn))
+    service = NoteService(NoteRepository(conn), SettingsRepository(conn), masters_repo)
 
     root = tk.Tk()
     root.title("Notion Second Brain")

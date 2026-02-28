@@ -14,6 +14,7 @@ from app.integrations.notion_database_manager import (
     load_notion_config,
     validate_database_schema,
 )
+from app.persistence.masters_repository import MastersRepository
 from app.persistence.repositories import NoteRepository, SettingsRepository
 
 logger = logging.getLogger(__name__)
@@ -22,9 +23,16 @@ logger = logging.getLogger(__name__)
 class NoteService:
     """Use-case layer for notes and synchronization flow."""
 
-    def __init__(self, note_repo: NoteRepository, settings_repo: SettingsRepository):
+    def __init__(
+        self,
+        note_repo: NoteRepository,
+        settings_repo: SettingsRepository,
+        masters_repo: MastersRepository,
+    ):
         self.note_repo = note_repo
         self.settings_repo = settings_repo
+        self.masters_repo = masters_repo
+        self.masters_repo.ensure_default_values()
 
     def get_settings(self) -> AppSettings:
         return self.settings_repo.load()
@@ -37,6 +45,9 @@ class NoteService:
 
     def list_notes(self, limit: int = 200) -> list[Note]:
         return self.note_repo.list_notes(limit)
+
+    def get_master_values(self, field_name: str) -> list[str]:
+        return self.masters_repo.list_values(field_name)
 
     def create_note(self, req: NoteCreateRequest) -> tuple[int | None, str]:
         normalized = normalize_text(req.raw_text, req.source)
