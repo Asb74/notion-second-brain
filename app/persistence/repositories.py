@@ -5,9 +5,9 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import fields
 from datetime import datetime, timedelta
-from typing import Iterable, Optional
+from typing import Optional
 
-from app.core.models import AppSettings, Note, NoteCreateRequest, NoteStatus
+from app.core.models import Action, AppSettings, Note, NoteCreateRequest, NoteStatus
 
 
 class NoteRepository:
@@ -47,9 +47,7 @@ class NoteRepository:
         return row is not None
 
     def list_notes(self, limit: int = 200) -> list[Note]:
-        rows = self.conn.execute(
-            "SELECT * FROM notes_local ORDER BY id DESC LIMIT ?", (limit,)
-        ).fetchall()
+        rows = self.conn.execute("SELECT * FROM notes_local ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         return [self._to_note(r) for r in rows]
 
     def get_note(self, note_id: int) -> Optional[Note]:
@@ -76,9 +74,7 @@ class NoteRepository:
         self.conn.commit()
 
     def mark_error(self, note_id: int, error_msg: str, retry_after_seconds: int) -> None:
-        attempts = self.conn.execute(
-            "SELECT attempts FROM notes_local WHERE id = ?", (note_id,)
-        ).fetchone()["attempts"]
+        attempts = self.conn.execute("SELECT attempts FROM notes_local WHERE id = ?", (note_id,)).fetchone()["attempts"]
         next_retry = datetime.utcnow() + timedelta(seconds=retry_after_seconds)
         self.conn.execute(
             """
@@ -106,7 +102,6 @@ class SettingsRepository:
 
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
-
 
     def get_setting(self, key: str) -> Optional[str]:
         row = self.conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
@@ -145,3 +140,48 @@ class SettingsRepository:
                 (key, str(value)),
             )
         self.conn.commit()
+
+
+class ActionsRepository:
+    """Data access for actions table."""
+
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+
+    def create_action(self, note_id: int, description: str, area: str) -> int:
+        cursor = self.conn.execute(
+            """
+            INSERT INTO actions (note_id, description, area, status, created_at)
+            VALUES (?, ?, ?, 'pendiente', ?)
+            """,
+            (note_id, description, area, datetime.utcnow().isoformat(timespec="seconds")),
+        )
+        self.conn.commit()
+        return int(cursor.lastrowid)
+
+    def get_pending_actions(self) -> list[Action]:
+        rows = self.conn.execute("SELECT * FROM actions WHERE status = 'pendiente' ORDER BY id DESC").fetchall()
+        return [self._to_action(r) for r in rows]
+
+    def get_actions_by_area(self, area: str) -> list[Action]:
+        rows = self.conn.execute("SELECT * FROM actions WHERE area = ? ORDER BY id DESC", (area,)).fetchall()
+        return [self._to_action(r) for r in rows]
+
+    def mark_action_done(self, action_id: int) -> None:
+        self.conn.execute(
+            """
+            UPDATE actions
+            SET status = 'hecha', completed_at = ?
+            WHERE id = ?
+            """,
+            (datetime.utcnow().isoformat(timespec="seconds"), action_id),
+        )
+        self.conn.commit()
+
+    def get_actions_by_note(self, note_id: int) -> list[Action]:
+        rows = self.conn.execute("SELECT * FROM actions WHERE note_id = ? ORDER BY id DESC", (note_id,)).fetchall()
+        return [self._to_action(r) for r in rows]
+
+    @staticmethod
+    def _to_action(row: sqlite3.Row) -> Action:
+        return Action(**dict(row))

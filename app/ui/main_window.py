@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 import tkinter as tk
 import webbrowser
 from tkinter import messagebox, ttk
+
 from tkcalendar import DateEntry
 
 from app.core.models import AppSettings, NoteCreateRequest
 from app.core.service import NoteService
 from app.ui.settings_dialog import SettingsDialog
+
+logger = logging.getLogger(__name__)
 
 
 class MainWindow(ttk.Frame):
@@ -23,13 +27,15 @@ class MainWindow(ttk.Frame):
         self.service = service
         self.msg_queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self.status_var = tk.StringVar(value="Listo")
+        self.action_area_var = tk.StringVar(value="Todas")
         self.pack(fill="both", expand=True)
 
         self._build_form()
-        self._build_list()
+        self._build_sections()
         self._load_master_values()
         self._refresh_database_button_state()
         self.refresh_notes()
+        self.refresh_actions()
         self.after(150, self._poll_queue)
 
     def _build_form(self) -> None:
@@ -69,11 +75,7 @@ class MainWindow(ttk.Frame):
         self.prioridad_combo.grid(row=2, column=7, padx=4, pady=4)
 
         ttk.Label(form, text="Fecha").grid(row=2, column=8, padx=4, pady=4, sticky="e")
-        self.date_entry = DateEntry(
-            form,
-            width=15,
-            date_pattern="yyyy-mm-dd",
-        )
+        self.date_entry = DateEntry(form, width=15, date_pattern="yyyy-mm-dd")
         self.date_entry.grid(row=2, column=9, padx=4, pady=4)
 
         actions = ttk.Frame(form)
@@ -86,11 +88,17 @@ class MainWindow(ttk.Frame):
         self.create_db_button = ttk.Button(actions, text="Crear Base Notion", command=self._create_notion_database)
         self.create_db_button.pack(side="left", padx=3)
 
-    def _build_list(self) -> None:
-        frame = ttk.LabelFrame(self, text="Notas")
-        frame.pack(fill="both", expand=True, pady=8)
+    def _build_sections(self) -> None:
+        sections = ttk.Notebook(self)
+        sections.pack(fill="both", expand=True, pady=8)
+
+        notes_frame = ttk.Frame(sections)
+        actions_frame = ttk.Frame(sections)
+        sections.add(notes_frame, text="Notas")
+        sections.add(actions_frame, text="Acciones")
+
         columns = ("id", "title", "status", "error", "notion_page_id")
-        self.tree = ttk.Treeview(frame, columns=columns, show="headings", height=12)
+        self.tree = ttk.Treeview(notes_frame, columns=columns, show="headings", height=12)
         for c in columns:
             self.tree.heading(c, text=c)
         self.tree.column("id", width=40)
@@ -99,6 +107,29 @@ class MainWindow(ttk.Frame):
         self.tree.column("error", width=260)
         self.tree.column("notion_page_id", width=220)
         self.tree.pack(fill="both", expand=True)
+
+        toolbar = ttk.Frame(actions_frame)
+        toolbar.pack(fill="x", padx=4, pady=4)
+        ttk.Label(toolbar, text="Filtrar Área:").pack(side="left", padx=(0, 6))
+        self.action_area_combo = ttk.Combobox(toolbar, textvariable=self.action_area_var, state="readonly", width=22)
+        self.action_area_combo.pack(side="left")
+        self.action_area_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh_actions())
+        ttk.Button(toolbar, text="Marcar como hecha", command=self._mark_selected_action_done).pack(side="left", padx=6)
+        ttk.Button(toolbar, text="Refrescar", command=self.refresh_actions).pack(side="left", padx=6)
+
+        action_columns = ("id", "area", "description", "status", "note_id")
+        self.actions_tree = ttk.Treeview(actions_frame, columns=action_columns, show="headings", height=12)
+        self.actions_tree.heading("id", text="ID")
+        self.actions_tree.heading("area", text="Área")
+        self.actions_tree.heading("description", text="Descripción")
+        self.actions_tree.heading("status", text="Estado")
+        self.actions_tree.heading("note_id", text="Nota asociada")
+        self.actions_tree.column("id", width=50)
+        self.actions_tree.column("area", width=140)
+        self.actions_tree.column("description", width=420)
+        self.actions_tree.column("status", width=100)
+        self.actions_tree.column("note_id", width=130)
+        self.actions_tree.pack(fill="both", expand=True, padx=4, pady=4)
 
         ttk.Label(self, textvariable=self.status_var, anchor="w").pack(fill="x", pady=(2, 0))
 
@@ -112,6 +143,7 @@ class MainWindow(ttk.Frame):
         self.tipo_combo.configure(values=tipo_values)
         self.estado_combo.configure(values=estado_values)
         self.prioridad_combo.configure(values=prioridad_values)
+        self.action_area_combo.configure(values=["Todas", *area_values])
 
         if area_values:
             self.area_var.set(area_values[0])
@@ -170,6 +202,7 @@ class MainWindow(ttk.Frame):
             self.text_widget.delete("1.0", "end")
             self.title_var.set("")
         self.refresh_notes()
+        self.refresh_actions()
 
     def _sync(self) -> None:
         threading.Thread(target=self._sync_worker, daemon=True).start()
@@ -217,6 +250,7 @@ class MainWindow(ttk.Frame):
                 self.status_var.set(msg)
                 messagebox.showinfo("Resultado", msg)
             self.refresh_notes()
+            self.refresh_actions()
         self.after(150, self._poll_queue)
 
     def _refresh_database_button_state(self) -> None:
@@ -232,6 +266,41 @@ class MainWindow(ttk.Frame):
             self.tree.delete(row)
         for note in self.service.list_notes():
             self.tree.insert("", "end", iid=str(note.id), values=(note.id, note.title, note.status, note.last_error or "", note.notion_page_id or ""))
+
+    def refresh_actions(self) -> None:
+        for row in self.actions_tree.get_children():
+            self.actions_tree.delete(row)
+
+        area_filter = self.action_area_var.get().strip()
+        area = None if area_filter in ("", "Todas") else area_filter
+
+        try:
+            actions = self.service.list_pending_actions(area)
+            for action in actions:
+                self.actions_tree.insert(
+                    "",
+                    "end",
+                    iid=f"a{action.id}",
+                    values=(action.id, action.area, action.description, action.status, action.note_id),
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception("No se pudieron cargar acciones")
+            self.status_var.set("Error al cargar acciones")
+
+    def _mark_selected_action_done(self) -> None:
+        selection = self.actions_tree.selection()
+        if not selection:
+            messagebox.showwarning("Atención", "Selecciona una acción.")
+            return
+
+        action_id = int(self.actions_tree.item(selection[0], "values")[0])
+        try:
+            self.service.mark_action_done(action_id)
+            self.status_var.set(f"Acción {action_id} marcada como hecha")
+            self.refresh_actions()
+        except Exception:  # noqa: BLE001
+            logger.exception("No se pudo marcar la acción id=%s como hecha", action_id)
+            messagebox.showerror("Error", "No se pudo actualizar la acción.")
 
     def _open_notion(self) -> None:
         sel = self.tree.selection()
