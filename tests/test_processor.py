@@ -10,6 +10,9 @@ class ProcessorTests(unittest.TestCase):
         self.assertIn("Extraer acciones explícitas e implícitas", SYSTEM_PROMPT)
         self.assertIn("ha de ser", SYSTEM_PROMPT)
         self.assertIn("No omitas tareas implícitas", SYSTEM_PROMPT)
+        self.assertIn("Cada acción debe ser independiente", SYSTEM_PROMPT)
+        self.assertIn("Definir y ejecutar la acción requerida", SYSTEM_PROMPT)
+        self.assertIn("Si no hay acciones reales, devuelve lista vacía", SYSTEM_PROMPT)
 
     @patch("app.core.processor.build_openai_client")
     def test_acciones_stringified_list_is_normalized(self, mock_build_client):
