@@ -28,6 +28,8 @@ class NoteCreateRequest:
     prioridad: str
     fecha: str
     title: str = ""
+    resumen: str = ""
+    acciones: str = ""
 
 
 @dataclass(slots=True)
@@ -45,6 +47,8 @@ class Note:
     estado: str
     prioridad: str
     fecha: str
+    resumen: str
+    acciones: str
     status: str
     notion_page_id: Optional[str]
     last_error: Optional[str]

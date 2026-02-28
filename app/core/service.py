@@ -8,6 +8,7 @@ from datetime import datetime
 from app.core.hashing import compute_source_id
 from app.core.models import AppSettings, Note, NoteCreateRequest, NoteStatus
 from app.core.normalizer import normalize_text
+from app.core.processor import process_text
 from app.integrations.notion_client import NotionClient, NotionError
 from app.integrations.notion_database_manager import (
     create_database,
@@ -60,15 +61,21 @@ class NoteService:
         if not title:
             title = normalized.split("\n", 1)[0][:120] or "Sin título"
 
+        processed = process_text(normalized)
+        final_tipo = req.tipo.strip() if req.tipo.strip() else processed.tipo_sugerido
+        final_prioridad = req.prioridad.strip() if req.prioridad.strip() else processed.prioridad_sugerida
+
         final_req = NoteCreateRequest(
             raw_text=req.raw_text,
             source=req.source,
             area=req.area,
-            tipo=req.tipo,
+            tipo=final_tipo,
             estado=req.estado,
-            prioridad=req.prioridad,
+            prioridad=final_prioridad,
             fecha=req.fecha,
             title=title,
+            resumen=processed.resumen,
+            acciones=processed.acciones,
         )
         note_id = self.note_repo.create_note(
             final_req,

@@ -20,8 +20,8 @@ class NoteRepository:
         cursor = self.conn.execute(
             """
             INSERT INTO notes_local (
-                created_at, source, source_id, title, raw_text, area, tipo, estado, prioridad, fecha, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                created_at, source, source_id, title, raw_text, area, tipo, estado, prioridad, fecha, resumen, acciones, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 created_at,
@@ -34,6 +34,8 @@ class NoteRepository:
                 req.estado,
                 req.prioridad,
                 req.fecha,
+                req.resumen,
+                req.acciones,
                 status.value,
             ),
         )

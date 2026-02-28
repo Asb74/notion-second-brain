@@ -40,6 +40,8 @@ class Database:
                     estado TEXT NOT NULL,
                     prioridad TEXT NOT NULL,
                     fecha TEXT NOT NULL,
+                    resumen TEXT NOT NULL DEFAULT '',
+                    acciones TEXT NOT NULL DEFAULT '',
                     status TEXT NOT NULL,
                     notion_page_id TEXT,
                     last_error TEXT,
@@ -48,6 +50,8 @@ class Database:
                 )
                 """
             )
+            self._ensure_column(conn, "notes_local", "resumen", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "notes_local", "acciones", "TEXT NOT NULL DEFAULT ''")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS settings (
@@ -79,6 +83,13 @@ class Database:
                 """
             )
             conn.commit()
+
+    @staticmethod
+    def _ensure_column(conn: sqlite3.Connection, table_name: str, column_name: str, column_spec: str) -> None:
+        columns = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        existing = {column[1] for column in columns}
+        if column_name not in existing:
+            conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_spec}")
 
     def get_setting(self, key: str) -> str | None:
         """Return a setting value from settings table or None if missing."""
