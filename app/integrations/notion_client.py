@@ -81,6 +81,91 @@ class NotionClient:
 
         return NotionSchemaValidation(True, "Esquema válido")
 
+
+    def count_open_pages_for_master(
+        self,
+        database_id: str,
+        category_property: str,
+        value: str,
+        estado_property: str,
+        estado_finalizado: str = "Finalizado",
+    ) -> int:
+        import requests
+
+        count = 0
+        has_more = True
+        next_cursor: str | None = None
+
+        while has_more:
+            payload: dict[str, Any] = {
+                "page_size": 100,
+                "filter": {
+                    "and": [
+                        {
+                            "property": category_property,
+                            "select": {"equals": value},
+                        },
+                        {
+                            "property": estado_property,
+                            "select": {"does_not_equal": estado_finalizado},
+                        },
+                    ]
+                },
+            }
+            if next_cursor:
+                payload["start_cursor"] = next_cursor
+
+            try:
+                resp = requests.post(
+                    f"https://api.notion.com/v1/databases/{database_id}/query",
+                    headers=self._headers,
+                    json=payload,
+                    timeout=20,
+                )
+            except requests.RequestException as exc:
+                raise NotionError(f"Error de red consultando uso de maestro en Notion: {exc}") from None
+
+            if resp.status_code >= 400:
+                raise NotionError(f"Error consultando uso de maestro en Notion: {resp.text}")
+
+            data = resp.json()
+            count += len(data.get("results", []))
+            has_more = bool(data.get("has_more", False))
+            next_cursor = data.get("next_cursor")
+
+        return count
+
+    def get_database_schema(self, database_id: str) -> dict[str, Any]:
+        import requests
+
+        url = f"https://api.notion.com/v1/databases/{database_id}"
+        try:
+            resp = requests.get(url, headers=self._headers, timeout=15)
+        except requests.RequestException as exc:
+            raise NotionError(f"Error de red leyendo esquema de Notion: {exc}") from None
+
+        if resp.status_code >= 400:
+            raise NotionError(f"No se pudo leer el esquema de Notion: {resp.text}")
+
+        return resp.json()
+
+    def patch_database_properties(self, database_id: str, properties: dict[str, Any]) -> None:
+        import requests
+
+        payload = {"properties": properties}
+        try:
+            resp = requests.patch(
+                f"https://api.notion.com/v1/databases/{database_id}",
+                headers=self._headers,
+                json=payload,
+                timeout=20,
+            )
+        except requests.RequestException as exc:
+            raise NotionError(f"Error de red actualizando esquema de Notion: {exc}") from None
+
+        if resp.status_code >= 400:
+            raise NotionError(f"Error actualizando esquema de Notion: {resp.text}")
+
     def create_page(
         self,
         database_id: str,
