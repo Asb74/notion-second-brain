@@ -6,6 +6,11 @@ import sqlite3
 from pathlib import Path
 
 
+def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {str(row[1]) for row in rows}
+
+
 class Database:
     """Simple SQLite wrapper with schema migrations."""
 
@@ -79,29 +84,58 @@ class Database:
                 ON actions(status, area)
                 """
             )
+            self._migrate_masters_table(conn)
+            conn.commit()
+
+    def _migrate_masters_table(self, conn: sqlite3.Connection) -> None:
+        existing_tables = {
+            str(row[0])
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
+        if "masters" not in existing_tables:
             conn.execute(
                 """
-                CREATE TABLE IF NOT EXISTS masters (
+                CREATE TABLE masters (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    field_name TEXT NOT NULL,
+                    category TEXT NOT NULL,
                     value TEXT NOT NULL,
-                    is_active INTEGER NOT NULL DEFAULT 1
+                    active INTEGER NOT NULL DEFAULT 1,
+                    system_locked INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE(category, value)
                 )
                 """
             )
+            return
+
+        columns = _table_columns(conn, "masters")
+        expected = {"id", "category", "value", "active", "system_locked"}
+        if expected.issubset(columns):
+            return
+
+        conn.execute(
+            """
+            CREATE TABLE masters_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                category TEXT NOT NULL,
+                value TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1,
+                system_locked INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(category, value)
+            )
+            """
+        )
+
+        if {"field_name", "is_active", "value"}.issubset(columns):
             conn.execute(
                 """
-                CREATE INDEX IF NOT EXISTS idx_masters_field_name_active
-                ON masters(field_name, is_active)
+                INSERT INTO masters_new(category, value, active, system_locked)
+                SELECT field_name, value, is_active, 0
+                FROM masters
                 """
             )
-            conn.execute(
-                """
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_masters_field_value
-                ON masters(field_name, value)
-                """
-            )
-            conn.commit()
+
+        conn.execute("DROP TABLE masters")
+        conn.execute("ALTER TABLE masters_new RENAME TO masters")
 
     @staticmethod
     def _ensure_column(conn: sqlite3.Connection, table_name: str, column_name: str, column_spec: str) -> None:

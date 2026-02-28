@@ -24,6 +24,13 @@ logger = logging.getLogger(__name__)
 class NoteService:
     """Use-case layer for notes and synchronization flow."""
 
+    MASTER_TO_NOTION_PROP: dict[str, str] = {
+        "Area": "prop_area",
+        "Tipo": "prop_tipo",
+        "Prioridad": "prop_prioridad",
+        "Origen": "Origen",
+    }
+
     def __init__(
         self,
         note_repo: NoteRepository,
@@ -50,7 +57,85 @@ class NoteService:
         return self.note_repo.list_notes(limit)
 
     def get_master_values(self, field_name: str) -> list[str]:
-        return self.masters_repo.list_values(field_name)
+        return self.masters_repo.list_active(field_name)
+
+    def list_masters(self, category: str):
+        return self.masters_repo.list_all(category)
+
+    def add_master(self, category: str, value: str) -> None:
+        self.masters_repo.add_master(category, value)
+
+    def deactivate_master(self, category: str, value: str) -> None:
+        if self.masters_repo.is_locked(category, value):
+            raise ValueError(f"'{value}' está bloqueado por el sistema y no puede desactivarse.")
+
+        settings = self.get_settings()
+        if not settings.notion_database_id.strip() or not settings.notion_token.strip():
+            logger.warning("Desactivación sin validación Notion completa por configuración incompleta")
+            self.masters_repo.deactivate_master(category, value)
+            return
+
+        notion_property = self._resolve_notion_property_name(category, settings)
+        if not notion_property:
+            self.masters_repo.deactivate_master(category, value)
+            return
+
+        client = NotionClient(settings.notion_token)
+        open_count = client.count_open_pages_for_master(
+            settings.notion_database_id,
+            notion_property,
+            value,
+            settings.prop_estado,
+            "Finalizado",
+        )
+        if open_count > 0:
+            raise ValueError(
+                f"No se puede desactivar '{value}' porque existe en {open_count} página(s) de Notion con Estado distinto de 'Finalizado'."
+            )
+
+        self.masters_repo.deactivate_master(category, value)
+
+    def sync_schema_with_notion(self, settings: AppSettings | None = None) -> None:
+        current = settings or self.get_settings()
+        self._validate_notion_settings(current)
+        if not current.notion_database_id.strip():
+            raise NotionError("Debe crear la base Notion antes de sincronizar maestros.")
+
+        client = NotionClient(current.notion_token)
+        schema = client.get_database_schema(current.notion_database_id)
+        properties = schema.get("properties", {})
+
+        patch_properties: dict[str, dict] = {}
+        for category in self.MASTER_TO_NOTION_PROP:
+            notion_property = self._resolve_notion_property_name(category, current)
+            if not notion_property or notion_property not in properties:
+                logger.warning("Propiedad '%s' no encontrada en esquema Notion para categoría '%s'", notion_property, category)
+                continue
+
+            active_values = self.masters_repo.list_active(category)
+            existing_options = (
+                properties.get(notion_property, {})
+                .get("select", {})
+                .get("options", [])
+            )
+            color_by_name = {
+                str(opt.get("name")): str(opt.get("color", "default"))
+                for opt in existing_options
+                if opt.get("name")
+            }
+            options = [{"name": value, "color": color_by_name.get(value, "default")} for value in active_values]
+            patch_properties[notion_property] = {"select": {"options": options}}
+
+        if patch_properties:
+            client.patch_database_properties(current.notion_database_id, patch_properties)
+
+    def _resolve_notion_property_name(self, category: str, settings: AppSettings) -> str | None:
+        key = self.MASTER_TO_NOTION_PROP.get(category)
+        if not key:
+            return None
+        if key.startswith("prop_"):
+            return str(getattr(settings, key))
+        return key
 
     def list_pending_actions(self, area: str | None = None) -> list[Action]:
         if area:

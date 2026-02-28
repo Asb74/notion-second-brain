@@ -13,6 +13,7 @@ from tkcalendar import DateEntry
 
 from app.core.models import AppSettings, NoteCreateRequest
 from app.core.service import NoteService
+from app.ui.masters_dialog import MastersDialog
 from app.ui.settings_dialog import SettingsDialog
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,7 @@ class MainWindow(ttk.Frame):
         self.action_area_var = tk.StringVar(value="Todas")
         self.pack(fill="both", expand=True)
 
+        self._build_menu()
         self._build_form()
         self._build_sections()
         self._load_master_values()
@@ -37,6 +39,38 @@ class MainWindow(ttk.Frame):
         self.refresh_notes()
         self.refresh_actions()
         self.after(150, self._poll_queue)
+
+
+    def _build_menu(self) -> None:
+        menubar = tk.Menu(self.master)
+
+        archivo = tk.Menu(menubar, tearoff=0)
+        archivo.add_command(label="Salir", command=self.master.destroy)
+        menubar.add_cascade(label="Archivo", menu=archivo)
+
+        edicion = tk.Menu(menubar, tearoff=0)
+        edicion.add_command(label="Refrescar notas", command=self.refresh_notes)
+        menubar.add_cascade(label="Edición", menu=edicion)
+
+        herramientas = tk.Menu(menubar, tearoff=0)
+        herramientas.add_command(label="Configuración", command=self._open_settings)
+        menubar.add_cascade(label="Herramientas", menu=herramientas)
+
+        maestros = tk.Menu(menubar, tearoff=0)
+        maestros.add_command(label="Gestionar Áreas", command=lambda: self._open_masters_dialog("Area"))
+        maestros.add_command(label="Gestionar Tipos", command=lambda: self._open_masters_dialog("Tipo"))
+        maestros.add_command(label="Gestionar Prioridades", command=lambda: self._open_masters_dialog("Prioridad"))
+        maestros.add_command(label="Gestionar Orígenes", command=lambda: self._open_masters_dialog("Origen"))
+        menubar.add_cascade(label="Maestros", menu=maestros)
+
+        ia = tk.Menu(menubar, tearoff=0)
+        ia.add_command(label="Sincronizar pendientes", command=self._sync)
+        menubar.add_cascade(label="IA", menu=ia)
+
+        self.master.config(menu=menubar)
+
+    def _open_masters_dialog(self, category: str) -> None:
+        MastersDialog(self.master, self.service, category, self._load_master_values)
 
     def _build_form(self) -> None:
         form = ttk.LabelFrame(self, text="Nueva nota")
