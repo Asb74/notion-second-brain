@@ -63,6 +63,24 @@ class NotionClientCreatePageTests(unittest.TestCase):
         content = payload["properties"][self.settings.prop_title]["title"][0]["text"]["content"]
         self.assertEqual(content, "Sin título")
 
+    @patch("requests.post")
+    def test_create_task_from_action_builds_expected_payload(self, mock_post):
+        mock_post.return_value = _DummyResponse(body={"id": "task_1"})
+        note = self._build_note("Nota madre")
+
+        self.client.create_task_from_action(self.settings, "  Hacer seguimiento con cliente  ", note)
+
+        payload = mock_post.call_args.kwargs["json"]
+        properties = payload["properties"]
+        self.assertEqual(payload["parent"]["database_id"], self.settings.notion_database_id)
+        self.assertEqual(properties[self.settings.prop_tipo]["select"]["name"], "Tarea")
+        self.assertEqual(properties[self.settings.prop_estado]["select"]["name"], "Pendiente")
+        self.assertEqual(properties[self.settings.prop_area]["select"]["name"], note.area)
+        self.assertEqual(properties[self.settings.prop_fecha]["date"]["start"], note.fecha)
+        self.assertEqual(properties["Origen"]["select"]["name"], "Sistema")
+        self.assertEqual(properties["Fuente_ID"]["rich_text"][0]["text"]["content"], str(note.id))
+        self.assertEqual(properties["Raw"]["rich_text"][0]["text"]["content"], "Hacer seguimiento con cliente")
+
 
 if __name__ == "__main__":
     unittest.main()

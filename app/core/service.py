@@ -162,6 +162,14 @@ class NoteService:
                     settings,
                     note,
                 )
+
+                if note.acciones.strip():
+                    for action in [line.strip() for line in note.acciones.splitlines() if line.strip()]:
+                        try:
+                            client.create_task_from_action(settings, action, note)
+                        except Exception:  # noqa: BLE001
+                            logger.exception("Error creating action task for note id=%s", note.id)
+
                 self.note_repo.mark_sent(note.id, page_id)
                 sent += 1
             except Exception as exc:  # noqa: BLE001

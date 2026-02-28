@@ -181,3 +181,49 @@ class NotionClient:
             raise NotionError(f"Error creando página en Notion: {resp.text}")
 
         return resp.json()["id"]
+
+    def create_task_from_action(
+        self,
+        settings: AppSettings,
+        action_text: str,
+        parent_note: Note,
+    ) -> str:
+        import requests
+
+        activity = (action_text or "").strip()[:200] or "Sin actividad"
+        raw_action = (action_text or "").strip()
+
+        payload: dict[str, Any] = {
+            "parent": {"database_id": settings.notion_database_id},
+            "properties": {
+                settings.prop_title: {
+                    "title": [{"text": {"content": activity}}]
+                },
+                settings.prop_tipo: {"select": {"name": "Tarea"}},
+                settings.prop_estado: {"select": {"name": "Pendiente"}},
+                settings.prop_area: {"select": {"name": parent_note.area}},
+                settings.prop_fecha: {"date": {"start": parent_note.fecha}},
+                "Origen": {"select": {"name": "Sistema"}},
+                "Fuente_ID": {
+                    "rich_text": [{"type": "text", "text": {"content": str(parent_note.id)}}]
+                },
+                "Raw": {
+                    "rich_text": [{"type": "text", "text": {"content": raw_action[:1900]}}]
+                },
+            },
+        }
+
+        try:
+            resp = requests.post(
+                "https://api.notion.com/v1/pages",
+                headers=self._headers,
+                json=payload,
+                timeout=20,
+            )
+        except requests.RequestException as exc:
+            raise NotionError(f"Error de red creando tarea en Notion: {exc}") from None
+
+        if resp.status_code >= 400:
+            raise NotionError(f"Error creando tarea en Notion: {resp.text}")
+
+        return resp.json()["id"]
