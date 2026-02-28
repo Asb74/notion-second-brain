@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import json
 import logging
+import re
 from dataclasses import dataclass
 
 from app.utils.openai_client import MODEL_NAME, build_openai_client
@@ -12,7 +13,14 @@ from app.utils.openai_client import MODEL_NAME, build_openai_client
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (
+    "OBJETIVO: Extraer acciones explícitas e implícitas del texto.\n"
     "Eres un asistente que analiza notas empresariales.\n"
+    "Identifica órdenes directas, peticiones formales, compromisos con fecha límite, "
+    "obligaciones operativas y acciones que requieran intervención.\n"
+    "Si el texto contiene expresiones como 'ha de ser', 'debe', 'para que', 'se solicita', "
+    "'es necesario', 'antes del' o una fecha límite, genera al menos una acción.\n"
+    "Reformula cada acción en formato operativo claro y accionable.\n"
+    "No omitas tareas implícitas.\n"
     "Devuelve SOLO JSON válido con:\n"
     "- resumen (máx 4 líneas)\n"
     "- acciones (array JSON real si existen, nunca string)\n"
@@ -45,6 +53,29 @@ def _extract_json_object(content: str) -> dict:
         if start == -1 or end == -1 or start >= end:
             raise
         return json.loads(content[start : end + 1])
+
+
+ACTION_TRIGGER_PATTERNS = [
+    r"\bha de ser\b",
+    r"\bdebe\b",
+    r"\bpara que\b",
+    r"\bse solicita\b",
+    r"\bes necesario\b",
+    r"\bantes del\b",
+    r"\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b",
+    r"\b\d{4}-\d{2}-\d{2}\b",
+]
+
+
+def _requires_action(text: str) -> bool:
+    lower_text = text.lower()
+    return any(re.search(pattern, lower_text) for pattern in ACTION_TRIGGER_PATTERNS)
+
+
+def _build_fallback_action(text: str) -> str:
+    compact_text = " ".join(text.split())
+    snippet = compact_text[:160].rstrip(" ,.;:")
+    return f"Definir y ejecutar la acción requerida según lo indicado: {snippet}."
 
 
 def process_text(text: str) -> ProcessedNote:
@@ -80,6 +111,9 @@ def process_text(text: str) -> ProcessedNote:
         acciones = [str(acciones)]
 
     acciones = [a.strip() for a in acciones if isinstance(a, str) and a.strip()]
+
+    if not acciones and _requires_action(text):
+        acciones = [_build_fallback_action(text)]
 
     return ProcessedNote(
         resumen=str(payload.get("resumen", "") or "").strip(),
