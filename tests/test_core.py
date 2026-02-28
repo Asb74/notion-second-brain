@@ -166,6 +166,8 @@ class DedupTests(unittest.TestCase):
         updated = self.service.actions_repo.get_actions_by_note(note_id)[0]
         self.assertEqual(updated.status, "hecha")
         self.assertIsNotNone(updated.completed_at)
+        note = self.service.note_repo.get_note(note_id)
+        self.assertEqual(note.estado, "Finalizado")
 
 
     @patch("app.core.service.NotionClient")
@@ -263,6 +265,62 @@ class DedupTests(unittest.TestCase):
         self.service.mark_action_done(action.id)
 
         self.assertEqual(mock_notion_client.return_value.update_page_status.call_count, 2)
+
+    @patch("app.core.service.process_text")
+    def test_mark_note_done_blocks_when_has_pending_tasks(self, mock_process_text):
+        mock_process_text.return_value = ProcessedNote(
+            resumen="Resumen AI",
+            acciones=["Tarea pendiente"],
+            tipo_sugerido="Nota",
+            prioridad_sugerida="Media",
+        )
+        req = NoteCreateRequest(
+            title="",
+            raw_text="Texto con tarea",
+            source="manual",
+            area="A",
+            tipo="Nota",
+            estado="Pendiente",
+            prioridad="Media",
+            fecha=datetime.now().date().isoformat(),
+        )
+        note_id, _ = self.service.create_note(req)
+
+        with self.assertRaisesRegex(ValueError, "tareas pendientes"):
+            self.service.mark_note_done(note_id)
+
+    @patch("app.core.service.NotionClient")
+    @patch("app.core.service.process_text")
+    def test_mark_note_done_updates_local_and_notion(self, mock_process_text, mock_notion_client):
+        mock_process_text.return_value = ProcessedNote(
+            resumen="Resumen AI",
+            acciones=[],
+            tipo_sugerido="Nota",
+            prioridad_sugerida="Media",
+        )
+        req = NoteCreateRequest(
+            title="",
+            raw_text="Texto sin tareas",
+            source="manual",
+            area="A",
+            tipo="Nota",
+            estado="Pendiente",
+            prioridad="Media",
+            fecha=datetime.now().date().isoformat(),
+        )
+        note_id, _ = self.service.create_note(req)
+        self.service.settings_repo.set_setting("notion_token", "token")
+        self.service.note_repo.mark_sent(note_id, "notion-page-123")
+
+        self.service.mark_note_done(note_id)
+
+        note = self.service.note_repo.get_note(note_id)
+        self.assertEqual(note.estado, "Finalizado")
+        mock_notion_client.return_value.update_page_status.assert_called_once_with(
+            "notion-page-123",
+            "Finalizado",
+            "Estado",
+        )
 
     @patch("app.core.service.process_text")
     def test_create_note_keeps_manual_tipo_prioridad(self, mock_process_text):
