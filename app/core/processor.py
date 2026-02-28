@@ -12,22 +12,41 @@ from app.utils.openai_client import MODEL_NAME, build_openai_client
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (
-    "OBJETIVO: Analizar el texto y determinar si las acciones deben ser simples o desglosadas.\n"
-    "REGLAS:\n"
-    "1. Si el texto contiene una única obligación clara, modo = simple.\n"
-    "2. Si contiene múltiples objetivos independientes, modo = desglosado.\n"
-    "3. Si no hay acciones, modo = ninguna.\n"
-    "4. Si no se puede determinar claramente, modo = ambiguo.\n"
-    "5. En modo simple, devolver una acción consolidada clara y operativa.\n"
-    "6. En modo desglosado, devolver acción principal con subtareas separadas.\n"
-    "7. No inventar complejidad si no existe.\n"
-    "FORMATO JSON:\n"
+    "OBJETIVO: Extraer acciones operativas del texto y clasificarlas por tipo operativo.\n"
+    "INSTRUCCIONES:\n"
+    "1. Detectar acciones explícitas e implícitas.\n"
+    "2. Determinar si las acciones deben ser simples o desglosadas.\n"
+    "3. Clasificar cada acción en uno o varios tipos operativos.\n"
+    "TIPOS PERMITIDOS:\n"
+    "- Llamar\n"
+    "- Enviar información\n"
+    "- Preparar\n"
+    "- Revisar\n"
+    "- Confirmar\n"
+    "- Reunión\n"
+    "- Programar\n"
+    "- Seguimiento\n"
+    "- Administrativa\n"
+    "- Informativa\n"
+    "REGLAS DE CLASIFICACIÓN:\n"
+    "- Si comienza por 'Llamar' → Llamar\n"
+    "- Si implica envío de datos/documentación → Enviar información\n"
+    "- Si implica elaboración de documento → Preparar\n"
+    "- Si implica verificación → Revisar\n"
+    "- Si implica validación externa → Confirmar\n"
+    "- Si es coordinación futura → Reunión\n"
+    "- Si implica planificación → Programar\n"
+    "- Si es control posterior → Seguimiento\n"
+    "- Si es gestión interna genérica → Administrativa\n"
+    "- Si no requiere acción → Informativa\n"
+    "FORMATO JSON OBLIGATORIO:\n"
     "{\n"
     '  "modo": "simple" | "desglosado" | "ninguna" | "ambiguo",\n'
     '  "acciones": [\n'
     "    {\n"
     '      "descripcion": "...",\n'
-    '      "subtareas": ["..."]\n'
+    '      "subtareas": ["..."],\n'
+    '      "tipo_accion": ["..."]\n'
     "    }\n"
     "  ]\n"
     "}\n"
@@ -77,8 +96,15 @@ def _normalize_actions(raw_actions: object) -> list[str]:
     for value in raw_actions:
         if isinstance(value, dict):
             description = str(value.get("descripcion", "") or "").strip()
+            raw_types = value.get("tipo_accion", [])
+            action_types: list[str] = []
+            if isinstance(raw_types, list):
+                action_types = [str(item).strip() for item in raw_types if str(item).strip()]
             if description:
-                actions.append(description)
+                if action_types:
+                    actions.append(f"{description} [Tipo: {', '.join(action_types)}]")
+                else:
+                    actions.append(description)
             subtasks = value.get("subtareas", [])
             if isinstance(subtasks, list):
                 for subtask in subtasks:
