@@ -160,12 +160,41 @@ class ActionsRepository:
         return int(cursor.lastrowid)
 
     def get_pending_actions(self) -> list[Action]:
-        rows = self.conn.execute("SELECT * FROM actions WHERE status = 'pendiente' ORDER BY id DESC").fetchall()
+        rows = self.conn.execute(
+            """
+            SELECT a.*, n.notion_page_id AS notion_page_id
+            FROM actions a
+            LEFT JOIN notes_local n ON n.id = a.note_id
+            WHERE a.status = 'pendiente'
+            ORDER BY a.id DESC
+            """
+        ).fetchall()
         return [self._to_action(r) for r in rows]
 
     def get_actions_by_area(self, area: str) -> list[Action]:
-        rows = self.conn.execute("SELECT * FROM actions WHERE area = ? ORDER BY id DESC", (area,)).fetchall()
+        rows = self.conn.execute(
+            """
+            SELECT a.*, n.notion_page_id AS notion_page_id
+            FROM actions a
+            LEFT JOIN notes_local n ON n.id = a.note_id
+            WHERE a.area = ?
+            ORDER BY a.id DESC
+            """,
+            (area,),
+        ).fetchall()
         return [self._to_action(r) for r in rows]
+
+    def get_action(self, action_id: int) -> Optional[Action]:
+        row = self.conn.execute(
+            """
+            SELECT a.*, n.notion_page_id AS notion_page_id
+            FROM actions a
+            LEFT JOIN notes_local n ON n.id = a.note_id
+            WHERE a.id = ?
+            """,
+            (action_id,),
+        ).fetchone()
+        return self._to_action(row) if row else None
 
     def mark_action_done(self, action_id: int) -> None:
         self.conn.execute(
@@ -179,7 +208,16 @@ class ActionsRepository:
         self.conn.commit()
 
     def get_actions_by_note(self, note_id: int) -> list[Action]:
-        rows = self.conn.execute("SELECT * FROM actions WHERE note_id = ? ORDER BY id DESC", (note_id,)).fetchall()
+        rows = self.conn.execute(
+            """
+            SELECT a.*, n.notion_page_id AS notion_page_id
+            FROM actions a
+            LEFT JOIN notes_local n ON n.id = a.note_id
+            WHERE a.note_id = ?
+            ORDER BY a.id DESC
+            """,
+            (note_id,),
+        ).fetchall()
         return [self._to_action(r) for r in rows]
 
     @staticmethod

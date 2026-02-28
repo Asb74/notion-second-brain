@@ -145,6 +145,28 @@ class NoteService:
     def mark_action_done(self, action_id: int) -> None:
         self.actions_repo.mark_action_done(action_id)
 
+        action = self.actions_repo.get_action(action_id)
+        if not action or not action.notion_page_id:
+            return
+
+        settings = self.get_settings()
+        if not settings.notion_token.strip():
+            logger.warning(
+                "No se sincronizó acción id=%s con Notion por falta de token",
+                action_id,
+            )
+            return
+
+        try:
+            client = NotionClient(settings.notion_token)
+            client.update_page_status(action.notion_page_id, "Finalizado")
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "No se pudo sincronizar estado en Notion para la acción id=%s (page_id=%s)",
+                action_id,
+                action.notion_page_id,
+            )
+
     def create_note(self, req: NoteCreateRequest) -> tuple[int | None, str]:
         normalized = normalize_text(req.raw_text, req.source)
         source_id = compute_source_id(normalized, req.source)

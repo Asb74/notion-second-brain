@@ -92,3 +92,4 @@ class Action:
     status: str
     created_at: str
     completed_at: Optional[str]
+    notion_page_id: Optional[str] = None

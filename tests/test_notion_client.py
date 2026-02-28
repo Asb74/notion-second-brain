@@ -82,5 +82,27 @@ class NotionClientCreatePageTests(unittest.TestCase):
         self.assertEqual(properties["Raw"]["rich_text"][0]["text"]["content"], "Hacer seguimiento con cliente")
 
 
+
+    @patch("requests.patch")
+    def test_update_page_status_uses_estado_property(self, mock_patch):
+        mock_patch.return_value = _DummyResponse(body={"id": "page_1"})
+
+        self.client.update_page_status("page_1", "Finalizado")
+
+        self.assertEqual(
+            mock_patch.call_args.args[0],
+            "https://api.notion.com/v1/pages/page_1",
+        )
+        self.assertEqual(
+            mock_patch.call_args.kwargs["json"],
+            {
+                "properties": {
+                    "Estado": {
+                        "select": {"name": "Finalizado"}
+                    }
+                }
+            },
+        )
+
 if __name__ == "__main__":
     unittest.main()
