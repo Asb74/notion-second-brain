@@ -12,35 +12,26 @@ from app.utils.openai_client import MODEL_NAME, build_openai_client
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (
-    "OBJETIVO: Extraer acciones explícitas e implícitas del texto.\n"
-    "Eres un asistente que analiza notas empresariales.\n"
-    "INSTRUCCIONES:\n"
-    "1. Detectar acciones directas.\n"
-    "2. Detectar peticiones formales indirectas.\n"
-    "3. Detectar obligaciones con fecha límite.\n"
-    "4. Detectar frases pasivas que impliquen responsabilidad.\n"
-    "5. Si el texto implica que el destinatario debe hacer algo, genera una acción clara y operativa.\n"
-    "IMPORTANTE: frases como 'para que nos', 'ha de ser', 'debe ser', 'es necesario', "
-    "'se solicita' y 'antes del' IMPLICAN ACCIÓN.\n"
-    "No omitas tareas implícitas.\n"
-    "REGLAS IMPORTANTES:\n"
-    "1. Cada acción debe ser independiente.\n"
-    "2. Una acción por línea.\n"
-    "3. No combinar varias acciones en una sola.\n"
-    "4. No resumir acciones.\n"
-    "5. No crear una acción general que englobe todas.\n"
-    "6. Reformular en formato operativo claro y accionable.\n"
-    "7. Elimina frases genéricas como 'Definir y ejecutar la acción requerida', "
-    "'Gestionar lo indicado' y 'Realizar lo necesario'.\n"
-    "8. Si hay múltiples verbos operativos, genera múltiples acciones separadas.\n"
-    "9. Si no hay acciones reales, devuelve lista vacía.\n"
-    "Devuelve SOLO JSON válido con:\n"
-    "- resumen (máx 4 líneas)\n"
-    "- acciones (array JSON real si existen, nunca string)\n"
-    "- tipo_sugerido (Nota, Decisión, Incidencia)\n"
-    "- prioridad_sugerida (Baja, Media, Alta)\n"
+    "OBJETIVO: Analizar el texto y determinar si las acciones deben ser simples o desglosadas.\n"
+    "REGLAS:\n"
+    "1. Si el texto contiene una única obligación clara, modo = simple.\n"
+    "2. Si contiene múltiples objetivos independientes, modo = desglosado.\n"
+    "3. Si no hay acciones, modo = ninguna.\n"
+    "4. Si no se puede determinar claramente, modo = ambiguo.\n"
+    "5. En modo simple, devolver una acción consolidada clara y operativa.\n"
+    "6. En modo desglosado, devolver acción principal con subtareas separadas.\n"
+    "7. No inventar complejidad si no existe.\n"
+    "FORMATO JSON:\n"
+    "{\n"
+    '  "modo": "simple" | "desglosado" | "ninguna" | "ambiguo",\n'
+    '  "acciones": [\n'
+    "    {\n"
+    '      "descripcion": "...",\n'
+    '      "subtareas": ["..."]\n'
+    "    }\n"
+    "  ]\n"
+    "}\n"
     "El campo 'acciones' debe ser un array JSON real, no un string.\n"
-    "Devuelve cada acción en un elemento separado del array.\n"
     "No añadas texto fuera del JSON."
 )
 
@@ -84,6 +75,17 @@ def _normalize_actions(raw_actions: object) -> list[str]:
 
     actions: list[str] = []
     for value in raw_actions:
+        if isinstance(value, dict):
+            description = str(value.get("descripcion", "") or "").strip()
+            if description:
+                actions.append(description)
+            subtasks = value.get("subtareas", [])
+            if isinstance(subtasks, list):
+                for subtask in subtasks:
+                    subtask_text = str(subtask or "").strip()
+                    if subtask_text:
+                        actions.append(subtask_text)
+            continue
         if not isinstance(value, str):
             continue
         chunks = [chunk.strip(" -•\t") for chunk in value.replace("\r", "\n").split("\n")]

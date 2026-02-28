@@ -6,13 +6,13 @@ from app.core.processor import SYSTEM_PROMPT, process_text
 
 
 class ProcessorTests(unittest.TestCase):
-    def test_system_prompt_includes_action_extraction_requirements(self):
-        self.assertIn("Extraer acciones explícitas e implícitas", SYSTEM_PROMPT)
-        self.assertIn("ha de ser", SYSTEM_PROMPT)
-        self.assertIn("No omitas tareas implícitas", SYSTEM_PROMPT)
-        self.assertIn("Cada acción debe ser independiente", SYSTEM_PROMPT)
-        self.assertIn("Definir y ejecutar la acción requerida", SYSTEM_PROMPT)
-        self.assertIn("Si no hay acciones reales, devuelve lista vacía", SYSTEM_PROMPT)
+    def test_system_prompt_includes_mode_analysis_requirements(self):
+        self.assertIn("determinar si las acciones deben ser simples o desglosadas", SYSTEM_PROMPT)
+        self.assertIn("modo = simple", SYSTEM_PROMPT)
+        self.assertIn("modo = desglosado", SYSTEM_PROMPT)
+        self.assertIn("modo = ninguna", SYSTEM_PROMPT)
+        self.assertIn("modo = ambiguo", SYSTEM_PROMPT)
+        self.assertIn("No inventar complejidad si no existe", SYSTEM_PROMPT)
 
     @patch("app.core.processor.build_openai_client")
     def test_acciones_stringified_list_is_normalized(self, mock_build_client):
@@ -69,6 +69,20 @@ class ProcessorTests(unittest.TestCase):
         processed = process_text("texto")
 
         self.assertEqual(processed.acciones, ["A1", "A2"])
+
+    @patch("app.core.processor.build_openai_client")
+    def test_acciones_object_with_subtasks_is_flattened(self, mock_build_client):
+        mock_build_client.return_value = SimpleNamespace(
+            responses=SimpleNamespace(
+                create=lambda **_: SimpleNamespace(
+                    output_text='{"acciones": [{"descripcion": "Acción principal", "subtareas": ["Paso 1", "Paso 2"]}]}'
+                )
+            )
+        )
+
+        processed = process_text("texto")
+
+        self.assertEqual(processed.acciones, ["Acción principal", "Paso 1", "Paso 2"])
 
 
 if __name__ == "__main__":
