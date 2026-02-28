@@ -77,7 +77,7 @@ def create_database(token: str, page_id: str) -> str:
             "Actividad": {"title": {}},
             "Area": {"select": {}},
             "Tipo": {"select": {}},
-            "Estado": {"select": {}},
+            "Estado": {"status": {}},
             "Prioridad": {"select": {}},
             "Fecha": {"date": {}},
             "Origen": {"select": {}},
