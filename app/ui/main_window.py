@@ -6,8 +6,8 @@ import queue
 import threading
 import tkinter as tk
 import webbrowser
-from datetime import datetime
 from tkinter import messagebox, ttk
+from tkcalendar import DateEntry
 
 from app.core.models import AppSettings, NoteCreateRequest
 from app.core.service import NoteService
@@ -27,6 +27,7 @@ class MainWindow(ttk.Frame):
 
         self._build_form()
         self._build_list()
+        self._load_master_values()
         self._refresh_database_button_state()
         self.refresh_notes()
         self.after(150, self._poll_queue)
@@ -40,7 +41,6 @@ class MainWindow(ttk.Frame):
         self.tipo_var = tk.StringVar()
         self.estado_var = tk.StringVar(value="Pendiente")
         self.prioridad_var = tk.StringVar(value="Media")
-        self.fecha_var = tk.StringVar(value=datetime.now().date().isoformat())
         self.title_var = tk.StringVar()
 
         ttk.Label(form, text="Título").grid(row=0, column=0, padx=4, pady=4)
@@ -52,20 +52,32 @@ class MainWindow(ttk.Frame):
         self.text_widget = tk.Text(form, height=10, width=100)
         self.text_widget.grid(row=1, column=0, columnspan=4, sticky="ew", padx=4, pady=4)
 
-        for i, (label, var) in enumerate(
-            [
-                ("Área", self.area_var),
-                ("Tipo", self.tipo_var),
-                ("Estado", self.estado_var),
-                ("Prioridad", self.prioridad_var),
-                ("Fecha", self.fecha_var),
-            ]
-        ):
-            ttk.Label(form, text=label).grid(row=2, column=i * 2, padx=4, pady=4, sticky="e")
-            ttk.Entry(form, textvariable=var, width=15).grid(row=2, column=i * 2 + 1, padx=4, pady=4)
+        ttk.Label(form, text="Área").grid(row=2, column=0, padx=4, pady=4, sticky="e")
+        self.area_combo = ttk.Combobox(form, textvariable=self.area_var, state="readonly", width=15)
+        self.area_combo.grid(row=2, column=1, padx=4, pady=4)
+
+        ttk.Label(form, text="Tipo").grid(row=2, column=2, padx=4, pady=4, sticky="e")
+        self.tipo_combo = ttk.Combobox(form, textvariable=self.tipo_var, state="readonly", width=15)
+        self.tipo_combo.grid(row=2, column=3, padx=4, pady=4)
+
+        ttk.Label(form, text="Estado").grid(row=2, column=4, padx=4, pady=4, sticky="e")
+        self.estado_combo = ttk.Combobox(form, textvariable=self.estado_var, state="readonly", width=15)
+        self.estado_combo.grid(row=2, column=5, padx=4, pady=4)
+
+        ttk.Label(form, text="Prioridad").grid(row=2, column=6, padx=4, pady=4, sticky="e")
+        self.prioridad_combo = ttk.Combobox(form, textvariable=self.prioridad_var, state="readonly", width=15)
+        self.prioridad_combo.grid(row=2, column=7, padx=4, pady=4)
+
+        ttk.Label(form, text="Fecha").grid(row=2, column=8, padx=4, pady=4, sticky="e")
+        self.date_entry = DateEntry(
+            form,
+            width=15,
+            date_pattern="yyyy-mm-dd",
+        )
+        self.date_entry.grid(row=2, column=9, padx=4, pady=4)
 
         actions = ttk.Frame(form)
-        actions.grid(row=3, column=0, columnspan=6, sticky="e", pady=6)
+        actions.grid(row=3, column=0, columnspan=10, sticky="e", pady=6)
         ttk.Button(actions, text="Configuración", command=self._open_settings).pack(side="left", padx=3)
         ttk.Button(actions, text="Guardar", command=self._save_note).pack(side="left", padx=3)
         ttk.Button(actions, text="Enviar", command=self._sync).pack(side="left", padx=3)
@@ -89,6 +101,30 @@ class MainWindow(ttk.Frame):
         self.tree.pack(fill="both", expand=True)
 
         ttk.Label(self, textvariable=self.status_var, anchor="w").pack(fill="x", pady=(2, 0))
+
+    def _load_master_values(self) -> None:
+        area_values = self.service.get_master_values("Area")
+        tipo_values = self.service.get_master_values("Tipo")
+        estado_values = self.service.get_master_values("Estado")
+        prioridad_values = self.service.get_master_values("Prioridad")
+
+        self.area_combo.configure(values=area_values)
+        self.tipo_combo.configure(values=tipo_values)
+        self.estado_combo.configure(values=estado_values)
+        self.prioridad_combo.configure(values=prioridad_values)
+
+        if area_values:
+            self.area_var.set(area_values[0])
+        if tipo_values:
+            self.tipo_var.set(tipo_values[0])
+        if "Pendiente" in estado_values:
+            self.estado_var.set("Pendiente")
+        elif estado_values:
+            self.estado_var.set(estado_values[0])
+        if "Media" in prioridad_values:
+            self.prioridad_var.set("Media")
+        elif prioridad_values:
+            self.prioridad_var.set(prioridad_values[0])
 
     def _open_settings(self) -> None:
         current = self.service.get_settings()
@@ -124,7 +160,7 @@ class MainWindow(ttk.Frame):
             tipo=self.tipo_var.get().strip() or "Nota",
             estado=self.estado_var.get().strip() or "Pendiente",
             prioridad=self.prioridad_var.get().strip() or "Media",
-            fecha=self.fecha_var.get().strip() or datetime.now().date().isoformat(),
+            fecha=self.date_entry.get_date().isoformat(),
         )
         note_id, msg = self.service.create_note(req)
         if note_id is None:

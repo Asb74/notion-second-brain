@@ -6,6 +6,7 @@ from app.core.models import NoteCreateRequest
 from app.core.normalizer import normalize_text
 from app.core.service import NoteService
 from app.persistence.db import Database
+from app.persistence.masters_repository import MastersRepository
 from app.persistence.repositories import NoteRepository, SettingsRepository
 
 
@@ -32,7 +33,11 @@ class DedupTests(unittest.TestCase):
         self.db = Database(DatabasePathHelper.path())
         self.db.migrate()
         self.conn = self.db.connect()
-        self.service = NoteService(NoteRepository(self.conn), SettingsRepository(self.conn))
+        self.service = NoteService(
+            NoteRepository(self.conn),
+            SettingsRepository(self.conn),
+            MastersRepository(self.conn),
+        )
 
     def tearDown(self):
         self.conn.close()
@@ -53,7 +58,7 @@ class DedupTests(unittest.TestCase):
 
         note_id_2, msg = self.service.create_note(req)
         self.assertIsNone(note_id_2)
-        self.assertIn("Duplicado", msg)
+        self.assertIn("duplicada", msg.lower())
 
 
 class DatabasePathHelper:

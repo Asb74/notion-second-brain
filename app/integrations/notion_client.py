@@ -60,7 +60,7 @@ class NotionClient:
             settings.prop_title: "title",
             settings.prop_area: "select",
             settings.prop_tipo: "select",
-            settings.prop_estado: "status",
+            settings.prop_estado: "select",
             settings.prop_fecha: "date",
             settings.prop_prioridad: "select",
         }
@@ -97,7 +97,7 @@ class NotionClient:
                 },
                 settings.prop_area: {"select": {"name": note.area}},
                 settings.prop_tipo: {"select": {"name": note.tipo}},
-                settings.prop_estado: {"status": {"name": note.estado}},
+                settings.prop_estado: {"select": {"name": note.estado}},
                 settings.prop_fecha: {"date": {"start": note.fecha}},
                 settings.prop_prioridad: {
                     "select": {"name": note.prioridad}

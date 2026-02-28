@@ -56,6 +56,28 @@ class Database:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS masters (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    field_name TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    is_active INTEGER NOT NULL DEFAULT 1
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_masters_field_name_active
+                ON masters(field_name, is_active)
+                """
+            )
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_masters_field_value
+                ON masters(field_name, value)
+                """
+            )
             conn.commit()
 
     def get_setting(self, key: str) -> str | None:
