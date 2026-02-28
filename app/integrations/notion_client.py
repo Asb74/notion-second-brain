@@ -89,6 +89,65 @@ class NotionClient:
     ) -> str:
         import requests
 
+        children = []
+        if note.resumen.strip():
+            children.append(
+                {
+                    "object": "block",
+                    "type": "heading_3",
+                    "heading_3": {"rich_text": [{"type": "text", "text": {"content": "Resumen"}}]},
+                }
+            )
+            children.append(
+                {
+                    "object": "block",
+                    "type": "paragraph",
+                    "paragraph": {
+                        "rich_text": [{"type": "text", "text": {"content": note.resumen[:1900]}}]
+                    },
+                }
+            )
+
+        if note.acciones.strip():
+            children.append(
+                {
+                    "object": "block",
+                    "type": "heading_3",
+                    "heading_3": {"rich_text": [{"type": "text", "text": {"content": "Acciones"}}]},
+                }
+            )
+            children.append(
+                {
+                    "object": "block",
+                    "type": "paragraph",
+                    "paragraph": {
+                        "rich_text": [{"type": "text", "text": {"content": note.acciones[:1900]}}]
+                    },
+                }
+            )
+
+        children.append(
+            {
+                "object": "block",
+                "type": "heading_3",
+                "heading_3": {"rich_text": [{"type": "text", "text": {"content": "Texto original"}}]},
+            }
+        )
+        children.append(
+            {
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {
+                    "rich_text": [
+                        {
+                            "type": "text",
+                            "text": {"content": note.raw_text[:1900]},
+                        }
+                    ]
+                },
+            }
+        )
+
         payload: dict[str, Any] = {
             "parent": {"database_id": database_id},
             "properties": {
@@ -103,20 +162,7 @@ class NotionClient:
                     "select": {"name": note.prioridad}
                 },
             },
-            "children": [
-                {
-                    "object": "block",
-                    "type": "paragraph",
-                    "paragraph": {
-                        "rich_text": [
-                            {
-                                "type": "text",
-                                "text": {"content": note.raw_text[:1900]},
-                            }
-                        ]
-                    },
-                }
-            ],
+            "children": children,
         }
 
         try:
