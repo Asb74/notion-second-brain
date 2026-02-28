@@ -146,7 +146,7 @@ class DedupTests(unittest.TestCase):
     def test_create_note_keeps_manual_tipo_prioridad(self, mock_process_text):
         mock_process_text.return_value = ProcessedNote(
             resumen="Resumen AI",
-            acciones="",
+            acciones=[],
             tipo_sugerido="Incidencia",
             prioridad_sugerida="Alta",
         )
