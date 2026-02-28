@@ -54,19 +54,18 @@ class ProcessorTests(unittest.TestCase):
         self.assertEqual(processed.acciones, ["42"])
 
     @patch("app.core.processor.build_openai_client")
-    def test_fallback_action_is_created_when_trigger_exists(self, mock_build_client):
+    def test_acciones_multiline_are_split_as_individual_actions(self, mock_build_client):
         mock_build_client.return_value = SimpleNamespace(
             responses=SimpleNamespace(
                 create=lambda **_: SimpleNamespace(
-                    output_text='{"resumen": "R", "acciones": []}'
+                    output_text='{"resumen": "R", "acciones": ["- A1\\n- A2"]}'
                 )
             )
         )
 
-        processed = process_text("Se solicita enviar informe antes del 15/03.")
+        processed = process_text("texto")
 
-        self.assertEqual(len(processed.acciones), 1)
-        self.assertIn("Definir y ejecutar la acción requerida", processed.acciones[0])
+        self.assertEqual(processed.acciones, ["A1", "A2"])
 
 
 if __name__ == "__main__":

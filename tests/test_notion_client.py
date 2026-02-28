@@ -78,8 +78,9 @@ class NotionClientCreatePageTests(unittest.TestCase):
         self.assertEqual(properties[self.settings.prop_area]["select"]["name"], note.area)
         self.assertEqual(properties[self.settings.prop_fecha]["date"]["start"], note.fecha)
         self.assertEqual(properties["Origen"]["select"]["name"], "Sistema")
-        self.assertEqual(properties["Fuente_ID"]["rich_text"][0]["text"]["content"], str(note.id))
+        self.assertEqual(properties["Fuente_ID"]["rich_text"][0]["text"]["content"], str(note.source_id))
         self.assertEqual(properties["Raw"]["rich_text"][0]["text"]["content"], "Hacer seguimiento con cliente")
+        self.assertEqual(properties[self.settings.prop_prioridad]["select"]["name"], note.prioridad)
 
 
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 import ast
 import json
 import logging
-import re
 from dataclasses import dataclass
 
 from app.utils.openai_client import MODEL_NAME, build_openai_client
@@ -27,6 +26,7 @@ SYSTEM_PROMPT = (
     "- tipo_sugerido (Nota, Decisión, Incidencia)\n"
     "- prioridad_sugerida (Baja, Media, Alta)\n"
     "El campo 'acciones' debe ser un array JSON real, no un string.\n"
+    "Devuelve cada acción en un elemento separado del array; nunca combines varias en una sola línea.\n"
     "No añadas texto fuera del JSON."
 )
 
@@ -55,27 +55,27 @@ def _extract_json_object(content: str) -> dict:
         return json.loads(content[start : end + 1])
 
 
-ACTION_TRIGGER_PATTERNS = [
-    r"\bha de ser\b",
-    r"\bdebe\b",
-    r"\bpara que\b",
-    r"\bse solicita\b",
-    r"\bes necesario\b",
-    r"\bantes del\b",
-    r"\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b",
-    r"\b\d{4}-\d{2}-\d{2}\b",
-]
+def _normalize_actions(raw_actions: object) -> list[str]:
+    if isinstance(raw_actions, str):
+        try:
+            raw_actions = ast.literal_eval(raw_actions)
+        except Exception:  # noqa: BLE001
+            raw_actions = [raw_actions]
 
+    if raw_actions is None:
+        return []
 
-def _requires_action(text: str) -> bool:
-    lower_text = text.lower()
-    return any(re.search(pattern, lower_text) for pattern in ACTION_TRIGGER_PATTERNS)
+    if not isinstance(raw_actions, list):
+        raw_actions = [str(raw_actions)]
 
+    actions: list[str] = []
+    for value in raw_actions:
+        if not isinstance(value, str):
+            continue
+        chunks = [chunk.strip(" -•\t") for chunk in value.replace("\r", "\n").split("\n")]
+        actions.extend(chunk for chunk in chunks if chunk)
 
-def _build_fallback_action(text: str) -> str:
-    compact_text = " ".join(text.split())
-    snippet = compact_text[:160].rstrip(" ,.;:")
-    return f"Definir y ejecutar la acción requerida según lo indicado: {snippet}."
+    return actions
 
 
 def process_text(text: str) -> ProcessedNote:
@@ -97,23 +97,7 @@ def process_text(text: str) -> ProcessedNote:
         logger.exception("No se pudo procesar texto con OpenAI: %s", exc)
         return _empty_processed_note()
 
-    acciones = payload.get("acciones", [])
-    if isinstance(acciones, str):
-        try:
-            acciones = ast.literal_eval(acciones)
-        except Exception:  # noqa: BLE001
-            acciones = [acciones]
-
-    if acciones is None:
-        acciones = []
-
-    if not isinstance(acciones, list):
-        acciones = [str(acciones)]
-
-    acciones = [a.strip() for a in acciones if isinstance(a, str) and a.strip()]
-
-    if not acciones and _requires_action(text):
-        acciones = [_build_fallback_action(text)]
+    acciones = _normalize_actions(payload.get("acciones", []))
 
     return ProcessedNote(
         resumen=str(payload.get("resumen", "") or "").strip(),

@@ -74,10 +74,12 @@ class Database:
                     area TEXT NOT NULL,
                     status TEXT NOT NULL DEFAULT 'pendiente',
                     created_at TEXT NOT NULL,
-                    completed_at TEXT
+                    completed_at TEXT,
+                    notion_page_id TEXT
                 )
                 """
             )
+            self._ensure_column(conn, "actions", "notion_page_id", "TEXT")
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_actions_status_area

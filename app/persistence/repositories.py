@@ -162,9 +162,8 @@ class ActionsRepository:
     def get_pending_actions(self) -> list[Action]:
         rows = self.conn.execute(
             """
-            SELECT a.*, n.notion_page_id AS notion_page_id
+            SELECT a.*
             FROM actions a
-            LEFT JOIN notes_local n ON n.id = a.note_id
             WHERE a.status = 'pendiente'
             ORDER BY a.id DESC
             """
@@ -174,9 +173,8 @@ class ActionsRepository:
     def get_actions_by_area(self, area: str) -> list[Action]:
         rows = self.conn.execute(
             """
-            SELECT a.*, n.notion_page_id AS notion_page_id
+            SELECT a.*
             FROM actions a
-            LEFT JOIN notes_local n ON n.id = a.note_id
             WHERE a.area = ?
             ORDER BY a.id DESC
             """,
@@ -187,9 +185,8 @@ class ActionsRepository:
     def get_action(self, action_id: int) -> Optional[Action]:
         row = self.conn.execute(
             """
-            SELECT a.*, n.notion_page_id AS notion_page_id
+            SELECT a.*
             FROM actions a
-            LEFT JOIN notes_local n ON n.id = a.note_id
             WHERE a.id = ?
             """,
             (action_id,),
@@ -207,12 +204,30 @@ class ActionsRepository:
         )
         self.conn.commit()
 
+
+    def set_notion_page_id(self, action_id: int, notion_page_id: str) -> None:
+        self.conn.execute(
+            """
+            UPDATE actions
+            SET notion_page_id = ?
+            WHERE id = ?
+            """,
+            (notion_page_id, action_id),
+        )
+        self.conn.commit()
+
+    def pending_count_by_note(self, note_id: int) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(1) AS cnt FROM actions WHERE note_id = ? AND status != 'hecha'",
+            (note_id,),
+        ).fetchone()
+        return int(row["cnt"]) if row else 0
+
     def get_actions_by_note(self, note_id: int) -> list[Action]:
         rows = self.conn.execute(
             """
-            SELECT a.*, n.notion_page_id AS notion_page_id
+            SELECT a.*
             FROM actions a
-            LEFT JOIN notes_local n ON n.id = a.note_id
             WHERE a.note_id = ?
             ORDER BY a.id DESC
             """,

@@ -146,7 +146,11 @@ class NoteService:
         self.actions_repo.mark_action_done(action_id)
 
         action = self.actions_repo.get_action(action_id)
-        if not action or not action.notion_page_id:
+        if not action:
+            return
+
+        note = self.note_repo.get_note(action.note_id)
+        if not note:
             return
 
         settings = self.get_settings()
@@ -159,10 +163,26 @@ class NoteService:
 
         try:
             client = NotionClient(settings.notion_token)
-            client.update_page_status(action.notion_page_id, "Finalizado")
+            if action.notion_page_id:
+                client.update_page_status(action.notion_page_id, "Finalizado", settings.prop_estado)
+
+            if (
+                note.notion_page_id
+                and note.source_id.strip()
+                and settings.notion_database_id.strip()
+                and client.count_open_tasks_by_fuente_id(
+                    settings.notion_database_id,
+                    note.source_id,
+                    settings.prop_tipo,
+                    settings.prop_estado,
+                    "Finalizado",
+                )
+                == 0
+            ):
+                client.update_page_status(note.notion_page_id, "Finalizado", settings.prop_estado)
         except Exception:  # noqa: BLE001
             logger.exception(
-                "No se pudo sincronizar estado en Notion para la acción id=%s (page_id=%s)",
+                "No se pudo sincronizar estado en Notion para la acción id=%s (task_page=%s)",
                 action_id,
                 action.notion_page_id,
             )
@@ -187,12 +207,16 @@ class NoteService:
         else:
             acciones_text = str(processed.acciones or "").strip()
 
+        final_estado = req.estado
+        if not acciones_text.strip():
+            final_estado = "Finalizado"
+
         final_req = NoteCreateRequest(
             raw_text=req.raw_text,
             source=req.source,
             area=req.area,
             tipo=final_tipo,
-            estado=req.estado,
+            estado=final_estado,
             prioridad=final_prioridad,
             fecha=req.fecha,
             title=title,
@@ -271,9 +295,17 @@ class NoteService:
                 )
 
                 if note.acciones.strip():
+                    local_actions = [a for a in self.actions_repo.get_actions_by_note(note.id) if a.status == "pendiente"]
+                    action_id_by_description: dict[str, list[int]] = {}
+                    for local_action in sorted(local_actions, key=lambda item: item.id):
+                        action_id_by_description.setdefault(local_action.description.strip(), []).append(local_action.id)
+
                     for action in [line.strip() for line in note.acciones.splitlines() if line.strip()]:
                         try:
-                            client.create_task_from_action(settings, action, note)
+                            task_page_id = client.create_task_from_action(settings, action, note)
+                            candidates = action_id_by_description.get(action, [])
+                            if candidates:
+                                self.actions_repo.set_notion_page_id(candidates.pop(0), task_page_id)
                         except Exception:  # noqa: BLE001
                             logger.exception("Error creating action task for note id=%s", note.id)
 
