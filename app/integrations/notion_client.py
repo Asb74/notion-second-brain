@@ -166,6 +166,31 @@ class NotionClient:
         if resp.status_code >= 400:
             raise NotionError(f"Error actualizando esquema de Notion: {resp.text}")
 
+
+    def update_page_status(self, page_id: str, new_status: str) -> None:
+        import requests
+
+        payload = {
+            "properties": {
+                "Estado": {
+                    "select": {"name": new_status}
+                }
+            }
+        }
+
+        try:
+            resp = requests.patch(
+                f"https://api.notion.com/v1/pages/{page_id}",
+                headers=self._headers,
+                json=payload,
+                timeout=20,
+            )
+        except requests.RequestException as exc:
+            raise NotionError(f"Error de red actualizando estado de página en Notion: {exc}") from None
+
+        if resp.status_code >= 400:
+            raise NotionError(f"Error actualizando estado de página en Notion: {resp.text}")
+
     def create_page(
         self,
         database_id: str,
