@@ -57,7 +57,7 @@ class SyncPendingTaskCreationTests(unittest.TestCase):
     def tearDown(self):
         self.conn.close()
 
-    def _create_note(self, acciones: str) -> int:
+    def _create_note(self) -> int:
         return self.service.note_repo.create_note(
             NoteCreateRequest(
                 title="Nota",
@@ -69,16 +69,18 @@ class SyncPendingTaskCreationTests(unittest.TestCase):
                 prioridad="Media",
                 fecha="2025-01-01",
                 resumen="",
-                acciones=acciones,
+                acciones="",
             ),
-            source_id=f"src-{acciones}",
+            source_id="src-sync",
             created_at=AppSettings.now_iso(),
             status=NoteStatus.PENDING,
         )
 
     @patch("app.core.service.NotionClient", _FakeNotionClient)
     def test_sync_pending_creates_task_per_action(self):
-        note_id = self._create_note("Acción 1\n\nAcción 2\n")
+        note_id = self._create_note()
+        self.service.actions_repo.create_action(note_id, "Acción 1", "Operaciones")
+        self.service.actions_repo.create_action(note_id, "Acción 2", "Operaciones")
 
         sent, failed = self.service.sync_pending()
 
@@ -89,7 +91,8 @@ class SyncPendingTaskCreationTests(unittest.TestCase):
 
     @patch("app.core.service.NotionClient", _FakeNotionClientWithTaskError)
     def test_sync_pending_does_not_fail_when_task_creation_fails(self):
-        note_id = self._create_note("Acción 1")
+        note_id = self._create_note()
+        self.service.actions_repo.create_action(note_id, "Acción 1", "Operaciones")
 
         sent, failed = self.service.sync_pending()
 
