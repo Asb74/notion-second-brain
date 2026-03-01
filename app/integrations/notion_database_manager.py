@@ -19,7 +19,7 @@ EXPECTED_SCHEMA: dict[str, str] = {
     "Origen": "select",
     "Fuente_ID": "rich_text",
     "Resumen": "rich_text",
-    "Acciones": "rich_text",
+    #"Acciones": "rich_text",
     "Raw": "rich_text",
 }
 
@@ -83,7 +83,7 @@ def create_database(token: str, page_id: str) -> str:
             "Origen": {"select": {}},
             "Fuente_ID": {"rich_text": {}},
             "Resumen": {"rich_text": {}},
-            "Acciones": {"rich_text": {}},
+            #"Acciones": {"rich_text": {}},
             "Raw": {"rich_text": {}},
         },
     }
