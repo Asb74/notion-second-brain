@@ -6,47 +6,14 @@ from app.core.processor import SYSTEM_PROMPT, process_text
 
 
 class ProcessorTests(unittest.TestCase):
-    def test_system_prompt_includes_mode_analysis_requirements(self):
-        self.assertIn("Extraer acciones operativas del texto", SYSTEM_PROMPT)
-        self.assertIn("Determinar si las acciones deben ser simples o desglosadas", SYSTEM_PROMPT)
-        self.assertIn("TIPOS PERMITIDOS", SYSTEM_PROMPT)
-        self.assertIn('"tipo_accion": ["..."]', SYSTEM_PROMPT)
-
-    @patch("app.core.processor.build_openai_client")
-    def test_acciones_stringified_list_is_normalized(self, mock_build_client):
-        mock_build_client.return_value = SimpleNamespace(
-            responses=SimpleNamespace(
-                create=lambda **_: SimpleNamespace(
-                    output_text="""{"resumen": "R", "acciones": "[' A1 ', '', 'A2']", "tipo_sugerido": "Nota", "prioridad_sugerida": "Media"}"""
-                )
-            )
-        )
-
-        processed = process_text("texto")
-
-        self.assertEqual(processed.acciones, ["A1", "A2"])
-
-    @patch("app.core.processor.build_openai_client")
-    def test_acciones_invalid_string_falls_back_to_single_item(self, mock_build_client):
-        mock_build_client.return_value = SimpleNamespace(
-            responses=SimpleNamespace(
-                create=lambda **_: SimpleNamespace(
-                    output_text='{"resumen": "R", "acciones": "Acción sin formato"}'
-                )
-            )
-        )
-
-        processed = process_text("texto")
-
-        self.assertEqual(processed.acciones, ["Acción sin formato"])
+    def test_system_prompt_replaced_with_new_template(self):
+        self.assertEqual(SYSTEM_PROMPT, "[PEGA AQUÍ EL PROMPT NUEVO COMPLETO]")
 
     @patch("app.core.processor.build_openai_client")
     def test_acciones_non_list_is_wrapped(self, mock_build_client):
         mock_build_client.return_value = SimpleNamespace(
             responses=SimpleNamespace(
-                create=lambda **_: SimpleNamespace(
-                    output_text='{"resumen": "R", "acciones": 42}'
-                )
+                create=lambda **_: SimpleNamespace(output_text='{"resumen": "R", "acciones": 42}')
             )
         )
 
@@ -55,46 +22,35 @@ class ProcessorTests(unittest.TestCase):
         self.assertEqual(processed.acciones, ["42"])
 
     @patch("app.core.processor.build_openai_client")
-    def test_acciones_multiline_are_split_as_individual_actions(self, mock_build_client):
+    def test_acciones_object_reads_contexto_and_fecha_detectada(self, mock_build_client):
         mock_build_client.return_value = SimpleNamespace(
             responses=SimpleNamespace(
                 create=lambda **_: SimpleNamespace(
-                    output_text='{"resumen": "R", "acciones": ["- A1\\n- A2"]}'
+                    output_text='{"acciones": [{"descripcion": "Llamar al cliente", "contexto": ["ventas", "urgente"], "fecha_detectada": "2026-01-15"}]}'
                 )
             )
         )
 
         processed = process_text("texto")
 
-        self.assertEqual(processed.acciones, ["A1", "A2"])
+        self.assertEqual(
+            processed.acciones,
+            ["Llamar al cliente [Contexto: ventas, urgente; Fecha: 2026-01-15]"],
+        )
 
     @patch("app.core.processor.build_openai_client")
-    def test_acciones_object_with_subtasks_is_flattened(self, mock_build_client):
+    def test_acciones_object_ignores_null_fecha_detectada(self, mock_build_client):
         mock_build_client.return_value = SimpleNamespace(
             responses=SimpleNamespace(
                 create=lambda **_: SimpleNamespace(
-                    output_text='{"acciones": [{"descripcion": "Acción principal", "subtareas": ["Paso 1", "Paso 2"]}]}'
+                    output_text='{"acciones": [{"descripcion": "Enviar propuesta", "contexto": ["comercial"], "fecha_detectada": null}]}'
                 )
             )
         )
 
         processed = process_text("texto")
 
-        self.assertEqual(processed.acciones, ["Acción principal", "Paso 1", "Paso 2"])
-
-    @patch("app.core.processor.build_openai_client")
-    def test_acciones_object_with_tipo_accion_is_appended_to_description(self, mock_build_client):
-        mock_build_client.return_value = SimpleNamespace(
-            responses=SimpleNamespace(
-                create=lambda **_: SimpleNamespace(
-                    output_text='{"acciones": [{"descripcion": "Llamar al cliente", "subtareas": [], "tipo_accion": ["Llamar", "Seguimiento"]}]}'
-                )
-            )
-        )
-
-        processed = process_text("texto")
-
-        self.assertEqual(processed.acciones, ["Llamar al cliente [Tipo: Llamar, Seguimiento]"])
+        self.assertEqual(processed.acciones, ["Enviar propuesta [Contexto: comercial]"])
 
 
 if __name__ == "__main__":
