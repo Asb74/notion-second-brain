@@ -13,6 +13,7 @@ from tkcalendar import DateEntry
 
 from app.core.models import AppSettings, NoteCreateRequest
 from app.core.service import NoteService
+from app.ui.excel_filter import ExcelLikeTreeFilter
 from app.ui.masters_dialog import MastersDialog
 from app.ui.settings_dialog import SettingsDialog
 
@@ -30,8 +31,6 @@ class MainWindow(ttk.Frame):
         self.status_var = tk.StringVar(value="Listo")
         self.pack(fill="both", expand=True)
         self.actions_data: list[tuple[int, str, str, str, int]] = []
-        self.filtered_actions_data: list[tuple[int, str, str, str, int]] = []
-        self.action_sort_state: dict[str, bool] = {}
         self.action_columns = ("id", "area", "description", "status", "note_id")
         self.action_column_titles = {
             "id": "ID",
@@ -157,38 +156,31 @@ class MainWindow(ttk.Frame):
         ttk.Button(toolbar, text="Marcar como hecha", command=self._mark_selected_action_done).pack(side="left", padx=6)
         ttk.Button(toolbar, text="Refrescar", command=self.refresh_actions).pack(side="left", padx=6)
 
-        filters_frame = ttk.Frame(actions_frame)
-        filters_frame.pack(fill="x", padx=4, pady=(0, 4))
-
-        self.action_filter_vars: dict[str, tk.StringVar] = {}
-        self.action_filter_entries: dict[str, ttk.Entry] = {}
-
-        for index, column in enumerate(self.action_columns):
-            filters_frame.columnconfigure(index, weight=1)
-            filter_var = tk.StringVar()
-            self.action_filter_vars[column] = filter_var
-            entry = ttk.Entry(filters_frame, textvariable=filter_var)
-            entry.grid(row=0, column=index, padx=2, sticky="ew")
-            entry.bind("<Return>", lambda _event: self.apply_filters())
-            self.action_filter_entries[column] = entry
-
-        filter_buttons = ttk.Frame(filters_frame)
-        filter_buttons.grid(row=0, column=len(self.action_columns), padx=(8, 0), sticky="e")
-        ttk.Button(filter_buttons, text="Filtrar", command=self.apply_filters).pack(side="left", padx=2)
-        ttk.Button(filter_buttons, text="Limpiar filtros", command=self.clear_filters).pack(side="left", padx=2)
-
         self.actions_tree = ttk.Treeview(actions_frame, columns=self.action_columns, show="headings", height=12)
-        self.actions_tree.heading("id", text="ID", command=lambda: self._on_action_column_click("id"))
-        self.actions_tree.heading("area", text="Área", command=lambda: self._on_action_column_click("area"))
-        self.actions_tree.heading("description", text="Descripción", command=lambda: self._on_action_column_click("description"))
-        self.actions_tree.heading("status", text="Estado", command=lambda: self._on_action_column_click("status"))
-        self.actions_tree.heading("note_id", text="Nota asociada", command=lambda: self._on_action_column_click("note_id"))
+        self.actions_tree.heading("id", text="ID")
+        self.actions_tree.heading("area", text="Área")
+        self.actions_tree.heading("description", text="Descripción")
+        self.actions_tree.heading("status", text="Estado")
+        self.actions_tree.heading("note_id", text="Nota asociada")
         self.actions_tree.column("id", width=50)
         self.actions_tree.column("area", width=140)
         self.actions_tree.column("description", width=420)
         self.actions_tree.column("status", width=100)
         self.actions_tree.column("note_id", width=130)
         self.actions_tree.pack(fill="both", expand=True, padx=4, pady=4)
+
+        self.actions_excel_filter = ExcelLikeTreeFilter(
+            parent=self,
+            tree=self.actions_tree,
+            columns=self.action_columns,
+            column_titles=self.action_column_titles,
+            get_data=lambda: self.actions_data,
+            row_to_display=self._action_row_to_display,
+            on_filtered=self._refresh_actions_tree,
+            enable_sort=True,
+        )
+
+        ttk.Button(toolbar, text="Limpiar filtros", command=self.actions_excel_filter.clear_all_filters).pack(side="left", padx=6)
 
         ttk.Label(self, textvariable=self.status_var, anchor="w").pack(fill="x", pady=(2, 0))
 
@@ -327,11 +319,23 @@ class MainWindow(ttk.Frame):
     def refresh_actions(self) -> None:
         try:
             actions = self.service.list_pending_actions()
-            self.actions_data = [(action.id, action.area, action.description, action.status, action.note_id) for action in actions]
-            self.apply_filters()
+            self.actions_data = [
+                (action.id, action.area, action.description, action.status, action.note_id)
+                for action in actions
+            ]
+            self.actions_excel_filter.apply()
         except Exception:  # noqa: BLE001
             logger.exception("No se pudieron cargar acciones")
             self.status_var.set("Error al cargar acciones")
+
+    def _action_row_to_display(self, row: tuple[int, str, str, str, int]) -> dict[str, str]:
+        return {
+            "id": str(row[0]),
+            "area": row[1] or "",
+            "description": row[2] or "",
+            "status": row[3] or "",
+            "note_id": str(row[4]) if row[4] is not None else "",
+        }
 
     def _refresh_actions_tree(self, rows: list[tuple[int, str, str, str, int]]) -> None:
         for row in self.actions_tree.get_children():
@@ -339,61 +343,6 @@ class MainWindow(ttk.Frame):
 
         for action in rows:
             self.actions_tree.insert("", "end", iid=f"a{action[0]}", values=action)
-
-    def apply_filters(self) -> None:
-        filtered_rows = self.actions_data
-        for col_index, col_name in enumerate(self.action_columns):
-            filter_text = self.action_filter_vars[col_name].get().strip().lower()
-            if filter_text:
-                filtered_rows = [
-                    row for row in filtered_rows if filter_text in str(row[col_index]).lower()
-                ]
-
-        self.filtered_actions_data = list(filtered_rows)
-
-        if self.action_sort_state:
-            sorted_col = next(iter(self.action_sort_state))
-            self.sort_column(sorted_col, self.action_sort_state[sorted_col], refresh_only=True)
-            return
-
-        self._refresh_actions_tree(self.filtered_actions_data)
-
-    def clear_filters(self) -> None:
-        for filter_var in self.action_filter_vars.values():
-            filter_var.set("")
-        self.apply_filters()
-
-    def _on_action_column_click(self, col: str) -> None:
-        if col in self.action_sort_state:
-            reverse = not self.action_sort_state[col]
-        else:
-            reverse = False
-        self.sort_column(col, reverse)
-
-    def sort_column(self, col: str, reverse: bool, refresh_only: bool = False) -> None:
-        col_index = self.action_columns.index(col)
-        sorted_rows = sorted(
-            self.filtered_actions_data,
-            key=lambda row: (str(row[col_index]).lower() if isinstance(row[col_index], str) else row[col_index]),
-            reverse=reverse,
-        )
-        self.filtered_actions_data = sorted_rows
-        self._refresh_actions_tree(self.filtered_actions_data)
-
-        if refresh_only:
-            self._update_action_headers()
-            return
-
-        self.action_sort_state = {col: reverse}
-        self._update_action_headers()
-
-    def _update_action_headers(self) -> None:
-        for column in self.action_columns:
-            title = self.action_column_titles[column]
-            if column in self.action_sort_state:
-                arrow = "⬇️" if self.action_sort_state[column] else "⬆️"
-                title = f"{title} {arrow}"
-            self.actions_tree.heading(column, text=title, command=lambda c=column: self._on_action_column_click(c))
 
     def _mark_selected_action_done(self) -> None:
         selection = self.actions_tree.selection()
