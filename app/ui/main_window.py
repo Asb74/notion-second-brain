@@ -30,6 +30,17 @@ class MainWindow(ttk.Frame):
         self.msg_queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self.status_var = tk.StringVar(value="Listo")
         self.pack(fill="both", expand=True)
+        self.notes_data: list[tuple[int, str, str, str, str]] = []
+        self.filtered_notes_data: list[tuple[int, str, str, str, str]] = []
+        self._entry_filtered_notes_data: list[tuple[int, str, str, str, str]] = []
+        self.note_columns = ("id", "title", "status", "error", "notion_page_id")
+        self.note_column_titles = {
+            "id": "ID",
+            "title": "Título",
+            "status": "Estado",
+            "error": "Error",
+            "notion_page_id": "Notion ID",
+        }
         self.actions_data: list[tuple[int, str, str, str, int]] = []
         self.filtered_actions_data: list[tuple[int, str, str, str, int]] = []
         self.action_columns = ("id", "area", "description", "status", "note_id")
@@ -141,9 +152,8 @@ class MainWindow(ttk.Frame):
         sections.add(notes_frame, text="Notas")
         sections.add(actions_frame, text="Acciones")
 
-        columns = ("id", "title", "status", "error", "notion_page_id")
-        self.tree = ttk.Treeview(notes_frame, columns=columns, show="headings", height=12)
-        for c in columns:
+        self.tree = ttk.Treeview(notes_frame, columns=self.note_columns, show="headings", height=12)
+        for c in self.note_columns:
             self.tree.heading(c, text=c)
         self.tree.column("id", width=40)
         self.tree.column("title", width=260)
@@ -151,6 +161,17 @@ class MainWindow(ttk.Frame):
         self.tree.column("error", width=260)
         self.tree.column("notion_page_id", width=220)
         self.tree.pack(fill="both", expand=True)
+
+        self.notes_excel_filter = ExcelTreeFilter(
+            master=self,
+            tree=self.tree,
+            columns=self.note_columns,
+            column_titles=self.note_column_titles,
+            get_rows=lambda: self._entry_filtered_notes_data,
+            set_rows=self._set_notes_filtered_rows,
+        )
+
+        ttk.Button(notes_frame, text="Limpiar filtros", command=self.notes_excel_filter.clear_all_filters).pack(anchor="e", padx=6, pady=4)
 
         toolbar = ttk.Frame(actions_frame)
         toolbar.pack(fill="x", padx=4, pady=4)
@@ -311,10 +332,31 @@ class MainWindow(ttk.Frame):
             self.create_db_button.config(state="normal")
 
     def refresh_notes(self) -> None:
+        try:
+            notes = self.service.list_notes()
+            self.notes_data = [
+                (note.id, note.title, note.status, note.last_error or "", note.notion_page_id or "")
+                for note in notes
+            ]
+            self.apply_note_filters()
+        except Exception:  # noqa: BLE001
+            logger.exception("No se pudieron cargar notas")
+            self.status_var.set("Error al cargar notas")
+
+    def apply_note_filters(self) -> None:
+        self._entry_filtered_notes_data = list(self.notes_data)
+        self.notes_excel_filter.apply()
+
+    def _set_notes_filtered_rows(self, rows: list[tuple[int, str, str, str, str]]) -> None:
+        self.filtered_notes_data = rows
+        self._refresh_notes_tree(rows)
+
+    def _refresh_notes_tree(self, rows: list[tuple[int, str, str, str, str]]) -> None:
         for row in self.tree.get_children():
             self.tree.delete(row)
-        for note in self.service.list_notes():
-            self.tree.insert("", "end", iid=str(note.id), values=(note.id, note.title, note.status, note.last_error or "", note.notion_page_id or ""))
+
+        for note in rows:
+            self.tree.insert("", "end", iid=str(note[0]), values=note)
 
     def refresh_actions(self) -> None:
         try:
