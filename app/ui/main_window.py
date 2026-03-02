@@ -41,15 +41,16 @@ class MainWindow(ttk.Frame):
             "error": "Error",
             "notion_page_id": "Notion ID",
         }
-        self.actions_data: list[tuple[int, str, str, str, int]] = []
-        self.filtered_actions_data: list[tuple[int, str, str, str, int]] = []
-        self.action_columns = ("id", "area", "description", "status", "note_id")
+        self.actions_data: list[tuple[int, str, str, str, int, str]] = []
+        self.filtered_actions_data: list[tuple[int, str, str, str, int, str]] = []
+        self.action_columns = ("id", "area", "description", "status", "note_id", "notion_page_id")
         self.action_column_titles = {
             "id": "ID",
             "area": "Área",
             "description": "Descripción",
             "status": "Estado",
             "note_id": "Nota asociada",
+            "notion_page_id": "Notion ID",
         }
 
         self._build_menu()
@@ -161,6 +162,7 @@ class MainWindow(ttk.Frame):
         self.tree.column("error", width=260)
         self.tree.column("notion_page_id", width=220)
         self.tree.pack(fill="both", expand=True)
+        self.tree.bind("<Double-1>", lambda e: self._open_selected_note())
 
         self.notes_excel_filter = ExcelTreeFilter(
             master=self,
@@ -171,12 +173,16 @@ class MainWindow(ttk.Frame):
             set_rows=self._set_notes_filtered_rows,
         )
 
-        ttk.Button(notes_frame, text="Limpiar filtros", command=self.notes_excel_filter.clear_all_filters).pack(anchor="e", padx=6, pady=4)
+        notes_toolbar = ttk.Frame(notes_frame)
+        notes_toolbar.pack(fill="x", padx=6, pady=4)
+        ttk.Button(notes_toolbar, text="Abrir nota", command=self._open_selected_note).pack(side="left", padx=6)
+        ttk.Button(notes_toolbar, text="Limpiar filtros", command=self.notes_excel_filter.clear_all_filters).pack(side="left", padx=6)
 
         toolbar = ttk.Frame(actions_frame)
         toolbar.pack(fill="x", padx=4, pady=4)
         ttk.Button(toolbar, text="Marcar como hecha", command=self._mark_selected_action_done).pack(side="left", padx=6)
         ttk.Button(toolbar, text="Refrescar", command=self.refresh_actions).pack(side="left", padx=6)
+        ttk.Button(toolbar, text="Abrir", command=self._open_selected_action).pack(side="left", padx=6)
 
         self.actions_tree = ttk.Treeview(actions_frame, columns=self.action_columns, show="headings", height=12)
         self.actions_tree.heading("id", text="ID")
@@ -184,14 +190,17 @@ class MainWindow(ttk.Frame):
         self.actions_tree.heading("description", text="Descripción")
         self.actions_tree.heading("status", text="Estado")
         self.actions_tree.heading("note_id", text="Nota asociada")
+        self.actions_tree.heading("notion_page_id", text="Notion ID")
         self.actions_tree.column("id", width=50)
         self.actions_tree.column("area", width=140)
         self.actions_tree.column("description", width=420)
         self.actions_tree.column("status", width=100)
         self.actions_tree.column("note_id", width=130)
+        self.actions_tree.column("notion_page_id", width=220)
         self.actions_tree.pack(fill="both", expand=True, padx=4, pady=4)
+        self.actions_tree.bind("<Double-1>", lambda e: self._open_selected_action())
 
-        self._entry_filtered_actions_data: list[tuple[int, str, str, str, int]] = []
+        self._entry_filtered_actions_data: list[tuple[int, str, str, str, int, str]] = []
         self.actions_excel_filter = ExcelTreeFilter(
             master=self,
             tree=self.actions_tree,
@@ -362,7 +371,14 @@ class MainWindow(ttk.Frame):
         try:
             actions = self.service.list_pending_actions()
             self.actions_data = [
-                (action.id, action.area, action.description, action.status, action.note_id)
+                (
+                    action.id,
+                    action.area,
+                    action.description,
+                    action.status,
+                    action.note_id,
+                    action.notion_page_id or "",
+                )
                 for action in actions
             ]
             self.apply_filters()
@@ -378,20 +394,21 @@ class MainWindow(ttk.Frame):
         self._entry_filtered_actions_data = list(self.actions_data)
         self.actions_excel_filter.apply()
 
-    def _set_actions_filtered_rows(self, rows: list[tuple[int, str, str, str, int]]) -> None:
+    def _set_actions_filtered_rows(self, rows: list[tuple[int, str, str, str, int, str]]) -> None:
         self.filtered_actions_data = rows
         self._refresh_actions_tree(rows)
 
-    def _action_row_to_display(self, row: tuple[int, str, str, str, int]) -> dict[str, str]:
+    def _action_row_to_display(self, row: tuple[int, str, str, str, int, str]) -> dict[str, str]:
         return {
             "id": str(row[0]),
             "area": row[1] or "",
             "description": row[2] or "",
             "status": row[3] or "",
             "note_id": str(row[4]) if row[4] is not None else "",
+            "notion_page_id": row[5] or "",
         }
 
-    def _refresh_actions_tree(self, rows: list[tuple[int, str, str, str, int]]) -> None:
+    def _refresh_actions_tree(self, rows: list[tuple[int, str, str, str, int, str]]) -> None:
         for row in self.actions_tree.get_children():
             self.actions_tree.delete(row)
 
@@ -414,13 +431,44 @@ class MainWindow(ttk.Frame):
             messagebox.showerror("Error", "No se pudo actualizar la acción.")
 
     def _open_notion(self) -> None:
-        sel = self.tree.selection()
-        if not sel:
+        self._open_selected_note()
+
+    def _open_notion_page(self, notion_page_id: str) -> None:
+        if not notion_page_id:
+            messagebox.showwarning("Atención", "No hay Notion ID asociado.")
+            return
+
+        url = f"https://www.notion.so/{notion_page_id.replace('-', '')}"
+        webbrowser.open(url)
+
+    def _open_selected_note(self) -> None:
+        selection = self.tree.selection()
+        if not selection:
             messagebox.showwarning("Atención", "Selecciona una nota.")
             return
-        note_id = int(sel[0])
-        note = next((n for n in self.service.list_notes() if n.id == note_id), None)
-        if not note or not note.notion_page_id:
-            messagebox.showwarning("Atención", "La nota no tiene página de Notion vinculada.")
+
+        values = self.tree.item(selection[0], "values")
+        notion_page_id = values[4]
+        self._open_notion_page(notion_page_id)
+
+    def _open_selected_action(self) -> None:
+        selection = self.actions_tree.selection()
+        if not selection:
+            messagebox.showwarning("Atención", "Selecciona una acción.")
             return
-        webbrowser.open(f"https://www.notion.so/{note.notion_page_id.replace('-', '')}")
+
+        values = self.actions_tree.item(selection[0], "values")
+        action_notion_id = values[5]
+        note_id = values[4]
+
+        if action_notion_id:
+            self._open_notion_page(action_notion_id)
+            return
+
+        if note_id:
+            note = self.service.get_note_by_id(int(note_id))
+            if note and note.notion_page_id:
+                self._open_notion_page(note.notion_page_id)
+                return
+
+        messagebox.showwarning("Atención", "No hay página Notion asociada.")
