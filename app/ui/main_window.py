@@ -13,7 +13,7 @@ from tkcalendar import DateEntry
 
 from app.core.models import AppSettings, NoteCreateRequest
 from app.core.service import NoteService
-from app.ui.excel_filter import ExcelLikeTreeFilter
+from app.ui.excel_filter import ExcelTreeFilter
 from app.ui.masters_dialog import MastersDialog
 from app.ui.settings_dialog import SettingsDialog
 
@@ -31,6 +31,7 @@ class MainWindow(ttk.Frame):
         self.status_var = tk.StringVar(value="Listo")
         self.pack(fill="both", expand=True)
         self.actions_data: list[tuple[int, str, str, str, int]] = []
+        self.filtered_actions_data: list[tuple[int, str, str, str, int]] = []
         self.action_columns = ("id", "area", "description", "status", "note_id")
         self.action_column_titles = {
             "id": "ID",
@@ -169,15 +170,14 @@ class MainWindow(ttk.Frame):
         self.actions_tree.column("note_id", width=130)
         self.actions_tree.pack(fill="both", expand=True, padx=4, pady=4)
 
-        self.actions_excel_filter = ExcelLikeTreeFilter(
-            parent=self,
+        self._entry_filtered_actions_data: list[tuple[int, str, str, str, int]] = []
+        self.actions_excel_filter = ExcelTreeFilter(
+            master=self,
             tree=self.actions_tree,
             columns=self.action_columns,
             column_titles=self.action_column_titles,
-            get_data=lambda: self.actions_data,
-            row_to_display=self._action_row_to_display,
-            on_filtered=self._refresh_actions_tree,
-            enable_sort=True,
+            get_rows=lambda: self._entry_filtered_actions_data,
+            set_rows=self._set_actions_filtered_rows,
         )
 
         ttk.Button(toolbar, text="Limpiar filtros", command=self.actions_excel_filter.clear_all_filters).pack(side="left", padx=6)
@@ -323,10 +323,22 @@ class MainWindow(ttk.Frame):
                 (action.id, action.area, action.description, action.status, action.note_id)
                 for action in actions
             ]
-            self.actions_excel_filter.apply()
+            self.apply_filters()
         except Exception:  # noqa: BLE001
             logger.exception("No se pudieron cargar acciones")
             self.status_var.set("Error al cargar acciones")
+
+
+    def apply_filters(self) -> None:
+        # Orden de aplicación acordado:
+        # 1) filtros por Entry (contains), cuando existan en la vista
+        # 2) filtros Excel (lista/condición + ordenación tipada)
+        self._entry_filtered_actions_data = list(self.actions_data)
+        self.actions_excel_filter.apply()
+
+    def _set_actions_filtered_rows(self, rows: list[tuple[int, str, str, str, int]]) -> None:
+        self.filtered_actions_data = rows
+        self._refresh_actions_tree(rows)
 
     def _action_row_to_display(self, row: tuple[int, str, str, str, int]) -> dict[str, str]:
         return {
