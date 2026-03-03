@@ -99,6 +99,13 @@ class GmailClient:
         messages = results.get("messages", [])
         return [msg["id"] for msg in messages]
 
+    def get_message(self, message_id: str, format: str = "full"):
+        return self.service.users().messages().get(
+            userId="me",
+            id=message_id,
+            format=format
+        ).execute()
+
     def get_message_subject(self, message_id: str) -> str:
         message = self.service.users().messages().get(
             userId="me",
