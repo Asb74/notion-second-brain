@@ -51,6 +51,38 @@ class GmailClient:
         messages = results.get("messages", [])
         return [msg["id"] for msg in messages]
 
+    def list_messages_by_label(
+        self,
+        label_name: str,
+        max_results: int = 10
+    ) -> List[str]:
+        labels_response = self.service.users().labels().list(
+            userId="me"
+        ).execute()
+        labels = labels_response.get("labels", [])
+
+        label_id = next(
+            (
+                label["id"]
+                for label in labels
+                if label.get("name") == label_name
+            ),
+            None
+        )
+
+        if not label_id:
+            print(f"Etiqueta '{label_name}' no encontrada.")
+            return []
+
+        results = self.service.users().messages().list(
+            userId="me",
+            labelIds=[label_id],
+            maxResults=max_results
+        ).execute()
+
+        messages = results.get("messages", [])
+        return [msg["id"] for msg in messages]
+
     def get_message_subject(self, message_id: str) -> str:
         message = self.service.users().messages().get(
             userId="me",

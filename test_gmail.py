@@ -5,7 +5,7 @@ client = GmailClient(
     token_path="secrets/gmail_token.json"
 )
 
-messages = client.list_messages(5)
+messages = client.list_messages_by_label("Para_Procesar", 5)
 
 print("IDs encontrados:")
 print(messages)
