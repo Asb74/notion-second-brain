@@ -5,11 +5,10 @@ client = GmailClient(
     token_path="secrets/gmail_token.json"
 )
 
-messages = client.list_messages_by_label("Para_Procesar", 5)
+messages = client.list_unread_messages(5)
 
-print("IDs encontrados:")
-print(messages)
-
+print("Mensajes no leídos encontrados:")
 for msg_id in messages:
     subject = client.get_message_subject(msg_id)
-    print("Asunto:", subject)
+    print(f"ID: {msg_id} | Asunto: {subject}")
+    client.mark_as_read(msg_id)
