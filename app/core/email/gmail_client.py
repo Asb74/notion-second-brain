@@ -1,5 +1,4 @@
 import os
-import base64
 from typing import List
 
 from google.auth.transport.requests import Request
@@ -8,7 +7,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
 
-SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 
 
 class GmailClient:
@@ -50,6 +49,23 @@ class GmailClient:
 
         messages = results.get("messages", [])
         return [msg["id"] for msg in messages]
+
+    def list_unread_messages(self, max_results: int = 20) -> List[str]:
+        results = self.service.users().messages().list(
+            userId="me",
+            labelIds=["UNREAD"],
+            maxResults=max_results
+        ).execute()
+
+        messages = results.get("messages", [])
+        return [msg["id"] for msg in messages]
+
+    def mark_as_read(self, message_id: str):
+        self.service.users().messages().modify(
+            userId="me",
+            id=message_id,
+            body={"removeLabelIds": ["UNREAD"]}
+        ).execute()
 
     def list_messages_by_label(
         self,
