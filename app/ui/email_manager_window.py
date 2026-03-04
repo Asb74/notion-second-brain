@@ -30,7 +30,14 @@ class EmailManagerWindow(tk.Toplevel):
         "Pedidos": ["order"],
         "Suscripciones": ["subscription"],
         "Publicidad": ["marketing"],
-        "Otros": ["info", "other"],
+        "Otros": ["other"],
+    }
+    MOVE_LABEL_TO_TYPE = {
+        "Prioritarios": "priority",
+        "Pedidos": "order",
+        "Suscripciones": "subscription",
+        "Publicidad": "marketing",
+        "Otros": "other",
     }
 
     def __init__(
@@ -45,14 +52,17 @@ class EmailManagerWindow(tk.Toplevel):
         self.gmail_client = gmail_client
         self.email_repo = EmailRepository(db_connection)
         self.mail_ingestion_service = MailIngestionService(gmail_client=gmail_client, db_connection=db_connection)
+        self.classifier = self.mail_ingestion_service.classifier
         self.outlook_service = OutlookService()
         self.my_email = self._resolve_my_email()
 
         self.title("Gestión de Emails")
-        self.geometry("1120x720")
-        self.minsize(980, 560)
+        self.geometry("1220x760")
+        self.minsize(1080, 620)
 
         self.status_var = tk.StringVar(value="Listo")
+        self.model_var = tk.StringVar(value=self.classifier.model_status())
+        self.move_target_var = tk.StringVar(value="Prioritarios")
         self.columns = ("gmail_id", "subject", "sender", "type", "received_at", "status")
         self.column_titles = {
             "gmail_id": "Gmail ID",
@@ -70,19 +80,44 @@ class EmailManagerWindow(tk.Toplevel):
         self.refresh_emails()
 
     def _build_layout(self) -> None:
-        toolbar = ttk.Frame(self)
-        toolbar.pack(fill="x", padx=10, pady=(10, 6))
+        style = ttk.Style(self)
+        style.theme_use("clam")
+        style.configure("Toolbar.TButton", padding=(8, 6))
 
-        ttk.Button(toolbar, text="Descargar", command=self._download_new_emails).pack(side="left", padx=(0, 6))
-        ttk.Button(toolbar, text="Crear Nota seleccionadas", command=self._create_notes_from_selected_emails).pack(side="left", padx=(0, 6))
-        ttk.Button(toolbar, text="Eliminar seleccionadas", command=self._delete_selected_emails).pack(side="left", padx=(0, 6))
-        ttk.Button(toolbar, text="Marcar como ignoradas", command=self._mark_selected_as_ignored).pack(side="left", padx=(0, 6))
-        ttk.Button(toolbar, text="Seleccionar todo", command=self._select_all_rows).pack(side="left", padx=(0, 6))
-        ttk.Button(toolbar, text="Solo pedidos", command=lambda: self._select_rows_by_type("order")).pack(side="left", padx=(0, 6))
-        ttk.Button(toolbar, text="Solo suscripciones", command=lambda: self._select_rows_by_type("subscription")).pack(side="left", padx=(0, 6))
-        ttk.Button(toolbar, text="Solo no leídos", command=self._select_unread_rows).pack(side="left", padx=(0, 6))
-        ttk.Button(toolbar, text="Deseleccionar todo", command=self._clear_selection).pack(side="left", padx=(0, 6))
-        ttk.Button(toolbar, text="Limpiar filtros", command=self._clear_filters).pack(side="left")
+        toolbar = ttk.Frame(self, padding=(10, 10, 10, 6))
+        toolbar.pack(fill="x")
+
+        self._add_toolbar_group(toolbar, [
+            ("Descargar", self._download_new_emails),
+            ("Reentrenar modelo", self._retrain_model),
+        ])
+        self._add_toolbar_group(toolbar, [
+            ("Seleccionar todo", self._select_all_rows),
+            ("Deseleccionar todo", self._clear_selection),
+        ])
+        self._add_toolbar_group(toolbar, [
+            ("Crear nota", self._create_notes_from_selected_emails),
+            ("Marcar ignoradas", self._mark_selected_as_ignored),
+            ("Eliminar", self._delete_selected_emails),
+        ])
+        self._add_toolbar_group(toolbar, [
+            ("Solo no leídos", self._select_unread_rows),
+            ("Solo pedidos", lambda: self._select_rows_by_type("order")),
+            ("Solo suscripciones", lambda: self._select_rows_by_type("subscription")),
+            ("Limpiar filtros", self._clear_filters),
+        ])
+
+        move_group = ttk.Frame(toolbar)
+        move_group.pack(side="left", padx=(6, 0))
+        ttk.Label(move_group, text="Mover a:").pack(side="left", padx=(0, 4))
+        ttk.Combobox(
+            move_group,
+            textvariable=self.move_target_var,
+            values=list(self.MOVE_LABEL_TO_TYPE.keys()),
+            state="readonly",
+            width=14,
+        ).pack(side="left", padx=(0, 4))
+        ttk.Button(move_group, text="Aplicar", style="Toolbar.TButton", width=14, command=self._move_selected_emails).pack(side="left")
 
         tabs_frame = ttk.Frame(self)
         tabs_frame.pack(fill="x", padx=10, pady=(0, 6))
@@ -101,7 +136,7 @@ class EmailManagerWindow(tk.Toplevel):
 
         self.tree.column("gmail_id", width=210, anchor="w")
         self.tree.column("subject", width=280, anchor="w")
-        self.tree.column("sender", width=210, anchor="w")
+        self.tree.column("sender", width=220, anchor="w")
         self.tree.column("type", width=110, anchor="w")
         self.tree.column("received_at", width=160, anchor="w")
         self.tree.column("status", width=120, anchor="w")
@@ -148,7 +183,17 @@ class EmailManagerWindow(tk.Toplevel):
         lower_panel.add(preview_frame, weight=1)
         lower_panel.add(response_frame, weight=1)
 
-        ttk.Label(self, textvariable=self.status_var, anchor="w").pack(fill="x", padx=10, pady=(0, 10))
+        status_frame = ttk.Frame(self)
+        status_frame.pack(fill="x", padx=10, pady=(0, 10))
+        ttk.Label(status_frame, textvariable=self.status_var, anchor="w").pack(side="left", fill="x", expand=True)
+        ttk.Label(status_frame, textvariable=self.model_var, anchor="e").pack(side="right")
+
+    def _add_toolbar_group(self, parent: ttk.Frame, buttons: list[tuple[str, object]]) -> None:
+        frame = ttk.Frame(parent)
+        frame.pack(side="left", padx=(0, 8))
+        for text, command in buttons:
+            ttk.Button(frame, text=text, command=command, style="Toolbar.TButton", width=18).pack(side="left", padx=(0, 4))
+        ttk.Separator(parent, orient="vertical").pack(side="left", fill="y", padx=(0, 8))
 
     def _on_tab_changed(self, _event: tk.Event) -> None:
         self._current_tab = self.notebook.tab(self.notebook.select(), "text")
@@ -168,6 +213,16 @@ class EmailManagerWindow(tk.Toplevel):
             logger.exception("Error descargando correos")
             self.status_var.set(f"Error al descargar correos: {exc}")
             messagebox.showerror("Error", f"No se pudieron descargar correos.\n\n{exc}")
+
+    def _retrain_model(self) -> None:
+        trained = self.classifier.retrain_if_possible(force=True)
+        examples = self.email_repo.count_labeled_examples()
+        self.classifier.examples_count = examples
+        self.model_var.set(self.classifier.model_status())
+        if trained:
+            self.status_var.set(f"Modelo reentrenado con {examples} ejemplos.")
+        else:
+            self.status_var.set(f"No hay suficientes ejemplos para entrenar ({examples}).")
 
     def refresh_emails(self) -> None:
         try:
@@ -201,6 +256,8 @@ class EmailManagerWindow(tk.Toplevel):
             self._rows_by_id[str(row["gmail_id"])] = normalized
 
         self.excel_filter.apply()
+        self.classifier.examples_count = self.email_repo.count_labeled_examples()
+        self.model_var.set(self.classifier.model_status())
         self.status_var.set(f"Correos cargados ({self._current_tab}): {len(rows)}")
         self._refresh_preview()
 
@@ -222,6 +279,24 @@ class EmailManagerWindow(tk.Toplevel):
             self.tree.insert("", "end", iid=iid, values=values)
             if iid in selected_ids:
                 self.tree.selection_add(iid)
+
+    def _move_selected_emails(self) -> None:
+        selected_ids = self._selected_ids()
+        if not selected_ids:
+            messagebox.showwarning("Atención", "Selecciona al menos un correo para mover.")
+            return
+
+        target_label = self.move_target_var.get()
+        target_type = self.MOVE_LABEL_TO_TYPE.get(target_label, "other")
+        self.email_repo.bulk_update_type(selected_ids, target_type)
+        self.email_repo.save_labels_for_emails(selected_ids, target_type, source="user")
+        for gmail_id in selected_ids:
+            row = self.email_repo.get_email_content(gmail_id)
+            if row:
+                self.email_repo.register_sender_rule(row["sender"], target_type)
+
+        self.status_var.set(f"{len(selected_ids)} correos movidos a {target_label}.")
+        self.refresh_emails()
 
     def _create_notes_from_selected_emails(self) -> None:
         selected_ids = self._selected_ids()
@@ -320,11 +395,18 @@ class EmailManagerWindow(tk.Toplevel):
             row = self._rows_by_id.get(str(selection[0]))
             if row:
                 body = row["body_text"].strip() or self._html_to_text(row["body_html"])
+                header_block = (
+                    f"From real: {row.get('original_from', row['sender'])}\n"
+                    f"Reply-To: {row.get('original_reply_to', '') or '-'}\n"
+                    f"To: {row.get('original_to', '') or '-'}\n"
+                    f"Cc: {row.get('original_cc', '') or '-'}\n"
+                    f"Fecha: {self._format_datetime(row['received_at'])}\n"
+                )
                 preview = (
+                    f"{header_block}\n"
                     f"Asunto: {row['subject']}\n"
                     f"Remitente: {row['sender']}\n"
                     f"Tipo: {row['type']}\n"
-                    f"Fecha: {self._format_datetime(row['received_at'])}\n"
                     f"Estado: {row['status']}\n\n"
                     f"{body.strip()}"
                 )

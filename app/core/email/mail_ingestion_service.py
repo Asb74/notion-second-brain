@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.core.email.email_classifier import EmailClassifier
+from app.persistence.email_repository import EmailRepository
 
 
 class MailIngestionService:
@@ -14,7 +15,8 @@ class MailIngestionService:
     def __init__(self, gmail_client, db_connection: sqlite3.Connection):
         self.gmail_client = gmail_client
         self.db_connection = db_connection
-        self.classifier = EmailClassifier()
+        self.email_repo = EmailRepository(db_connection)
+        self.classifier = EmailClassifier(email_repo=self.email_repo)
 
     def sync_unread_emails(self, max_results: int = 20) -> List[str]:
         self.ensure_table()
@@ -35,7 +37,7 @@ class MailIngestionService:
 
             received_at = self._convert_internal_date(full_message.get("internalDate"))
             email_type = self.classifier.classify(subject=subject, sender=sender, body_text=body_text)
-            category = "marketing" if email_type == "marketing" else "priority"
+            category = "marketing" if email_type in {"marketing", "subscription"} else "priority"
             inserted = self._insert_email(
                 gmail_id=gmail_id,
                 thread_id=full_message.get("threadId"),
