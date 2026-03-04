@@ -83,43 +83,77 @@ class EmailManagerWindow(tk.Toplevel):
         style.theme_use("clam")
         style.configure("Toolbar.TButton", padding=(8, 6))
 
-        toolbar = ttk.Frame(self, padding=(10, 10, 10, 6))
-        toolbar.pack(fill="x")
+        toolbar_container = ttk.Frame(self, padding=(10, 10, 10, 6))
+        toolbar_container.pack(fill="x")
+        toolbar_container.columnconfigure(0, weight=1)
 
-        self._add_toolbar_group(toolbar, [
-            ("Descargar", self._download_new_emails),
-            ("Reentrenar modelo", self._retrain_model),
-            ("Reclasificar emails actuales", self._reclassify_current_emails),
-            ("➕ Nueva categoría", self._create_category),
-        ])
-        self._add_toolbar_group(toolbar, [
-            ("Seleccionar todo", self._select_all_rows),
-            ("Deseleccionar todo", self._clear_selection),
-        ])
-        self._add_toolbar_group(toolbar, [
-            ("Crear nota", self._create_notes_from_selected_emails),
-            ("Marcar ignoradas", self._mark_selected_as_ignored),
-            ("Eliminar", self._delete_selected_emails),
-        ])
-        self._add_toolbar_group(toolbar, [
-            ("Solo no leídos", self._select_unread_rows),
-            ("Solo pedidos", lambda: self._select_rows_by_type("order")),
-            ("Solo suscripciones", lambda: self._select_rows_by_type("subscription")),
-            ("Limpiar filtros", self._clear_filters),
-        ])
+        toolbar_main = ttk.Frame(toolbar_container)
+        toolbar_main.grid(row=0, column=0, sticky="ew")
 
-        move_group = ttk.Frame(toolbar)
-        move_group.pack(side="left", padx=(6, 0))
+        self._add_toolbar_grid_group(
+            toolbar_main,
+            0,
+            [
+                ("Descargar", self._download_new_emails),
+                ("Reentrenar modelo", self._retrain_model),
+                ("Reclasificar emails", self._reclassify_current_emails),
+                ("Nueva categoría", self._create_category),
+            ],
+        )
+        self._add_toolbar_grid_group(
+            toolbar_main,
+            2,
+            [
+                ("Crear nota", self._create_notes_from_selected_emails),
+                ("Marcar ignoradas", self._mark_selected_as_ignored),
+                ("Eliminar", self._delete_selected_emails),
+            ],
+        )
+        toolbar_main.columnconfigure(0, weight=1)
+        toolbar_main.columnconfigure(2, weight=1)
+
+        toolbar_secondary = ttk.Frame(toolbar_container)
+        toolbar_secondary.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+
+        self._add_toolbar_grid_group(
+            toolbar_secondary,
+            0,
+            [
+                ("Seleccionar todo", self._select_all_rows),
+                ("Deseleccionar todo", self._clear_selection),
+            ],
+            button_width=16,
+        )
+
+        filter_group = ttk.Frame(toolbar_secondary)
+        filter_group.grid(row=0, column=2, sticky="w")
+        self.filters_menu_button = ttk.Menubutton(filter_group, text="Filtros", style="Toolbar.TButton")
+        self.filters_menu = tk.Menu(self.filters_menu_button, tearoff=0)
+        self.filters_menu.add_command(label="Solo no leídos", command=self._select_unread_rows)
+        self.filters_menu.add_command(label="Solo pedidos", command=lambda: self._select_rows_by_type("order"))
+        self.filters_menu.add_command(label="Solo suscripciones", command=lambda: self._select_rows_by_type("subscription"))
+        self.filters_menu_button.configure(menu=self.filters_menu)
+        self.filters_menu_button.pack(side="left", padx=(0, 4))
+        ttk.Button(filter_group, text="Limpiar filtros", command=self._clear_filters, style="Toolbar.TButton", width=16).pack(side="left")
+
+        ttk.Separator(toolbar_secondary, orient="vertical").grid(row=0, column=3, sticky="ns", padx=8)
+
+        move_group = ttk.Frame(toolbar_secondary)
+        move_group.grid(row=0, column=4, sticky="e")
         ttk.Label(move_group, text="Mover a:").pack(side="left", padx=(0, 4))
         self.move_target_combo = ttk.Combobox(
             move_group,
             textvariable=self.move_target_var,
             values=list(self._move_label_to_type.keys()),
             state="readonly",
-            width=14,
+            width=18,
         )
         self.move_target_combo.pack(side="left", padx=(0, 4))
         ttk.Button(move_group, text="Aplicar", style="Toolbar.TButton", width=14, command=self._move_selected_emails).pack(side="left")
+
+        toolbar_secondary.columnconfigure(0, weight=0)
+        toolbar_secondary.columnconfigure(2, weight=1)
+        toolbar_secondary.columnconfigure(4, weight=1)
 
         tabs_frame = ttk.Frame(self)
         tabs_frame.pack(fill="x", padx=10, pady=(0, 6))
@@ -214,12 +248,18 @@ class EmailManagerWindow(tk.Toplevel):
         ttk.Label(status_frame, textvariable=self.status_var, anchor="w").pack(side="left", fill="x", expand=True)
         ttk.Label(status_frame, textvariable=self.model_var, anchor="e").pack(side="right")
 
-    def _add_toolbar_group(self, parent: ttk.Frame, buttons: list[tuple[str, object]]) -> None:
+    def _add_toolbar_grid_group(
+        self,
+        parent: ttk.Frame,
+        column: int,
+        buttons: list[tuple[str, object]],
+        button_width: int = 18,
+    ) -> None:
         frame = ttk.Frame(parent)
-        frame.pack(side="left", padx=(0, 8))
+        frame.grid(row=0, column=column, sticky="w")
         for text, command in buttons:
-            ttk.Button(frame, text=text, command=command, style="Toolbar.TButton", width=18).pack(side="left", padx=(0, 4))
-        ttk.Separator(parent, orient="vertical").pack(side="left", fill="y", padx=(0, 8))
+            ttk.Button(frame, text=text, command=command, style="Toolbar.TButton", width=button_width).pack(side="left", padx=(0, 4))
+        ttk.Separator(parent, orient="vertical").grid(row=0, column=column + 1, sticky="ns", padx=8)
 
     def _reload_category_maps(self) -> None:
         self._categories = self.category_manager.list_categories()
