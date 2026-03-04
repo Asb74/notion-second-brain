@@ -13,6 +13,7 @@ from tkinter import messagebox, ttk
 from app.core.email.gmail_client import GmailClient
 from app.core.email.mail_ingestion_service import MailIngestionService
 from app.core.models import NoteCreateRequest
+from app.core.outlook.outlook_service import OutlookService
 from app.core.service import NoteService
 from app.persistence.email_repository import EmailRepository
 from app.ui.excel_filter import ExcelTreeFilter
@@ -23,7 +24,13 @@ logger = logging.getLogger(__name__)
 class EmailManagerWindow(tk.Toplevel):
     """Manage ingested emails and manual conversion to notes."""
 
-    TAB_TO_CATEGORY = {"Prioritarios": "priority", "Publicidad": "marketing"}
+    TAB_TO_TYPES = {
+        "Prioritarios": ["priority"],
+        "Pedidos": ["order"],
+        "Suscripciones": ["subscription"],
+        "Publicidad": ["marketing"],
+        "Otros": ["info", "other"],
+    }
 
     def __init__(
         self,
@@ -36,23 +43,25 @@ class EmailManagerWindow(tk.Toplevel):
         self.note_service = note_service
         self.email_repo = EmailRepository(db_connection)
         self.mail_ingestion_service = MailIngestionService(gmail_client=gmail_client, db_connection=db_connection)
+        self.outlook_service = OutlookService()
 
         self.title("Gestión de Emails")
         self.geometry("1120x720")
         self.minsize(980, 560)
 
         self.status_var = tk.StringVar(value="Listo")
-        self.columns = ("gmail_id", "subject", "sender", "received_at", "status")
+        self.columns = ("gmail_id", "subject", "sender", "type", "received_at", "status")
         self.column_titles = {
             "gmail_id": "Gmail ID",
             "subject": "Asunto",
             "sender": "Remitente",
+            "type": "Tipo",
             "received_at": "Fecha",
             "status": "Estado",
         }
         self._all_rows: list[dict[str, str]] = []
         self._rows_by_id: dict[str, dict[str, str]] = {}
-        self._current_category = "priority"
+        self._current_tab = "Prioritarios"
 
         self._build_layout()
         self.refresh_emails()
@@ -66,16 +75,17 @@ class EmailManagerWindow(tk.Toplevel):
         ttk.Button(toolbar, text="Eliminar seleccionadas", command=self._delete_selected_emails).pack(side="left", padx=(0, 6))
         ttk.Button(toolbar, text="Marcar como ignoradas", command=self._mark_selected_as_ignored).pack(side="left", padx=(0, 6))
         ttk.Button(toolbar, text="Seleccionar todo", command=self._select_all_rows).pack(side="left", padx=(0, 6))
+        ttk.Button(toolbar, text="Solo pedidos", command=lambda: self._select_rows_by_type("order")).pack(side="left", padx=(0, 6))
+        ttk.Button(toolbar, text="Solo suscripciones", command=lambda: self._select_rows_by_type("subscription")).pack(side="left", padx=(0, 6))
+        ttk.Button(toolbar, text="Solo no leídos", command=self._select_unread_rows).pack(side="left", padx=(0, 6))
         ttk.Button(toolbar, text="Deseleccionar todo", command=self._clear_selection).pack(side="left", padx=(0, 6))
         ttk.Button(toolbar, text="Limpiar filtros", command=self._clear_filters).pack(side="left")
 
         tabs_frame = ttk.Frame(self)
         tabs_frame.pack(fill="x", padx=10, pady=(0, 6))
         self.notebook = ttk.Notebook(tabs_frame)
-        self.priority_tab = ttk.Frame(self.notebook)
-        self.marketing_tab = ttk.Frame(self.notebook)
-        self.notebook.add(self.priority_tab, text="Prioritarios")
-        self.notebook.add(self.marketing_tab, text="Publicidad")
+        for tab_name in self.TAB_TO_TYPES:
+            self.notebook.add(ttk.Frame(self.notebook), text=tab_name)
         self.notebook.pack(fill="x")
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
@@ -86,11 +96,12 @@ class EmailManagerWindow(tk.Toplevel):
         for col in self.columns:
             self.tree.heading(col, text=self.column_titles.get(col, col))
 
-        self.tree.column("gmail_id", width=230, anchor="w")
-        self.tree.column("subject", width=330, anchor="w")
-        self.tree.column("sender", width=240, anchor="w")
+        self.tree.column("gmail_id", width=210, anchor="w")
+        self.tree.column("subject", width=280, anchor="w")
+        self.tree.column("sender", width=210, anchor="w")
+        self.tree.column("type", width=110, anchor="w")
         self.tree.column("received_at", width=160, anchor="w")
-        self.tree.column("status", width=130, anchor="w")
+        self.tree.column("status", width=120, anchor="w")
 
         y_scroll = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=y_scroll.set)
@@ -108,20 +119,36 @@ class EmailManagerWindow(tk.Toplevel):
             set_rows=self._set_filtered_rows,
         )
 
-        preview_frame = ttk.LabelFrame(self, text="Vista previa")
-        preview_frame.pack(fill="both", expand=False, padx=10, pady=(0, 6))
-        self.preview_text = tk.Text(preview_frame, wrap="word", height=10)
+        lower_panel = ttk.PanedWindow(self, orient="horizontal")
+        lower_panel.pack(fill="both", expand=False, padx=10, pady=(0, 6))
+
+        preview_frame = ttk.LabelFrame(lower_panel, text="Vista previa")
+        self.preview_text = tk.Text(preview_frame, wrap="word", height=12)
         preview_scroll = ttk.Scrollbar(preview_frame, orient="vertical", command=self.preview_text.yview)
         self.preview_text.configure(yscrollcommand=preview_scroll.set)
         self.preview_text.pack(side="left", fill="both", expand=True)
         preview_scroll.pack(side="right", fill="y")
         self.preview_text.configure(state="disabled")
 
+        response_frame = ttk.LabelFrame(lower_panel, text="Respuesta")
+        self.response_text = tk.Text(response_frame, wrap="word", height=12)
+        response_scroll = ttk.Scrollbar(response_frame, orient="vertical", command=self.response_text.yview)
+        self.response_text.configure(yscrollcommand=response_scroll.set)
+        self.response_text.pack(side="top", fill="both", expand=True, padx=4, pady=4)
+        response_scroll.pack(side="right", fill="y")
+
+        response_actions = ttk.Frame(response_frame)
+        response_actions.pack(fill="x", padx=4, pady=(0, 4))
+        ttk.Button(response_actions, text="Generar respuesta", command=self._generate_response).pack(side="left", padx=(0, 6))
+        ttk.Button(response_actions, text="Crear borrador Outlook", command=self._create_outlook_draft).pack(side="left")
+
+        lower_panel.add(preview_frame, weight=1)
+        lower_panel.add(response_frame, weight=1)
+
         ttk.Label(self, textvariable=self.status_var, anchor="w").pack(fill="x", padx=10, pady=(0, 10))
 
     def _on_tab_changed(self, _event: tk.Event) -> None:
-        tab_name = self.notebook.tab(self.notebook.select(), "text")
-        self._current_category = self.TAB_TO_CATEGORY.get(tab_name, "priority")
+        self._current_tab = self.notebook.tab(self.notebook.select(), "text")
         self.refresh_emails()
 
     def _clear_filters(self) -> None:
@@ -141,7 +168,7 @@ class EmailManagerWindow(tk.Toplevel):
 
     def refresh_emails(self) -> None:
         try:
-            rows = self.email_repo.get_emails_by_category(self._current_category)
+            rows = self.email_repo.get_emails_by_types(self.TAB_TO_TYPES.get(self._current_tab, ["priority"]))
         except Exception as exc:  # noqa: BLE001
             logger.exception("No se pudieron cargar correos")
             self.status_var.set(f"Error al cargar correos: {exc}")
@@ -155,6 +182,7 @@ class EmailManagerWindow(tk.Toplevel):
                 "gmail_id": row["gmail_id"],
                 "subject": row["subject"] or "",
                 "sender": row["sender"] or "",
+                "type": row["type"] or "other",
                 "received_at": row["received_at"] or "",
                 "received_at_display": self._format_datetime(row["received_at"]),
                 "body_text": row["body_text"] or "",
@@ -166,7 +194,7 @@ class EmailManagerWindow(tk.Toplevel):
             self._rows_by_id[str(row["gmail_id"])] = normalized
 
         self.excel_filter.apply()
-        self.status_var.set(f"Correos cargados ({self._current_category}): {len(rows)}")
+        self.status_var.set(f"Correos cargados ({self._current_tab}): {len(rows)}")
         self._refresh_preview()
 
     def _set_filtered_rows(self, rows: list[dict[str, str]]) -> None:
@@ -179,6 +207,7 @@ class EmailManagerWindow(tk.Toplevel):
                 row["gmail_id"],
                 row["subject"],
                 row["sender"],
+                row["type"],
                 row["received_at_display"],
                 row["status"],
             )
@@ -263,6 +292,16 @@ class EmailManagerWindow(tk.Toplevel):
             self.tree.selection_set(children)
             self._refresh_preview()
 
+    def _select_rows_by_type(self, email_type: str) -> None:
+        to_select = [iid for iid in self.tree.get_children() if (self._rows_by_id.get(str(iid), {}).get("type") == email_type)]
+        self.tree.selection_set(to_select)
+        self._refresh_preview()
+
+    def _select_unread_rows(self) -> None:
+        to_select = [iid for iid in self.tree.get_children() if (self._rows_by_id.get(str(iid), {}).get("status") == "new")]
+        self.tree.selection_set(to_select)
+        self._refresh_preview()
+
     def _clear_selection(self) -> None:
         self.tree.selection_remove(self.tree.selection())
         self._refresh_preview()
@@ -277,6 +316,7 @@ class EmailManagerWindow(tk.Toplevel):
                 preview = (
                     f"Asunto: {row['subject']}\n"
                     f"Remitente: {row['sender']}\n"
+                    f"Tipo: {row['type']}\n"
                     f"Fecha: {self._format_datetime(row['received_at'])}\n"
                     f"Estado: {row['status']}\n\n"
                     f"{body.strip()}"
@@ -288,6 +328,50 @@ class EmailManagerWindow(tk.Toplevel):
         self.preview_text.delete("1.0", "end")
         self.preview_text.insert("1.0", preview)
         self.preview_text.configure(state="disabled")
+
+    def _generate_response(self) -> None:
+        selection = self.tree.selection()
+        if len(selection) != 1:
+            messagebox.showwarning("Atención", "Selecciona un solo correo para generar respuesta.")
+            return
+        row = self._rows_by_id.get(str(selection[0]))
+        if not row:
+            return
+
+        subject = row["subject"].strip() or "tu mensaje"
+        body = (
+            "Hola,\n\n"
+            f"Gracias por tu correo sobre '{subject}'.\n"
+            "Lo he revisado y te responderé con el detalle correspondiente a la mayor brevedad.\n\n"
+            "Saludos,"
+        )
+        self.response_text.delete("1.0", "end")
+        self.response_text.insert("1.0", body)
+
+    def _create_outlook_draft(self) -> None:
+        selection = self.tree.selection()
+        if len(selection) != 1:
+            messagebox.showwarning("Atención", "Selecciona un solo correo para crear borrador.")
+            return
+
+        row = self._rows_by_id.get(str(selection[0]))
+        if not row:
+            return
+
+        to_email = self._extract_email_address(row["sender"])
+        subject = row["subject"].strip()
+        draft_subject = subject if subject.lower().startswith("re:") else f"Re: {subject}"
+        body = self.response_text.get("1.0", "end").strip()
+        if not body:
+            messagebox.showwarning("Atención", "Escribe o genera una respuesta antes de crear el borrador.")
+            return
+
+        try:
+            self.outlook_service.create_draft(to=to_email, subject=draft_subject, body=body)
+            self.status_var.set("Borrador de Outlook abierto correctamente.")
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("No se pudo crear borrador de Outlook")
+            messagebox.showerror("Error", f"No se pudo crear el borrador en Outlook.\n\n{exc}")
 
     def _resolve_default_value(self, category: str, setting_name: str, fallback: str) -> str:
         try:
@@ -303,6 +387,13 @@ class EmailManagerWindow(tk.Toplevel):
             logger.exception("No se pudo resolver valor por defecto para %s", category)
 
         return fallback
+
+    @staticmethod
+    def _extract_email_address(sender: str) -> str:
+        match = re.search(r"<([^>]+)>", sender or "")
+        if match:
+            return match.group(1).strip()
+        return (sender or "").strip()
 
     @staticmethod
     def _compose_note_text(subject: str | None, sender: str | None, body_text: str | None, body_html: str | None) -> str:

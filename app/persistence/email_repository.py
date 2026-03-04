@@ -28,11 +28,13 @@ class EmailRepository:
                 raw_payload_json TEXT,
                 processed_at TEXT,
                 status TEXT,
-                category TEXT DEFAULT 'pending'
+                category TEXT DEFAULT 'pending',
+                type TEXT DEFAULT 'other'
             )
             """
         )
         self._ensure_column("category", "TEXT DEFAULT 'pending'")
+        self._ensure_column("type", "TEXT DEFAULT 'other'")
         self.conn.commit()
 
     def _ensure_column(self, name: str, sql_type: str) -> None:
@@ -41,21 +43,24 @@ class EmailRepository:
         if name not in column_names:
             self.conn.execute(f"ALTER TABLE emails ADD COLUMN {name} {sql_type}")
 
-    def get_emails_by_category(self, category: str) -> list[sqlite3.Row]:
+    def get_emails_by_types(self, types: Sequence[str]) -> list[sqlite3.Row]:
+        if not types:
+            return []
+        placeholders = ",".join("?" for _ in types)
         return self.conn.execute(
-            """
-            SELECT gmail_id, subject, sender, received_at, body_text, body_html, status, category
+            f"""
+            SELECT gmail_id, subject, sender, received_at, body_text, body_html, status, category, type
             FROM emails
-            WHERE category = ?
+            WHERE type IN ({placeholders})
             ORDER BY received_at DESC
             """,
-            (category,),
+            tuple(types),
         ).fetchall()
 
     def get_email_content(self, gmail_id: str) -> sqlite3.Row | None:
         return self.conn.execute(
             """
-            SELECT gmail_id, subject, sender, received_at, body_text, body_html, status, category
+            SELECT gmail_id, subject, sender, received_at, body_text, body_html, status, category, type
             FROM emails
             WHERE gmail_id = ?
             """,
