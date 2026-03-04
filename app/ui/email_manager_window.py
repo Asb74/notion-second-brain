@@ -7,12 +7,12 @@ import logging
 import os
 import re
 import sqlite3
-import tempfile
 import tkinter as tk
 import webbrowser
 from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox, simpledialog, ttk
+from tkinterweb import HtmlFrame
 
 from app.core.email.category_manager import CategoryManager
 from app.core.email.gmail_client import GmailClient
@@ -71,6 +71,9 @@ class EmailManagerWindow(tk.Toplevel):
         self._attachments_buttons: list[ttk.Button] = []
         self._rows_by_id: dict[str, dict[str, str]] = {}
         self._current_tab = default_label
+        self._current_html_content = ""
+        self._expanded_html_window: tk.Toplevel | None = None
+        self._expanded_html_frame: HtmlFrame | None = None
 
         self._build_layout()
         self.refresh_emails()
@@ -164,21 +167,32 @@ class EmailManagerWindow(tk.Toplevel):
         lower_panel.pack(fill="both", expand=False, padx=10, pady=(0, 6))
 
         preview_frame = ttk.LabelFrame(lower_panel, text="Vista previa")
-        self.preview_text = tk.Text(preview_frame, wrap="word", height=12)
-        preview_scroll = ttk.Scrollbar(preview_frame, orient="vertical", command=self.preview_text.yview)
+        preview_splitter = ttk.PanedWindow(preview_frame, orient="horizontal")
+        preview_splitter.pack(fill="both", expand=True, padx=4, pady=(4, 2))
+
+        text_preview_frame = ttk.Frame(preview_splitter)
+        self.preview_text = tk.Text(text_preview_frame, wrap="word", height=12)
+        preview_scroll = ttk.Scrollbar(text_preview_frame, orient="vertical", command=self.preview_text.yview)
         self.preview_text.configure(yscrollcommand=preview_scroll.set)
-        self.preview_text.pack(side="top", fill="both", expand=True, padx=4, pady=(4, 2))
+        self.preview_text.pack(side="left", fill="both", expand=True)
         preview_scroll.pack(side="right", fill="y")
         self.preview_text.configure(state="disabled")
 
+        html_preview_frame = ttk.Frame(preview_splitter)
+        self.html_view = HtmlFrame(html_preview_frame, messages_enabled=False)
+        self.html_view.pack(fill="both", expand=True)
+
+        self.attachments_label = ttk.Label(html_preview_frame, text="Adjuntos:")
+        self.attachments_label.pack(anchor="w", pady=(4, 2))
+        self.attachments_container = ttk.Frame(html_preview_frame)
+        self.attachments_container.pack(fill="x", pady=(0, 4))
+
+        preview_splitter.add(text_preview_frame, weight=1)
+        preview_splitter.add(html_preview_frame, weight=1)
+
         preview_actions = ttk.Frame(preview_frame)
         preview_actions.pack(fill="x", padx=4, pady=(0, 4))
-        ttk.Button(preview_actions, text="Ver HTML completo", command=self._open_full_html).pack(side="left")
-
-        self.attachments_label = ttk.Label(preview_frame, text="Adjuntos:")
-        self.attachments_label.pack(anchor="w", padx=4, pady=(0, 2))
-        self.attachments_container = ttk.Frame(preview_frame)
-        self.attachments_container.pack(fill="x", padx=4, pady=(0, 4))
+        ttk.Button(preview_actions, text="Expandir vista", command=self._expand_html_view).pack(side="left")
 
         response_frame = ttk.LabelFrame(lower_panel, text="Respuesta")
         self.response_text = tk.Text(response_frame, wrap="word", height=12)
@@ -536,7 +550,18 @@ class EmailManagerWindow(tk.Toplevel):
         self.preview_text.delete("1.0", "end")
         self.preview_text.insert("1.0", preview)
         self.preview_text.configure(state="disabled")
+        self._set_html_preview(row.get("body_html", "") if len(selection) == 1 and row else "")
         self._render_attachments(attachments)
+
+    def _set_html_preview(self, body_html: str) -> None:
+        self._current_html_content = body_html.strip()
+        if self._current_html_content:
+            self.html_view.load_html(self._current_html_content)
+        else:
+            self.html_view.load_html("<html><body><p>Sin contenido HTML.</p></body></html>")
+
+        if self._expanded_html_frame is not None:
+            self._expanded_html_frame.load_html(self._current_html_content or "<html><body><p>Sin contenido HTML.</p></body></html>")
 
     def _render_attachments(self, attachments: list[sqlite3.Row]) -> None:
         for child in self.attachments_container.winfo_children():
@@ -572,30 +597,26 @@ class EmailManagerWindow(tk.Toplevel):
             logger.exception("No se pudo abrir adjunto")
             messagebox.showerror("Adjunto", f"No se pudo abrir el adjunto.\n\n{exc}")
 
-    def _open_full_html(self) -> None:
-        selection = self.tree.selection()
-        if len(selection) != 1:
-            messagebox.showwarning("Atención", "Selecciona un solo correo para ver su HTML.")
-            return
+    def _expand_html_view(self) -> None:
+        if self._expanded_html_window is None or not self._expanded_html_window.winfo_exists():
+            self._expanded_html_window = tk.Toplevel(self)
+            self._expanded_html_window.title("Vista HTML expandida")
+            self._expanded_html_window.geometry("1100x700")
+            self._expanded_html_frame = HtmlFrame(self._expanded_html_window, messages_enabled=False)
+            self._expanded_html_frame.pack(fill="both", expand=True)
+            self._expanded_html_window.protocol("WM_DELETE_WINDOW", self._close_expanded_html_view)
 
-        row = self._rows_by_id.get(str(selection[0]))
-        if not row:
-            return
+        if self._expanded_html_frame is not None:
+            self._expanded_html_frame.load_html(self._current_html_content or "<html><body><p>Sin contenido HTML.</p></body></html>")
 
-        body_html = (row.get("body_html") or "").strip()
-        if not body_html:
-            messagebox.showinfo("HTML", "El correo no tiene contenido HTML.")
-            return
+        self._expanded_html_window.lift()
+        self._expanded_html_window.focus_force()
 
-        try:
-            with tempfile.NamedTemporaryFile("w", suffix=".html", delete=False, encoding="utf-8") as temp_file:
-                temp_file.write(body_html)
-                temp_path = Path(temp_file.name)
-
-            webbrowser.open(temp_path.resolve().as_uri())
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("No se pudo abrir HTML completo")
-            messagebox.showerror("HTML", f"No se pudo abrir el HTML completo.\n\n{exc}")
+    def _close_expanded_html_view(self) -> None:
+        if self._expanded_html_window is not None:
+            self._expanded_html_window.destroy()
+        self._expanded_html_window = None
+        self._expanded_html_frame = None
 
     def _generate_response(self) -> None:
         selection = self.tree.selection()
