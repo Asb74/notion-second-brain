@@ -26,3 +26,24 @@ def test_bulk_update_type_and_save_label() -> None:
     assert row["type"] == "priority"
     assert label_row["label"] == "priority"
     assert label_row["source"] == "user"
+
+
+
+def test_get_attachments_returns_saved_rows() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    repo = EmailRepository(conn)
+
+    repo.save_attachment(
+        gmail_id="g1",
+        filename="factura.pdf",
+        mime_type="application/pdf",
+        local_path="attachments/g1/factura.pdf",
+        size=120,
+    )
+
+    rows = repo.get_attachments("g1")
+
+    assert len(rows) == 1
+    assert rows[0]["filename"] == "factura.pdf"
+    assert rows[0]["local_path"] == "attachments/g1/factura.pdf"

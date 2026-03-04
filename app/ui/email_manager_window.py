@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import html
 import logging
+import os
 import re
 import sqlite3
+import tempfile
 import tkinter as tk
+import webbrowser
 from datetime import datetime
+from pathlib import Path
 from tkinter import messagebox, simpledialog, ttk
 
 from app.core.email.category_manager import CategoryManager
@@ -64,6 +68,7 @@ class EmailManagerWindow(tk.Toplevel):
             "status": "Estado",
         }
         self._all_rows: list[dict[str, str]] = []
+        self._attachments_buttons: list[ttk.Button] = []
         self._rows_by_id: dict[str, dict[str, str]] = {}
         self._current_tab = default_label
 
@@ -162,9 +167,18 @@ class EmailManagerWindow(tk.Toplevel):
         self.preview_text = tk.Text(preview_frame, wrap="word", height=12)
         preview_scroll = ttk.Scrollbar(preview_frame, orient="vertical", command=self.preview_text.yview)
         self.preview_text.configure(yscrollcommand=preview_scroll.set)
-        self.preview_text.pack(side="left", fill="both", expand=True)
+        self.preview_text.pack(side="top", fill="both", expand=True, padx=4, pady=(4, 2))
         preview_scroll.pack(side="right", fill="y")
         self.preview_text.configure(state="disabled")
+
+        preview_actions = ttk.Frame(preview_frame)
+        preview_actions.pack(fill="x", padx=4, pady=(0, 4))
+        ttk.Button(preview_actions, text="Ver HTML completo", command=self._open_full_html).pack(side="left")
+
+        self.attachments_label = ttk.Label(preview_frame, text="Adjuntos:")
+        self.attachments_label.pack(anchor="w", padx=4, pady=(0, 2))
+        self.attachments_container = ttk.Frame(preview_frame)
+        self.attachments_container.pack(fill="x", padx=4, pady=(0, 4))
 
         response_frame = ttk.LabelFrame(lower_panel, text="Respuesta")
         self.response_text = tk.Text(response_frame, wrap="word", height=12)
@@ -494,6 +508,7 @@ class EmailManagerWindow(tk.Toplevel):
     def _refresh_preview(self) -> None:
         selection = self.tree.selection()
         preview = "Selecciona un email para ver su contenido."
+        attachments: list[sqlite3.Row] = []
         if len(selection) == 1:
             row = self._rows_by_id.get(str(selection[0]))
             if row:
@@ -513,6 +528,7 @@ class EmailManagerWindow(tk.Toplevel):
                     f"Estado: {row['status']}\n\n"
                     f"{body.strip()}"
                 )
+                attachments = self.email_repo.get_attachments(str(row["gmail_id"]))
         elif len(selection) > 1:
             preview = f"{len(selection)} correos seleccionados."
 
@@ -520,6 +536,66 @@ class EmailManagerWindow(tk.Toplevel):
         self.preview_text.delete("1.0", "end")
         self.preview_text.insert("1.0", preview)
         self.preview_text.configure(state="disabled")
+        self._render_attachments(attachments)
+
+    def _render_attachments(self, attachments: list[sqlite3.Row]) -> None:
+        for child in self.attachments_container.winfo_children():
+            child.destroy()
+
+        if not attachments:
+            ttk.Label(self.attachments_container, text="(sin adjuntos)").pack(anchor="w")
+            return
+
+        for attachment in attachments:
+            row_frame = ttk.Frame(self.attachments_container)
+            row_frame.pack(fill="x", pady=1)
+            ttk.Label(row_frame, text=str(attachment["filename"]) or "(sin nombre)").pack(side="left")
+            ttk.Button(
+                row_frame,
+                text="Abrir",
+                command=lambda path=str(attachment["local_path"]): self._open_attachment(path),
+                width=8,
+            ).pack(side="left", padx=(6, 0))
+
+    def _open_attachment(self, local_path: str) -> None:
+        path = Path(local_path)
+        if not path.exists():
+            messagebox.showerror("Adjunto", f"No existe el archivo:\n{local_path}")
+            return
+
+        try:
+            if hasattr(os, "startfile"):
+                os.startfile(str(path))  # type: ignore[attr-defined]
+            else:
+                webbrowser.open(path.resolve().as_uri())
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("No se pudo abrir adjunto")
+            messagebox.showerror("Adjunto", f"No se pudo abrir el adjunto.\n\n{exc}")
+
+    def _open_full_html(self) -> None:
+        selection = self.tree.selection()
+        if len(selection) != 1:
+            messagebox.showwarning("Atención", "Selecciona un solo correo para ver su HTML.")
+            return
+
+        row = self._rows_by_id.get(str(selection[0]))
+        if not row:
+            return
+
+        body_html = (row.get("body_html") or "").strip()
+        if not body_html:
+            messagebox.showinfo("HTML", "El correo no tiene contenido HTML.")
+            return
+
+        try:
+            with tempfile.NamedTemporaryFile("w", suffix=".html", delete=False, encoding="utf-8") as temp_file:
+                temp_file.write(body_html)
+                temp_path = Path(temp_file.name)
+
+            webbrowser.open(temp_path.resolve().as_uri())
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("No se pudo abrir HTML completo")
+            messagebox.showerror("HTML", f"No se pudo abrir el HTML completo.\n\n{exc}")
 
     def _generate_response(self) -> None:
         selection = self.tree.selection()

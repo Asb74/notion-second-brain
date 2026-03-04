@@ -106,6 +106,13 @@ class GmailClient:
             format=format
         ).execute()
 
+    def get_attachment(self, message_id: str, attachment_id: str):
+        return self.service.users().messages().attachments().get(
+            userId="me",
+            messageId=message_id,
+            id=attachment_id,
+        ).execute()
+
     def get_message_subject(self, message_id: str) -> str:
         message = self.service.users().messages().get(
             userId="me",
