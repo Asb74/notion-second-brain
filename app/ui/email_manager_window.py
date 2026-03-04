@@ -11,7 +11,7 @@ from datetime import datetime
 from tkinter import messagebox, ttk
 
 from app.core.email.gmail_client import GmailClient
-from app.core.email.forwarded_parser import extract_original_recipients
+from app.core.email.forwarded_parser import extract_forwarded_headers
 from app.core.email.mail_ingestion_service import MailIngestionService
 from app.core.models import NoteCreateRequest
 from app.core.outlook.outlook_service import OutlookService
@@ -378,11 +378,16 @@ class EmailManagerWindow(tk.Toplevel):
 
         is_forwarded = bool(re.match(r"^\s*(rv:|fw:|fwd:)", subject, re.IGNORECASE))
         if is_forwarded:
-            forwarded_recipients = extract_original_recipients(row.get("body_text", ""))
-            if forwarded_recipients:
-                original_from = forwarded_recipients.get("from", original_from)
-                original_to = forwarded_recipients.get("to", original_to)
-                original_cc = forwarded_recipients.get("cc", original_cc)
+            parsed = extract_forwarded_headers(row.get("body_text", ""))
+            if parsed and parsed.get("from"):
+                original_from = parsed["from"]
+                original_to = "; ".join(parsed.get("to_list", []))
+                original_cc = "; ".join(parsed.get("cc_list", []))
+
+        reply_all = messagebox.askyesno("Responder", "¿Responder a todos (incluyendo CC)?")
+        if not reply_all:
+            original_to = ""
+            original_cc = ""
 
         try:
             self.outlook_service.create_draft(

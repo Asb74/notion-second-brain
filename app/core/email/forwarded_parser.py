@@ -3,64 +3,111 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
-_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
-_HEADER_RE = re.compile(r"^\s*(de|from|para|to|cc)\s*:\s*(.*)$", re.IGNORECASE)
-_MARKER_RE = re.compile(r"mensaje\s+original", re.IGNORECASE)
-
-
-def _find_forwarded_block_start(lines: list[str]) -> int:
-    for index, line in enumerate(lines):
-        if _MARKER_RE.search(line):
-            return index
-
-    for index, line in enumerate(lines):
-        header_match = _HEADER_RE.match(line)
-        if not header_match:
-            continue
-        if header_match.group(1).lower() not in {"de", "from"}:
-            continue
-
-        lookahead = lines[index : index + 12]
-        if any(
-            (match := _HEADER_RE.match(candidate)) and match.group(1).lower() in {"para", "to"}
-            for candidate in lookahead
-        ):
-            return index
-
-    return -1
+EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
 
-def extract_original_recipients(body_text: str) -> dict:
-    """Extract original from/to/cc addresses from a forwarded message block."""
+@dataclass
+class _ForwardedFields:
+    from_value: str = ""
+    to_value: str = ""
+    cc_value: str = ""
+
+
+def _extract_emails(text: str) -> list[str]:
+    if not text:
+        return []
+    return EMAIL_RE.findall(text)
+
+
+def extract_forwarded_headers(body_text: str) -> dict:
+    """
+    Devuelve dict con keys: from, to_list, cc_list.
+
+    Busca bloque desde '-----Mensaje original-----' hasta una línea vacía doble o fin.
+    Dentro, busca líneas que empiezan por:
+      'De:' / 'From:'
+      'Para:' / 'To:'
+      'CC:' / 'Cc:'
+    Soporta valores partidos en varias líneas (continuaciones) hasta que aparece otro campo o línea vacía.
+    """
     if not body_text:
         return {}
 
-    lines = body_text.splitlines()
-    start_index = _find_forwarded_block_start(lines)
-    if start_index < 0:
+    text = body_text.replace("\r\n", "\n").replace("\r", "\n")
+
+    marker = "-----Mensaje original-----"
+    idx = text.lower().find(marker.lower())
+    if idx == -1:
         return {}
 
-    extracted: dict[str, list[str]] = {"from": [], "to": [], "cc": []}
+    block = text[idx + len(marker):]
+    block = block[:4000]
 
-    for line in lines[start_index:]:
-        match = _HEADER_RE.match(line)
-        if not match:
+    lines = block.split("\n")
+    current_key: str | None = None
+    buf = _ForwardedFields()
+
+    def is_field_line(line: str) -> str | None:
+        low = line.strip().lower()
+        if low.startswith("de:") or low.startswith("from:"):
+            return "from"
+        if low.startswith("para:") or low.startswith("to:"):
+            return "to"
+        if low.startswith("cc:"):
+            return "cc"
+        return None
+
+    empty_streak = 0
+    for line in lines:
+        if not line.strip():
+            empty_streak += 1
+            if any((buf.from_value, buf.to_value, buf.cc_value)) and empty_streak >= 2:
+                break
             continue
 
-        header_name = match.group(1).lower()
-        target = {"de": "from", "from": "from", "para": "to", "to": "to", "cc": "cc"}.get(header_name)
-        if not target:
+        empty_streak = 0
+        key = is_field_line(line)
+        if key:
+            current_key = key
+            value = line.split(":", 1)[1].strip()
+            if key == "from":
+                buf.from_value = (f"{buf.from_value} {value}").strip()
+            elif key == "to":
+                buf.to_value = (f"{buf.to_value} {value}").strip()
+            elif key == "cc":
+                buf.cc_value = (f"{buf.cc_value} {value}").strip()
             continue
 
-        for address in _EMAIL_RE.findall(match.group(2)):
-            if address not in extracted[target]:
-                extracted[target].append(address)
+        if current_key == "from":
+            buf.from_value = (f"{buf.from_value} {line.strip()}").strip()
+        elif current_key == "to":
+            buf.to_value = (f"{buf.to_value} {line.strip()}").strip()
+        elif current_key == "cc":
+            buf.cc_value = (f"{buf.cc_value} {line.strip()}").strip()
 
-    result = {
-        key: ", ".join(values)
-        for key, values in extracted.items()
-        if values
+    from_emails = _extract_emails(buf.from_value)
+    to_emails = _extract_emails(buf.to_value)
+    cc_emails = _extract_emails(buf.cc_value)
+
+    parsed = {
+        "from": from_emails[0] if from_emails else "",
+        "to_list": to_emails,
+        "cc_list": cc_emails,
     }
+    if not parsed["from"] and not parsed["to_list"] and not parsed["cc_list"]:
+        return {}
+    return parsed
 
-    return result if result else {}
+
+def extract_original_recipients(body_text: str) -> dict:
+    """Backward-compatible wrapper returning comma-separated from/to/cc."""
+    parsed = extract_forwarded_headers(body_text)
+    if not parsed:
+        return {}
+    return {
+        "from": parsed.get("from", ""),
+        "to": ", ".join(parsed.get("to_list", [])),
+        "cc": ", ".join(parsed.get("cc_list", [])),
+    }
