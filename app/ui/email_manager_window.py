@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import html
 import logging
+import re
 import sqlite3
 import tkinter as tk
 from datetime import datetime
 from tkinter import messagebox, ttk
 
 from app.core.email.gmail_client import GmailClient
+from app.core.email.forwarded_parser import extract_original_recipients
 from app.core.email.mail_ingestion_service import MailIngestionService
 from app.core.models import NoteCreateRequest
 from app.core.outlook.outlook_service import OutlookService
@@ -370,13 +372,25 @@ class EmailManagerWindow(tk.Toplevel):
             messagebox.showwarning("Atención", "Escribe o genera una respuesta antes de crear el borrador.")
             return
 
+        original_from = row.get("original_from", row["sender"])
+        original_to = row.get("original_to", "")
+        original_cc = row.get("original_cc", "")
+
+        is_forwarded = bool(re.match(r"^\s*(rv:|fw:|fwd:)", subject, re.IGNORECASE))
+        if is_forwarded:
+            forwarded_recipients = extract_original_recipients(row.get("body_text", ""))
+            if forwarded_recipients:
+                original_from = forwarded_recipients.get("from", original_from)
+                original_to = forwarded_recipients.get("to", original_to)
+                original_cc = forwarded_recipients.get("cc", original_cc)
+
         try:
             self.outlook_service.create_draft(
                 subject=draft_subject,
                 body=body,
-                original_from=row.get("original_from", row["sender"]),
-                original_to=row.get("original_to", ""),
-                original_cc=row.get("original_cc", ""),
+                original_from=original_from,
+                original_to=original_to,
+                original_cc=original_cc,
                 my_email=self.my_email,
                 original_reply_to=row.get("original_reply_to", ""),
             )
