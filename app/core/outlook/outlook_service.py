@@ -25,16 +25,17 @@ class OutlookService:
     @classmethod
     def clean_recipients(
         cls,
-        to_list: list[str],
-        cc_list: list[str],
+        to_list: list[str] | str,
+        cc_list: list[str] | str,
         main_recipient: str,
         my_email: str,
     ) -> tuple[str, list[str]]:
         main = (main_recipient or "").strip().lower()
         mine = (my_email or "").strip().lower()
 
-        all_candidates = cls._parse_addresses(",".join([*(to_list or []), *(cc_list or [])])
-        )
+        normalized_to = [to_list] if isinstance(to_list, str) else (to_list or [])
+        normalized_cc = [cc_list] if isinstance(cc_list, str) else (cc_list or [])
+        all_candidates = cls._parse_addresses(",".join([*normalized_to, *normalized_cc]))
 
         normalized_seen: set[str] = set()
         clean_cc: list[str] = []
@@ -47,7 +48,7 @@ class OutlookService:
             normalized_seen.add(normalized)
             clean_cc.append(candidate)
 
-        clean_main = "" if main == mine else main_recipient.strip()
+        clean_main = "" if main == mine else (main_recipient or "").strip()
         return clean_main, clean_cc
 
     def create_draft(
@@ -65,8 +66,8 @@ class OutlookService:
         main_recipient_candidates = self._parse_addresses(original_reply_to) or self._parse_addresses(original_from)
         main_recipient = main_recipient_candidates[0] if main_recipient_candidates else ""
         clean_main, clean_cc = self.clean_recipients(
-            to_list=[original_to],
-            cc_list=[original_cc],
+            to_list=original_to,
+            cc_list=original_cc,
             main_recipient=main_recipient,
             my_email=my_email,
         )
