@@ -690,10 +690,14 @@ class EmailManagerWindow(tk.Toplevel):
         if not row:
             return
 
+        sender = str(row.get("sender", "")).lower()
+        sender_type = "interno" if "sansebas.es" in sender else "externo"
+
         examples = self.training_repo.get_similar_examples(
             category=row["category"],
             subject=row["subject"],
             body=row["body_text"],
+            sender_type=sender_type,
             limit=3,
         )
 
@@ -731,12 +735,18 @@ class EmailManagerWindow(tk.Toplevel):
             return ""
 
     def _build_response_prompt(self, row: dict[str, str], examples: list[dict[str, str]]) -> str:
-        sections: list[str] = []
-        style_profile = self._get_fixed_style_profile()
-        if style_profile:
-            sections.append("Perfil de estilo fijo:\n" + style_profile)
-
-        examples_lines = ["Ejemplos reales del usuario:", ""]
+        examples_lines = [
+            "Eres un asistente que redacta correos en el estilo del usuario.",
+            "",
+            "Estilo del usuario:",
+            "- Saludo preferido: Buenos días,",
+            "- Tono: profesional directo",
+            "- Longitud: media",
+            "- Evitar: Estimado",
+            "",
+            "Ejemplos reales del usuario:",
+            "",
+        ]
         for index, example in enumerate(examples, start=1):
             examples_lines.extend(
                 [
@@ -749,16 +759,20 @@ class EmailManagerWindow(tk.Toplevel):
                     "",
                 ]
             )
-        sections.append("\n".join(examples_lines).rstrip())
-
-        sections.append(
-            "Nuevo correo:\n"
-            f"Asunto: {row.get('subject', '').strip()}\n"
-            "Correo original:\n"
-            f"{row.get('body_text', '').strip()}"
+        examples_lines.extend(
+            [
+                "--------------------------------------",
+                "",
+                "Ahora redacta la respuesta al siguiente correo:",
+                "",
+                f"Asunto: {row.get('subject', '').strip()}",
+                "Correo:",
+                f"{row.get('body_text', '').strip()}",
+                "",
+                "--------------------------------------",
+            ]
         )
-        sections.append("Redacta la mejor respuesta para este correo.")
-        return "\n\n".join(section for section in sections if section.strip())
+        return "\n".join(examples_lines).strip()
 
     def _get_fixed_style_profile(self) -> str:
         return os.getenv("EMAIL_RESPONSE_STYLE_PROFILE", "").strip()
