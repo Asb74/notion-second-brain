@@ -89,6 +89,19 @@ class EmailRepository:
             )
             """
         )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS email_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                gmail_id TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                mime_type TEXT,
+                local_path TEXT NOT NULL,
+                size INTEGER,
+                UNIQUE(gmail_id, filename, local_path)
+            )
+            """
+        )
         self.conn.commit()
 
     def _ensure_column(self, name: str, sql_type: str) -> None:
@@ -322,3 +335,31 @@ class EmailRepository:
         params = [status, *ids]
         self.conn.execute(f"UPDATE emails SET status = ? WHERE gmail_id IN ({placeholders})", tuple(params))
         self.conn.commit()
+
+    def save_attachment(
+        self,
+        gmail_id: str,
+        filename: str,
+        mime_type: str,
+        local_path: str,
+        size: int,
+    ) -> None:
+        self.conn.execute(
+            """
+            INSERT OR IGNORE INTO email_attachments (gmail_id, filename, mime_type, local_path, size)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (gmail_id, filename, mime_type, local_path, size),
+        )
+        self.conn.commit()
+
+    def get_attachments(self, gmail_id: str) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            """
+            SELECT id, gmail_id, filename, mime_type, local_path, size
+            FROM email_attachments
+            WHERE gmail_id = ?
+            ORDER BY id ASC
+            """,
+            (gmail_id,),
+        ).fetchall()

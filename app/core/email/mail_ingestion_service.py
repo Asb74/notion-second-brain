@@ -1,22 +1,33 @@
 import base64
 import json
+import logging
 import sqlite3
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.core.email.email_classifier import EmailClassifier
 from app.persistence.email_repository import EmailRepository
+
+logger = logging.getLogger(__name__)
 
 
 class MailIngestionService:
     STATUS_NEW = "new"
     CATEGORY_PENDING = "pending"
 
-    def __init__(self, gmail_client, db_connection: sqlite3.Connection):
+    def __init__(
+        self,
+        gmail_client,
+        db_connection: sqlite3.Connection,
+        attachments_root: Path | None = None,
+    ):
         self.gmail_client = gmail_client
         self.db_connection = db_connection
         self.email_repo = EmailRepository(db_connection)
         self.classifier = EmailClassifier(email_repo=self.email_repo)
+        self.attachments_root = attachments_root or Path("attachments")
+        self.attachments_root.mkdir(parents=True, exist_ok=True)
 
     def sync_unread_emails(self, max_results: int = 20) -> List[str]:
         self.ensure_table()
@@ -31,9 +42,7 @@ class MailIngestionService:
             headers = self._extract_headers(payload)
             subject = headers["subject"]
             sender = headers["from"]
-            body_text, body_html, has_attachments = self._extract_body_and_attachments(
-                payload
-            )
+            body_text, body_html, has_attachments, attachments = self._extract_body_and_attachments(payload)
 
             received_at = self._convert_internal_date(full_message.get("internalDate"))
             email_type = self.classifier.classify(subject=subject, sender=sender, body_text=body_text)
@@ -57,6 +66,7 @@ class MailIngestionService:
             )
 
             if inserted:
+                self._persist_attachments(gmail_id=gmail_id, attachments=attachments)
                 self.gmail_client.mark_as_read(gmail_id)
                 processed_ids.append(gmail_id)
 
@@ -85,6 +95,19 @@ class MailIngestionService:
                 original_cc TEXT DEFAULT '',
                 original_reply_to TEXT DEFAULT ''
             );
+            """
+        )
+        self.db_connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS email_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                gmail_id TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                mime_type TEXT,
+                local_path TEXT NOT NULL,
+                size INTEGER,
+                UNIQUE(gmail_id, filename, local_path)
+            )
             """
         )
         columns = self.db_connection.execute("PRAGMA table_info(emails)").fetchall()
@@ -192,21 +215,28 @@ class MailIngestionService:
 
     def _extract_body_and_attachments(
         self,
-        payload: Dict[str, Any]
-    ) -> Tuple[str, str, int]:
+        payload: Dict[str, Any],
+    ) -> Tuple[str, str, int, List[Dict[str, str]]]:
         body_text_parts: List[str] = []
         body_html_parts: List[str] = []
-        has_attachments = 0
+        attachments: List[Dict[str, str]] = []
 
         def walk_part(part: Dict[str, Any]) -> None:
-            nonlocal has_attachments
-
-            filename = part.get("filename")
+            filename = (part.get("filename") or "").strip()
+            body = part.get("body", {}) or {}
             if filename:
-                has_attachments = 1
+                attachment_id = body.get("attachmentId")
+                if attachment_id:
+                    attachments.append(
+                        {
+                            "filename": filename,
+                            "mime_type": part.get("mimeType", "application/octet-stream"),
+                            "attachment_id": attachment_id,
+                        }
+                    )
 
             mime_type = part.get("mimeType", "")
-            body_data = part.get("body", {}).get("data")
+            body_data = body.get("data")
             decoded = self._decode_base64_url(body_data)
 
             if mime_type == "text/plain" and decoded:
@@ -221,7 +251,58 @@ class MailIngestionService:
 
         body_text = "\n\n".join(body_text_parts).strip()
         body_html = "\n\n".join(body_html_parts).strip()
-        return body_text, body_html, has_attachments
+        has_attachments = 1 if attachments else 0
+        return body_text, body_html, has_attachments, attachments
+
+    def _persist_attachments(self, gmail_id: str, attachments: List[Dict[str, str]]) -> None:
+        if not attachments:
+            return
+
+        safe_gmail_id = self._safe_path_segment(gmail_id)
+        target_dir = self.attachments_root / safe_gmail_id
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        for attachment in attachments:
+            filename = attachment["filename"]
+            safe_filename = self._safe_filename(filename)
+            attachment_id = attachment.get("attachment_id", "")
+            if not attachment_id:
+                logger.warning("Adjunto sin attachment_id. gmail_id=%s filename=%s", gmail_id, filename)
+                continue
+
+            try:
+                response = self.gmail_client.get_attachment(gmail_id, attachment_id)
+                attachment_data = response.get("data")
+                raw_bytes = self._decode_base64_url_to_bytes(attachment_data)
+                if not raw_bytes:
+                    raise ValueError("Respuesta sin datos del adjunto")
+
+                target_path = target_dir / safe_filename
+                target_path.write_bytes(raw_bytes)
+                self.email_repo.save_attachment(
+                    gmail_id=gmail_id,
+                    filename=filename,
+                    mime_type=attachment.get("mime_type", "application/octet-stream"),
+                    local_path=str(target_path),
+                    size=len(raw_bytes),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(
+                    "No se pudo descargar/guardar adjunto. gmail_id=%s filename=%s error=%s",
+                    gmail_id,
+                    filename,
+                    exc,
+                )
+
+    @staticmethod
+    def _safe_filename(filename: str) -> str:
+        cleaned = filename.replace("\\", "_").replace("/", "_").strip()
+        return cleaned or "attachment"
+
+    @staticmethod
+    def _safe_path_segment(segment: str) -> str:
+        cleaned = segment.replace("\\", "_").replace("/", "_").strip()
+        return cleaned or "email"
 
     def _convert_internal_date(self, internal_date: Optional[str]) -> Optional[str]:
         if not internal_date:
@@ -231,9 +312,15 @@ class MailIngestionService:
         return datetime.fromtimestamp(timestamp_seconds, tz=timezone.utc).isoformat()
 
     def _decode_base64_url(self, data: Optional[str]) -> str:
-        if not data:
+        raw_bytes = self._decode_base64_url_to_bytes(data)
+        if not raw_bytes:
             return ""
+        return raw_bytes.decode("utf-8", errors="replace")
+
+    @staticmethod
+    def _decode_base64_url_to_bytes(data: Optional[str]) -> bytes:
+        if not data:
+            return b""
 
         padding = "=" * (-len(data) % 4)
-        raw_bytes = base64.urlsafe_b64decode(data + padding)
-        return raw_bytes.decode("utf-8", errors="replace")
+        return base64.urlsafe_b64decode(data + padding)
