@@ -10,6 +10,14 @@ from typing import Sequence
 class EmailRepository:
     """Data access for ingested emails."""
 
+    BASE_CATEGORIES: tuple[tuple[str, str], ...] = (
+        ("priority", "Prioritarios"),
+        ("order", "Pedidos"),
+        ("subscription", "Suscripciones"),
+        ("marketing", "Publicidad"),
+        ("other", "Otros"),
+    )
+
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
         self.ensure_table()
@@ -55,11 +63,23 @@ class EmailRepository:
             CREATE TABLE IF NOT EXISTS email_labels (
                 gmail_id TEXT PRIMARY KEY,
                 label TEXT NOT NULL,
-                labeled_at TEXT NOT NULL,
-                source TEXT NOT NULL
+                source TEXT NOT NULL,
+                labeled_at TEXT
             )
             """
         )
+        self._ensure_email_labels_schema()
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS email_categories (
+                name TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                is_base INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT
+            )
+            """
+        )
+        self._seed_base_categories()
         self.conn.execute(
             """
             CREATE TABLE IF NOT EXISTS sender_rules (
@@ -76,6 +96,40 @@ class EmailRepository:
         column_names = {str(row["name"]) for row in columns}
         if name not in column_names:
             self.conn.execute(f"ALTER TABLE emails ADD COLUMN {name} {sql_type}")
+
+    def _ensure_email_labels_schema(self) -> None:
+        columns = self.conn.execute("PRAGMA table_info(email_labels)").fetchall()
+        if not columns:
+            return
+        column_names = {str(row["name"]) for row in columns}
+        required_columns = {"gmail_id", "label", "source", "labeled_at"}
+        if required_columns.issubset(column_names):
+            return
+
+        self.conn.execute("DROP TABLE IF EXISTS email_labels")
+        self.conn.execute(
+            """
+            CREATE TABLE email_labels (
+                gmail_id TEXT PRIMARY KEY,
+                label TEXT NOT NULL,
+                source TEXT NOT NULL,
+                labeled_at TEXT
+            )
+            """
+        )
+
+    def _seed_base_categories(self) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        self.conn.executemany(
+            """
+            INSERT INTO email_categories (name, display_name, is_base, created_at)
+            VALUES (?, ?, 1, ?)
+            ON CONFLICT(name) DO UPDATE SET
+                display_name=excluded.display_name,
+                is_base=1
+            """,
+            [(name, display_name, now) for name, display_name in self.BASE_CATEGORIES],
+        )
 
     def get_emails_by_types(self, types: Sequence[str]) -> list[sqlite3.Row]:
         if not types:
@@ -179,6 +233,69 @@ class EmailRepository:
     def count_labeled_examples(self) -> int:
         row = self.conn.execute("SELECT COUNT(*) AS count FROM email_labels").fetchone()
         return int(row["count"] if row else 0)
+
+    def get_categories(self) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            """
+            SELECT name, display_name, is_base, created_at
+            FROM email_categories
+            ORDER BY is_base DESC, created_at ASC, display_name ASC
+            """
+        ).fetchall()
+
+    def get_category_names(self) -> list[str]:
+        rows = self.conn.execute(
+            "SELECT name FROM email_categories ORDER BY is_base DESC, created_at ASC, name ASC"
+        ).fetchall()
+        return [str(row["name"]) for row in rows]
+
+    def count_categories(self) -> int:
+        row = self.conn.execute("SELECT COUNT(*) AS count FROM email_categories").fetchone()
+        return int(row["count"] if row else 0)
+
+    def get_all_emails_for_classification(self) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            """
+            SELECT gmail_id, subject, sender, body_text
+            FROM emails
+            ORDER BY received_at DESC
+            """
+        ).fetchall()
+
+    def bulk_update_email_types(self, updates: Sequence[tuple[str, str]]) -> None:
+        if not updates:
+            return
+        self.conn.executemany("UPDATE emails SET type = ? WHERE gmail_id = ?", [(label, gmail_id) for gmail_id, label in updates])
+        self.conn.commit()
+
+    def create_category(self, name: str, display_name: str, is_base: int = 0) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO email_categories (name, display_name, is_base, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (name, display_name, is_base, datetime.now(timezone.utc).isoformat()),
+        )
+        self.conn.commit()
+
+    def rename_category(self, previous_name: str, next_name: str, next_display_name: str) -> None:
+        self.conn.execute(
+            """
+            UPDATE email_categories
+            SET name = ?, display_name = ?
+            WHERE name = ?
+            """,
+            (next_name, next_display_name, previous_name),
+        )
+        self.conn.execute("DELETE FROM email_labels WHERE label = ?", (previous_name,))
+        self.conn.execute("UPDATE emails SET type = ? WHERE type = ?", (next_name, previous_name))
+        self.conn.commit()
+
+    def delete_category(self, name: str) -> None:
+        self.conn.execute("DELETE FROM email_labels WHERE label = ?", (name,))
+        self.conn.execute("UPDATE emails SET type = 'other' WHERE type = ?", (name,))
+        self.conn.execute("DELETE FROM email_categories WHERE name = ?", (name,))
+        self.conn.commit()
 
     def delete_emails(self, ids: Sequence[str]) -> None:
         if not ids:

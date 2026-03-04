@@ -8,8 +8,9 @@ import re
 import sqlite3
 import tkinter as tk
 from datetime import datetime
-from tkinter import messagebox, ttk
+from tkinter import messagebox, simpledialog, ttk
 
+from app.core.email.category_manager import CategoryManager
 from app.core.email.gmail_client import GmailClient
 from app.core.email.forwarded_parser import extract_forwarded_headers
 from app.core.email.mail_ingestion_service import MailIngestionService
@@ -25,21 +26,6 @@ logger = logging.getLogger(__name__)
 class EmailManagerWindow(tk.Toplevel):
     """Manage ingested emails and manual conversion to notes."""
 
-    TAB_TO_TYPES = {
-        "Prioritarios": ["priority"],
-        "Pedidos": ["order"],
-        "Suscripciones": ["subscription"],
-        "Publicidad": ["marketing"],
-        "Otros": ["other"],
-    }
-    MOVE_LABEL_TO_TYPE = {
-        "Prioritarios": "priority",
-        "Pedidos": "order",
-        "Suscripciones": "subscription",
-        "Publicidad": "marketing",
-        "Otros": "other",
-    }
-
     def __init__(
         self,
         master: tk.Misc,
@@ -51,6 +37,7 @@ class EmailManagerWindow(tk.Toplevel):
         self.note_service = note_service
         self.gmail_client = gmail_client
         self.email_repo = EmailRepository(db_connection)
+        self.category_manager = CategoryManager(self.email_repo)
         self.mail_ingestion_service = MailIngestionService(gmail_client=gmail_client, db_connection=db_connection)
         self.classifier = self.mail_ingestion_service.classifier
         self.outlook_service = OutlookService()
@@ -62,7 +49,11 @@ class EmailManagerWindow(tk.Toplevel):
 
         self.status_var = tk.StringVar(value="Listo")
         self.model_var = tk.StringVar(value=self.classifier.model_status())
-        self.move_target_var = tk.StringVar(value="Prioritarios")
+        self._categories = self.category_manager.list_categories()
+        default_label = self._categories[0]["display_name"] if self._categories else "Otros"
+        self._tab_to_types = {item["display_name"]: [item["name"]] for item in self._categories}
+        self._move_label_to_type = {item["display_name"]: item["name"] for item in self._categories}
+        self.move_target_var = tk.StringVar(value=default_label)
         self.columns = ("gmail_id", "subject", "sender", "type", "received_at", "status")
         self.column_titles = {
             "gmail_id": "Gmail ID",
@@ -74,7 +65,7 @@ class EmailManagerWindow(tk.Toplevel):
         }
         self._all_rows: list[dict[str, str]] = []
         self._rows_by_id: dict[str, dict[str, str]] = {}
-        self._current_tab = "Prioritarios"
+        self._current_tab = default_label
 
         self._build_layout()
         self.refresh_emails()
@@ -90,6 +81,7 @@ class EmailManagerWindow(tk.Toplevel):
         self._add_toolbar_group(toolbar, [
             ("Descargar", self._download_new_emails),
             ("Reentrenar modelo", self._retrain_model),
+            ("➕ Nueva categoría", self._create_category),
         ])
         self._add_toolbar_group(toolbar, [
             ("Seleccionar todo", self._select_all_rows),
@@ -110,22 +102,27 @@ class EmailManagerWindow(tk.Toplevel):
         move_group = ttk.Frame(toolbar)
         move_group.pack(side="left", padx=(6, 0))
         ttk.Label(move_group, text="Mover a:").pack(side="left", padx=(0, 4))
-        ttk.Combobox(
+        self.move_target_combo = ttk.Combobox(
             move_group,
             textvariable=self.move_target_var,
-            values=list(self.MOVE_LABEL_TO_TYPE.keys()),
+            values=list(self._move_label_to_type.keys()),
             state="readonly",
             width=14,
-        ).pack(side="left", padx=(0, 4))
+        )
+        self.move_target_combo.pack(side="left", padx=(0, 4))
         ttk.Button(move_group, text="Aplicar", style="Toolbar.TButton", width=14, command=self._move_selected_emails).pack(side="left")
 
         tabs_frame = ttk.Frame(self)
         tabs_frame.pack(fill="x", padx=10, pady=(0, 6))
         self.notebook = ttk.Notebook(tabs_frame)
-        for tab_name in self.TAB_TO_TYPES:
-            self.notebook.add(ttk.Frame(self.notebook), text=tab_name)
+        self._rebuild_tabs()
         self.notebook.pack(fill="x")
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+        self.notebook.bind("<Button-3>", self._open_tab_context_menu)
+
+        self.tab_menu = tk.Menu(self, tearoff=0)
+        self.tab_menu.add_command(label="Renombrar categoría", command=self._rename_current_category)
+        self.tab_menu.add_command(label="Eliminar categoría", command=self._delete_current_category)
 
         table_frame = ttk.Frame(self)
         table_frame.pack(fill="both", expand=True, padx=10, pady=(0, 6))
@@ -195,6 +192,99 @@ class EmailManagerWindow(tk.Toplevel):
             ttk.Button(frame, text=text, command=command, style="Toolbar.TButton", width=18).pack(side="left", padx=(0, 4))
         ttk.Separator(parent, orient="vertical").pack(side="left", fill="y", padx=(0, 8))
 
+    def _reload_category_maps(self) -> None:
+        self._categories = self.category_manager.list_categories()
+        self._tab_to_types = {item["display_name"]: [item["name"]] for item in self._categories}
+        self._move_label_to_type = {item["display_name"]: item["name"] for item in self._categories}
+        labels = list(self._move_label_to_type.keys())
+        self.move_target_combo.configure(values=labels)
+        if self.move_target_var.get() not in labels and labels:
+            self.move_target_var.set(labels[0])
+
+    def _rebuild_tabs(self) -> None:
+        labels = [item["display_name"] for item in self._categories]
+        current = self._current_tab if self._current_tab in labels else (labels[0] if labels else "")
+        for tab_id in self.notebook.tabs():
+            self.notebook.forget(tab_id)
+        for tab_name in labels:
+            self.notebook.add(ttk.Frame(self.notebook), text=tab_name)
+        if current and labels:
+            tab_index = labels.index(current)
+            self.notebook.select(tab_index)
+        self._current_tab = current
+
+    def _current_category(self) -> dict[str, object] | None:
+        selected = self._current_tab
+        return next((item for item in self._categories if item["display_name"] == selected), None)
+
+    def _open_tab_context_menu(self, event: tk.Event) -> None:
+        try:
+            tab_index = self.notebook.index(f"@{event.x},{event.y}")
+        except tk.TclError:
+            return
+        self.notebook.select(tab_index)
+        self._current_tab = self.notebook.tab(self.notebook.select(), "text")
+        category = self._current_category()
+        if not category or bool(category["is_base"]):
+            return
+        self.tab_menu.tk_popup(event.x_root, event.y_root)
+
+    def _create_category(self) -> None:
+        display_name = simpledialog.askstring("Nueva categoría", "Nombre visible de la categoría:", parent=self)
+        if display_name is None:
+            return
+        try:
+            created = self.category_manager.create_category(display_name)
+            self._reload_category_maps()
+            self._current_tab = str(created["display_name"])
+            self._rebuild_tabs()
+            self._retrain_model()
+            self.refresh_emails()
+        except ValueError as exc:
+            messagebox.showwarning("Atención", str(exc))
+
+    def _rename_current_category(self) -> None:
+        category = self._current_category()
+        if not category:
+            return
+        new_display_name = simpledialog.askstring(
+            "Renombrar categoría",
+            "Nuevo nombre visible:",
+            initialvalue=str(category["display_name"]),
+            parent=self,
+        )
+        if new_display_name is None:
+            return
+        try:
+            updated = self.category_manager.rename_category(str(category["name"]), new_display_name)
+            self._reload_category_maps()
+            self._current_tab = str(updated["display_name"])
+            self._rebuild_tabs()
+            self._retrain_model()
+            self.refresh_emails()
+        except ValueError as exc:
+            messagebox.showwarning("Atención", str(exc))
+
+    def _delete_current_category(self) -> None:
+        category = self._current_category()
+        if not category:
+            return
+        if not messagebox.askyesno(
+            "Confirmación",
+            "Esto eliminará su información de entrenamiento. ¿Continuar?",
+        ):
+            return
+        try:
+            self.category_manager.delete_category(str(category["name"]))
+            self._reload_category_maps()
+            if self._categories:
+                self._current_tab = str(self._categories[0]["display_name"])
+            self._rebuild_tabs()
+            self._retrain_model()
+            self.refresh_emails()
+        except ValueError as exc:
+            messagebox.showwarning("Atención", str(exc))
+
     def _on_tab_changed(self, _event: tk.Event) -> None:
         self._current_tab = self.notebook.tab(self.notebook.select(), "text")
         self.refresh_emails()
@@ -218,15 +308,16 @@ class EmailManagerWindow(tk.Toplevel):
         trained = self.classifier.retrain_if_possible(force=True)
         examples = self.email_repo.count_labeled_examples()
         self.classifier.examples_count = examples
+        reclassified = self.classifier.reclassify_all_emails() if trained else 0
         self.model_var.set(self.classifier.model_status())
         if trained:
-            self.status_var.set(f"Modelo reentrenado con {examples} ejemplos.")
+            self.status_var.set(f"Modelo reentrenado con {examples} ejemplos. Correos reclasificados: {reclassified}.")
         else:
             self.status_var.set(f"No hay suficientes ejemplos para entrenar ({examples}).")
 
     def refresh_emails(self) -> None:
         try:
-            rows = self.email_repo.get_emails_by_types(self.TAB_TO_TYPES.get(self._current_tab, ["priority"]))
+            rows = self.email_repo.get_emails_by_types(self._tab_to_types.get(self._current_tab, ["priority"]))
         except Exception as exc:  # noqa: BLE001
             logger.exception("No se pudieron cargar correos")
             self.status_var.set(f"Error al cargar correos: {exc}")
@@ -287,7 +378,7 @@ class EmailManagerWindow(tk.Toplevel):
             return
 
         target_label = self.move_target_var.get()
-        target_type = self.MOVE_LABEL_TO_TYPE.get(target_label, "other")
+        target_type = self._move_label_to_type.get(target_label, "other")
         self.email_repo.bulk_update_type(selected_ids, target_type)
         self.email_repo.save_labels_for_emails(selected_ids, target_type, source="user")
         for gmail_id in selected_ids:

@@ -18,7 +18,7 @@ except Exception:  # noqa: BLE001
 class MLEmailModel:
     """Encapsulates a lightweight incremental text classifier."""
 
-    CLASSES = ["priority", "order", "subscription", "marketing", "other"]
+    DEFAULT_CLASSES = ["priority", "order", "subscription", "marketing", "other"]
 
     def __init__(self, model_path: str | Path):
         self.model_path = Path(model_path)
@@ -33,22 +33,24 @@ class MLEmailModel:
             )
             self.classifier = SGDClassifier(loss="log_loss", random_state=42)
 
-    def fit(self, texts: Sequence[str], labels: Sequence[str]) -> None:
+    def fit(self, texts: Sequence[str], labels: Sequence[str], classes: Sequence[str] | None = None) -> None:
         if not self.is_available or not texts:
             self.is_trained = False
             return
         features = self.vectorizer.transform(texts)
-        self.classifier.partial_fit(features, labels, classes=self.CLASSES)
+        model_classes = list(classes or self.DEFAULT_CLASSES)
+        self.classifier.partial_fit(features, labels, classes=model_classes)
         self.is_trained = True
 
-    def partial_fit(self, texts: Sequence[str], labels: Sequence[str]) -> None:
+    def partial_fit(self, texts: Sequence[str], labels: Sequence[str], classes: Sequence[str] | None = None) -> None:
         if not self.is_available or not texts:
             return
         features = self.vectorizer.transform(texts)
+        model_classes = list(classes or self.DEFAULT_CLASSES)
         if self.is_trained:
             self.classifier.partial_fit(features, labels)
         else:
-            self.classifier.partial_fit(features, labels, classes=self.CLASSES)
+            self.classifier.partial_fit(features, labels, classes=model_classes)
             self.is_trained = True
 
     def predict(self, text: str) -> str | None:
