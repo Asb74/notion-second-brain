@@ -6,12 +6,13 @@ import html
 import logging
 import os
 import re
+import shutil
 import sqlite3
 import tkinter as tk
 import webbrowser
 from datetime import datetime
 from pathlib import Path
-from tkinter import messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 from tkinterweb import HtmlFrame
 
 from app.core.email.category_manager import CategoryManager
@@ -74,6 +75,8 @@ class EmailManagerWindow(tk.Toplevel):
         self._current_html_content = ""
         self._expanded_html_window: tk.Toplevel | None = None
         self._expanded_html_frame: HtmlFrame | None = None
+        self._expanded_attachment_preview_window: tk.Toplevel | None = None
+        self._expanded_attachment_preview_frame: HtmlFrame | None = None
 
         self._build_layout()
         self.refresh_emails()
@@ -90,70 +93,61 @@ class EmailManagerWindow(tk.Toplevel):
         toolbar_main = ttk.Frame(toolbar_container)
         toolbar_main.grid(row=0, column=0, sticky="ew")
 
-        self._add_toolbar_grid_group(
-            toolbar_main,
-            0,
-            [
-                ("Descargar", self._download_new_emails),
-                ("Reentrenar modelo", self._retrain_model),
-                ("Reclasificar emails", self._reclassify_current_emails),
-                ("Nueva categoría", self._create_category),
-            ],
-        )
-        self._add_toolbar_grid_group(
-            toolbar_main,
-            2,
-            [
-                ("Crear nota", self._create_notes_from_selected_emails),
-                ("Marcar ignoradas", self._mark_selected_as_ignored),
-                ("Eliminar", self._delete_selected_emails),
-            ],
-        )
-        toolbar_main.columnconfigure(0, weight=1)
-        toolbar_main.columnconfigure(2, weight=1)
+        first_row_buttons = [
+            ("Descargar", self._download_new_emails),
+            ("Reentrenar modelo", self._retrain_model),
+            ("Reclasificar emails", self._reclassify_current_emails),
+            ("Nueva categoría", self._create_category),
+            ("Crear nota", self._create_notes_from_selected_emails),
+            ("Marcar ignoradas", self._mark_selected_as_ignored),
+            ("Eliminar", self._delete_selected_emails),
+        ]
+        for idx, (label, command) in enumerate(first_row_buttons):
+            ttk.Button(toolbar_main, text=label, command=command, style="Toolbar.TButton").grid(
+                row=0,
+                column=idx * 2,
+                padx=(0, 6),
+                sticky="ew",
+            )
+            toolbar_main.columnconfigure(idx * 2, weight=1, uniform="toolbar-first-row")
+            if idx < len(first_row_buttons) - 1:
+                ttk.Separator(toolbar_main, orient="vertical").grid(row=0, column=idx * 2 + 1, sticky="ns", padx=(0, 6))
 
         toolbar_secondary = ttk.Frame(toolbar_container)
         toolbar_secondary.grid(row=1, column=0, sticky="ew", pady=(6, 0))
 
-        self._add_toolbar_grid_group(
-            toolbar_secondary,
-            0,
-            [
-                ("Seleccionar todo", self._select_all_rows),
-                ("Deseleccionar todo", self._clear_selection),
-            ],
-            button_width=16,
-        )
-
-        filter_group = ttk.Frame(toolbar_secondary)
-        filter_group.grid(row=0, column=2, sticky="w")
-        self.filters_menu_button = ttk.Menubutton(filter_group, text="Filtros", style="Toolbar.TButton")
+        self.filters_menu_button = ttk.Menubutton(toolbar_secondary, text="Filtros", style="Toolbar.TButton")
         self.filters_menu = tk.Menu(self.filters_menu_button, tearoff=0)
         self.filters_menu.add_command(label="Solo no leídos", command=self._select_unread_rows)
         self.filters_menu.add_command(label="Solo pedidos", command=lambda: self._select_rows_by_type("order"))
         self.filters_menu.add_command(label="Solo suscripciones", command=lambda: self._select_rows_by_type("subscription"))
         self.filters_menu_button.configure(menu=self.filters_menu)
-        self.filters_menu_button.pack(side="left", padx=(0, 4))
-        ttk.Button(filter_group, text="Limpiar filtros", command=self._clear_filters, style="Toolbar.TButton", width=16).pack(side="left")
+        second_row_controls: list[tuple[str, object]] = [
+            ("Filtros", self.filters_menu_button),
+            ("Limpiar filtros", ttk.Button(toolbar_secondary, text="Limpiar filtros", command=self._clear_filters, style="Toolbar.TButton")),
+            ("Seleccionar todo", ttk.Button(toolbar_secondary, text="Seleccionar todo", command=self._select_all_rows, style="Toolbar.TButton")),
+            ("Deseleccionar todo", ttk.Button(toolbar_secondary, text="Deseleccionar todo", command=self._clear_selection, style="Toolbar.TButton")),
+        ]
 
-        ttk.Separator(toolbar_secondary, orient="vertical").grid(row=0, column=3, sticky="ns", padx=8)
-
-        move_group = ttk.Frame(toolbar_secondary)
-        move_group.grid(row=0, column=4, sticky="e")
-        ttk.Label(move_group, text="Mover a:").pack(side="left", padx=(0, 4))
         self.move_target_combo = ttk.Combobox(
-            move_group,
+            toolbar_secondary,
             textvariable=self.move_target_var,
             values=list(self._move_label_to_type.keys()),
             state="readonly",
-            width=18,
+            width=16,
         )
-        self.move_target_combo.pack(side="left", padx=(0, 4))
-        ttk.Button(move_group, text="Aplicar", style="Toolbar.TButton", width=14, command=self._move_selected_emails).pack(side="left")
+        second_row_controls.extend(
+            [
+                ("Mover a", self.move_target_combo),
+                ("Aplicar", ttk.Button(toolbar_secondary, text="Aplicar", style="Toolbar.TButton", command=self._move_selected_emails)),
+            ]
+        )
 
-        toolbar_secondary.columnconfigure(0, weight=0)
-        toolbar_secondary.columnconfigure(2, weight=1)
-        toolbar_secondary.columnconfigure(4, weight=1)
+        for idx, (_name, widget) in enumerate(second_row_controls):
+            widget.grid(row=0, column=idx * 2, padx=(0, 6), sticky="ew")
+            toolbar_secondary.columnconfigure(idx * 2, weight=1, uniform="toolbar-second-row")
+            if idx < len(second_row_controls) - 1:
+                ttk.Separator(toolbar_secondary, orient="vertical").grid(row=0, column=idx * 2 + 1, sticky="ns", padx=(0, 6))
 
         tabs_frame = ttk.Frame(self)
         tabs_frame.pack(fill="x", padx=10, pady=(0, 6))
@@ -201,28 +195,15 @@ class EmailManagerWindow(tk.Toplevel):
         lower_panel.pack(fill="both", expand=False, padx=10, pady=(0, 6))
 
         preview_frame = ttk.LabelFrame(lower_panel, text="Vista previa")
-        preview_splitter = ttk.PanedWindow(preview_frame, orient="horizontal")
-        preview_splitter.pack(fill="both", expand=True, padx=4, pady=(4, 2))
-
-        text_preview_frame = ttk.Frame(preview_splitter)
-        self.preview_text = tk.Text(text_preview_frame, wrap="word", height=12)
-        preview_scroll = ttk.Scrollbar(text_preview_frame, orient="vertical", command=self.preview_text.yview)
-        self.preview_text.configure(yscrollcommand=preview_scroll.set)
-        self.preview_text.pack(side="left", fill="both", expand=True)
-        preview_scroll.pack(side="right", fill="y")
-        self.preview_text.configure(state="disabled")
-
-        html_preview_frame = ttk.Frame(preview_splitter)
+        html_preview_frame = ttk.Frame(preview_frame)
+        html_preview_frame.pack(fill="both", expand=True, padx=4, pady=(4, 2))
         self.html_view = HtmlFrame(html_preview_frame, messages_enabled=False)
         self.html_view.pack(fill="both", expand=True)
 
-        self.attachments_label = ttk.Label(html_preview_frame, text="Adjuntos:")
-        self.attachments_label.pack(anchor="w", pady=(4, 2))
-        self.attachments_container = ttk.Frame(html_preview_frame)
-        self.attachments_container.pack(fill="x", pady=(0, 4))
-
-        preview_splitter.add(text_preview_frame, weight=1)
-        preview_splitter.add(html_preview_frame, weight=1)
+        attachments_frame = ttk.LabelFrame(html_preview_frame, text="Adjuntos")
+        attachments_frame.pack(fill="x", pady=(6, 2))
+        self.attachments_container = ttk.Frame(attachments_frame)
+        self.attachments_container.pack(fill="x", padx=6, pady=6)
 
         preview_actions = ttk.Frame(preview_frame)
         preview_actions.pack(fill="x", padx=4, pady=(0, 4))
@@ -247,19 +228,6 @@ class EmailManagerWindow(tk.Toplevel):
         status_frame.pack(fill="x", padx=10, pady=(0, 10))
         ttk.Label(status_frame, textvariable=self.status_var, anchor="w").pack(side="left", fill="x", expand=True)
         ttk.Label(status_frame, textvariable=self.model_var, anchor="e").pack(side="right")
-
-    def _add_toolbar_grid_group(
-        self,
-        parent: ttk.Frame,
-        column: int,
-        buttons: list[tuple[str, object]],
-        button_width: int = 18,
-    ) -> None:
-        frame = ttk.Frame(parent)
-        frame.grid(row=0, column=column, sticky="w")
-        for text, command in buttons:
-            ttk.Button(frame, text=text, command=command, style="Toolbar.TButton", width=button_width).pack(side="left", padx=(0, 4))
-        ttk.Separator(parent, orient="vertical").grid(row=0, column=column + 1, sticky="ns", padx=8)
 
     def _reload_category_maps(self) -> None:
         self._categories = self.category_manager.list_categories()
@@ -561,36 +529,15 @@ class EmailManagerWindow(tk.Toplevel):
 
     def _refresh_preview(self) -> None:
         selection = self.tree.selection()
-        preview = "Selecciona un email para ver su contenido."
         attachments: list[sqlite3.Row] = []
+        body_html = ""
         if len(selection) == 1:
             row = self._rows_by_id.get(str(selection[0]))
             if row:
-                body = row["body_text"].strip() or self._html_to_text(row["body_html"])
-                header_block = (
-                    f"From real: {row.get('original_from', row['sender'])}\n"
-                    f"Reply-To: {row.get('original_reply_to', '') or '-'}\n"
-                    f"To: {row.get('original_to', '') or '-'}\n"
-                    f"Cc: {row.get('original_cc', '') or '-'}\n"
-                    f"Fecha: {self._format_datetime(row['received_at'])}\n"
-                )
-                preview = (
-                    f"{header_block}\n"
-                    f"Asunto: {row['subject']}\n"
-                    f"Remitente: {row['sender']}\n"
-                    f"Tipo: {row['type']}\n"
-                    f"Estado: {row['status']}\n\n"
-                    f"{body.strip()}"
-                )
+                body_html = row.get("body_html", "").strip()
                 attachments = self.email_repo.get_attachments(str(row["gmail_id"]))
-        elif len(selection) > 1:
-            preview = f"{len(selection)} correos seleccionados."
 
-        self.preview_text.configure(state="normal")
-        self.preview_text.delete("1.0", "end")
-        self.preview_text.insert("1.0", preview)
-        self.preview_text.configure(state="disabled")
-        self._set_html_preview(row.get("body_html", "") if len(selection) == 1 and row else "")
+        self._set_html_preview(body_html)
         self._render_attachments(attachments)
 
     def _set_html_preview(self, body_html: str) -> None:
@@ -613,14 +560,29 @@ class EmailManagerWindow(tk.Toplevel):
 
         for attachment in attachments:
             row_frame = ttk.Frame(self.attachments_container)
-            row_frame.pack(fill="x", pady=1)
-            ttk.Label(row_frame, text=str(attachment["filename"]) or "(sin nombre)").pack(side="left")
+            row_frame.pack(fill="x", pady=2)
+            filename = str(attachment["filename"]) or "(sin nombre)"
+            local_path = str(attachment["local_path"])
+            ttk.Label(row_frame, text=filename).pack(side="left")
             ttk.Button(
                 row_frame,
                 text="Abrir",
-                command=lambda path=str(attachment["local_path"]): self._open_attachment(path),
+                command=lambda path=local_path: self._open_attachment(path),
                 width=8,
             ).pack(side="left", padx=(6, 0))
+            ttk.Button(
+                row_frame,
+                text="Guardar",
+                command=lambda path=local_path, name=filename: self._save_attachment_as(path, name),
+                width=8,
+            ).pack(side="left", padx=(6, 0))
+            if self._is_image_attachment(filename, str(attachment["mime_type"])):
+                ttk.Button(
+                    row_frame,
+                    text="Vista previa",
+                    command=lambda path=local_path, name=filename: self._preview_attachment_image(path, name),
+                    width=11,
+                ).pack(side="left", padx=(6, 0))
 
     def _open_attachment(self, local_path: str) -> None:
         path = Path(local_path)
@@ -636,6 +598,63 @@ class EmailManagerWindow(tk.Toplevel):
         except Exception as exc:  # noqa: BLE001
             logger.exception("No se pudo abrir adjunto")
             messagebox.showerror("Adjunto", f"No se pudo abrir el adjunto.\n\n{exc}")
+
+    def _save_attachment_as(self, local_path: str, filename: str) -> None:
+        source = Path(local_path)
+        if not source.exists():
+            messagebox.showerror("Adjunto", f"No existe el archivo:\n{local_path}")
+            return
+
+        target = filedialog.asksaveasfilename(parent=self, initialfile=filename, title="Guardar adjunto como")
+        if not target:
+            return
+
+        try:
+            shutil.copy2(source, Path(target))
+            self.status_var.set(f"Adjunto guardado en: {target}")
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("No se pudo guardar adjunto")
+            messagebox.showerror("Adjunto", f"No se pudo guardar el adjunto.\n\n{exc}")
+
+    @staticmethod
+    def _is_image_attachment(filename: str, mime_type: str) -> bool:
+        lowered_name = filename.lower()
+        lowered_mime = (mime_type or "").lower()
+        return lowered_mime.startswith("image/") or lowered_name.endswith((".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"))
+
+    def _preview_attachment_image(self, local_path: str, filename: str) -> None:
+        path = Path(local_path)
+        if not path.exists():
+            messagebox.showerror("Adjunto", f"No existe el archivo:\n{local_path}")
+            return
+
+        if self._expanded_attachment_preview_window is None or not self._expanded_attachment_preview_window.winfo_exists():
+            self._expanded_attachment_preview_window = tk.Toplevel(self)
+            self._expanded_attachment_preview_window.geometry("980x680")
+            self._expanded_attachment_preview_frame = HtmlFrame(self._expanded_attachment_preview_window, messages_enabled=False)
+            self._expanded_attachment_preview_frame.pack(fill="both", expand=True)
+            self._expanded_attachment_preview_window.protocol("WM_DELETE_WINDOW", self._close_attachment_preview)
+
+        self._expanded_attachment_preview_window.title(f"Vista previa: {filename}")
+        safe_name = html.escape(filename)
+        image_uri = path.resolve().as_uri()
+        preview_html = (
+            "<html><body style='margin:0;padding:8px;background:#f0f0f0;'>"
+            f"<h4 style='margin:0 0 8px 0;font-family:Arial, sans-serif;'>{safe_name}</h4>"
+            f"<img src='{image_uri}' style='max-width:100%;height:auto;border:1px solid #ccc;background:#fff;' />"
+            "</body></html>"
+        )
+        if self._expanded_attachment_preview_frame is not None:
+            self._expanded_attachment_preview_frame.load_html(preview_html)
+
+        self._expanded_attachment_preview_window.lift()
+        self._expanded_attachment_preview_window.focus_force()
+
+    def _close_attachment_preview(self) -> None:
+        if self._expanded_attachment_preview_window is not None:
+            self._expanded_attachment_preview_window.destroy()
+        self._expanded_attachment_preview_window = None
+        self._expanded_attachment_preview_frame = None
 
     def _expand_html_view(self) -> None:
         if self._expanded_html_window is None or not self._expanded_html_window.winfo_exists():
