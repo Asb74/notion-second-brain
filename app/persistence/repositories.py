@@ -245,3 +245,63 @@ class ActionsRepository:
     @staticmethod
     def _to_action(row: sqlite3.Row) -> Action:
         return Action(**dict(row))
+
+
+class EmailRepository:
+    """Data access for ingested emails."""
+
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+
+    def ensure_table(self) -> None:
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS emails (
+                gmail_id TEXT PRIMARY KEY,
+                thread_id TEXT,
+                subject TEXT,
+                sender TEXT,
+                received_at TEXT,
+                body_text TEXT,
+                body_html TEXT,
+                has_attachments INTEGER,
+                raw_payload_json TEXT,
+                processed_at TEXT,
+                status TEXT
+            )
+            """
+        )
+        self.conn.commit()
+
+    def list_emails_for_manager(self) -> list[sqlite3.Row]:
+        self.ensure_table()
+        return self.conn.execute(
+            """
+            SELECT gmail_id, subject, sender, received_at, status
+            FROM emails
+            ORDER BY received_at DESC
+            """
+        ).fetchall()
+
+    def get_email_content(self, gmail_id: str) -> sqlite3.Row | None:
+        self.ensure_table()
+        return self.conn.execute(
+            """
+            SELECT gmail_id, subject, sender, received_at, body_text, body_html, status
+            FROM emails
+            WHERE gmail_id = ?
+            """,
+            (gmail_id,),
+        ).fetchone()
+
+    def mark_as_converted_to_note(self, gmail_id: str) -> None:
+        self.ensure_table()
+        self.conn.execute(
+            """
+            UPDATE emails
+            SET status = 'converted_to_note'
+            WHERE gmail_id = ?
+            """,
+            (gmail_id,),
+        )
+        self.conn.commit()

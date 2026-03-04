@@ -28,7 +28,7 @@ def main() -> None:
     root = tk.Tk()
     root.title("Notion Second Brain")
     root.geometry("980x720")
-    MainWindow(root, service)
+    MainWindow(root, service, db_connection=conn)
 
     logging.getLogger(__name__).info("App iniciada. Log: %s", log_path)
     root.mainloop()
