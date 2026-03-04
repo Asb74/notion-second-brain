@@ -29,12 +29,20 @@ class EmailRepository:
                 processed_at TEXT,
                 status TEXT,
                 category TEXT DEFAULT 'pending',
-                type TEXT DEFAULT 'other'
+                type TEXT DEFAULT 'other',
+                original_from TEXT DEFAULT '',
+                original_to TEXT DEFAULT '',
+                original_cc TEXT DEFAULT '',
+                original_reply_to TEXT DEFAULT ''
             )
             """
         )
         self._ensure_column("category", "TEXT DEFAULT 'pending'")
         self._ensure_column("type", "TEXT DEFAULT 'other'")
+        self._ensure_column("original_from", "TEXT DEFAULT ''")
+        self._ensure_column("original_to", "TEXT DEFAULT ''")
+        self._ensure_column("original_cc", "TEXT DEFAULT ''")
+        self._ensure_column("original_reply_to", "TEXT DEFAULT ''")
         self.conn.commit()
 
     def _ensure_column(self, name: str, sql_type: str) -> None:
@@ -49,7 +57,8 @@ class EmailRepository:
         placeholders = ",".join("?" for _ in types)
         return self.conn.execute(
             f"""
-            SELECT gmail_id, subject, sender, received_at, body_text, body_html, status, category, type
+            SELECT gmail_id, subject, sender, received_at, body_text, body_html, status, category, type,
+                   original_from, original_to, original_cc, original_reply_to
             FROM emails
             WHERE type IN ({placeholders})
             ORDER BY received_at DESC
@@ -60,7 +69,8 @@ class EmailRepository:
     def get_email_content(self, gmail_id: str) -> sqlite3.Row | None:
         return self.conn.execute(
             """
-            SELECT gmail_id, subject, sender, received_at, body_text, body_html, status, category, type
+            SELECT gmail_id, subject, sender, received_at, body_text, body_html, status, category, type,
+                   original_from, original_to, original_cc, original_reply_to
             FROM emails
             WHERE gmail_id = ?
             """,

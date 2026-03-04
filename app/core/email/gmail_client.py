@@ -120,3 +120,7 @@ class GmailClient:
                 return header["value"]
 
         return ""
+
+    def get_my_email(self) -> str:
+        profile = self.service.users().getProfile(userId="me").execute()
+        return profile.get("emailAddress", "")
