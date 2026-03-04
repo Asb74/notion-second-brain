@@ -24,6 +24,7 @@ class MLEmailModel:
         self.model_path = Path(model_path)
         self.is_available = bool(joblib and HashingVectorizer and SGDClassifier)
         self.is_trained = False
+        self.last_warning: str | None = None
         if self.is_available:
             self.vectorizer = HashingVectorizer(
                 n_features=2**18,
@@ -37,14 +38,26 @@ class MLEmailModel:
         if not self.is_available or not texts:
             self.is_trained = False
             return
+        unique_labels = {str(label) for label in labels}
+        if len(unique_labels) == 1:
+            self.last_warning = "Entrenamiento insuficiente: solo una categoría detectada."
+            return
+
         features = self.vectorizer.transform(texts)
         model_classes = list(classes or self.DEFAULT_CLASSES)
         self.classifier.partial_fit(features, labels, classes=model_classes)
         self.is_trained = True
+        self.last_warning = None
 
     def partial_fit(self, texts: Sequence[str], labels: Sequence[str], classes: Sequence[str] | None = None) -> None:
         if not self.is_available or not texts:
             return
+
+        unique_labels = {str(label) for label in labels}
+        if len(unique_labels) == 1:
+            self.last_warning = "Entrenamiento insuficiente: solo una categoría detectada."
+            return
+
         features = self.vectorizer.transform(texts)
         model_classes = list(classes or self.DEFAULT_CLASSES)
         if self.is_trained:
@@ -52,12 +65,26 @@ class MLEmailModel:
         else:
             self.classifier.partial_fit(features, labels, classes=model_classes)
             self.is_trained = True
+        self.last_warning = None
 
     def predict(self, text: str) -> str | None:
         if not self.is_available or not self.is_trained:
             return None
         features = self.vectorizer.transform([text])
         return str(self.classifier.predict(features)[0])
+
+    def predict_with_confidence(self, text: str) -> tuple[str | None, float]:
+        if not self.is_available or not self.is_trained:
+            return None, 0.0
+
+        features = self.vectorizer.transform([text])
+        prediction = str(self.classifier.predict(features)[0])
+
+        confidence = 0.0
+        if hasattr(self.classifier, "predict_proba"):
+            probabilities = self.classifier.predict_proba(features)
+            confidence = float(probabilities.max()) if probabilities.size else 0.0
+        return prediction, confidence
 
     def save(self) -> None:
         if not self.is_available:
