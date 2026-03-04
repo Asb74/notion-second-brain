@@ -11,6 +11,7 @@ import sqlite3
 import tkinter as tk
 import webbrowser
 from datetime import datetime
+from email.utils import parseaddr
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from tkinterweb import HtmlFrame
@@ -23,6 +24,7 @@ from app.core.models import NoteCreateRequest
 from app.core.outlook.outlook_service import OutlookService
 from app.core.service import NoteService
 from app.persistence.email_repository import EmailRepository
+from app.persistence.training_repository import TrainingRepository
 from app.ui.excel_filter import ExcelTreeFilter
 
 logger = logging.getLogger(__name__)
@@ -42,6 +44,7 @@ class EmailManagerWindow(tk.Toplevel):
         self.note_service = note_service
         self.gmail_client = gmail_client
         self.email_repo = EmailRepository(db_connection)
+        self.training_repo = TrainingRepository(db_connection)
         self.category_manager = CategoryManager(self.email_repo)
         self.mail_ingestion_service = MailIngestionService(gmail_client=gmail_client, db_connection=db_connection)
         self.classifier = self.mail_ingestion_service.classifier
@@ -741,9 +744,91 @@ class EmailManagerWindow(tk.Toplevel):
                 original_reply_to=row.get("original_reply_to", ""),
             )
             self.status_var.set("Borrador de Outlook abierto correctamente.")
+
+            if self._is_trainable_response(body, row["category"]):
+                save = messagebox.askyesno(
+                    "Entrenamiento",
+                    "¿Deseas guardar esta respuesta como ejemplo para mejorar futuras respuestas?",
+                )
+                if save:
+                    self._save_training_example(row, body)
         except Exception as exc:  # noqa: BLE001
             logger.exception("No se pudo crear borrador de Outlook")
             messagebox.showerror("Error", f"No se pudo crear el borrador en Outlook.\n\n{exc}")
+
+    def _is_trainable_response(self, response_text: str, category: str) -> bool:
+        normalized_text = (response_text or "").strip()
+        if len(normalized_text) <= 50:
+            return False
+
+        if (category or "").strip().lower() == "notificaciones":
+            return False
+
+        simplified = re.sub(r"[^a-záéíóúüñ0-9\s]", " ", normalized_text.lower())
+        words = [word for word in simplified.split() if word]
+        if not words:
+            return False
+
+        trivial_words = {"ok", "recibido", "vale", "gracias"}
+        return not all(word in trivial_words for word in words)
+
+    def _save_training_example(self, row: dict[str, str], response_text: str) -> None:
+        sender_email = parseaddr(row.get("sender", ""))[1].lower()
+        sender_domain = sender_email.split("@", 1)[1] if "@" in sender_email else ""
+        sender_type = "interno" if "sansebas.es" in sender_domain else "externo"
+        subject = row.get("subject", "")
+        keywords = self._extract_subject_keywords(subject)
+        created_at = datetime.utcnow().isoformat()
+
+        self.training_repo.save_example(
+            category=row.get("category", ""),
+            sender_type=sender_type,
+            original_subject=subject,
+            original_body=row.get("body_text", ""),
+            response_text=response_text,
+            created_at=created_at,
+            keywords=keywords,
+        )
+        logger.info(
+            "Ejemplo de entrenamiento guardado para categoría '%s' con remitente '%s'.",
+            row.get("category", ""),
+            sender_type,
+        )
+
+    @staticmethod
+    def _extract_subject_keywords(subject: str) -> str:
+        tokens = re.findall(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9]+", (subject or "").lower())
+        stopwords = {
+            "de",
+            "la",
+            "el",
+            "los",
+            "las",
+            "y",
+            "o",
+            "en",
+            "para",
+            "por",
+            "con",
+            "del",
+            "al",
+            "un",
+            "una",
+            "re",
+            "fw",
+            "fwd",
+            "rv",
+        }
+        relevant: list[str] = []
+        seen: set[str] = set()
+        for token in tokens:
+            if len(token) <= 2 or token in stopwords or token in seen:
+                continue
+            seen.add(token)
+            relevant.append(token)
+            if len(relevant) == 10:
+                break
+        return ", ".join(relevant)
 
     def _resolve_default_value(self, category: str, setting_name: str, fallback: str) -> str:
         try:
