@@ -9,7 +9,7 @@ from app.core.email.ml_email_model import MLEmailModel
 
 
 class EmailClassifier:
-    """Classify emails into the 5 fixed tabs using rules and optional ML fallback."""
+    """Classify emails with rules and optional ML fallback using dynamic categories."""
 
     RULE_THRESHOLD = 3
     MIN_TRAINING_SAMPLES = 30
@@ -57,9 +57,14 @@ class EmailClassifier:
 
     def __init__(self, email_repo=None, model_path: str | Path = "app/secrets/email_model.joblib"):
         self.email_repo = email_repo
+        self.model_path = Path(model_path)
         self.ml_model = MLEmailModel(model_path=model_path)
         self.examples_count = 0
+        self.categories_count = 0
+        self._known_categories: list[str] = []
         self.ml_model.load()
+        categories = self._sync_categories_state(reset_model=False)
+        self.categories_count = len(categories)
         if self.email_repo is not None:
             self.retrain_if_possible(force=False)
 
@@ -90,6 +95,9 @@ class EmailClassifier:
         if self.email_repo is None:
             return False
 
+        categories = self._sync_categories_state(reset_model=True)
+        self.categories_count = len(categories)
+
         dataset = self.email_repo.get_labeled_dataset()
         self.examples_count = len(dataset)
         if not force and self.examples_count < self.MIN_TRAINING_SAMPLES:
@@ -101,14 +109,41 @@ class EmailClassifier:
         labels = [str(row["label"] or "other") for row in dataset]
 
         self.ml_model = MLEmailModel(model_path=self.ml_model.model_path)
-        self.ml_model.fit(texts, labels)
+        self.ml_model.fit(texts, labels, classes=categories)
         self.ml_model.save()
         return True
 
+    def reclassify_all_emails(self) -> int:
+        if self.email_repo is None:
+            return 0
+
+        rows = self.email_repo.get_all_emails_for_classification()
+        updates: list[tuple[str, str]] = []
+        for row in rows:
+            predicted = self.classify(subject=row["subject"], sender=row["sender"], body_text=row["body_text"])
+            updates.append((str(row["gmail_id"]), predicted))
+        self.email_repo.bulk_update_email_types(updates)
+        return len(updates)
+
     def model_status(self) -> str:
         if self.ml_model.is_trained and self.examples_count >= self.MIN_TRAINING_SAMPLES:
-            return f"Modelo: híbrido ({self.examples_count} ejemplos)"
-        return "Modelo: reglas"
+            return f"Modelo: híbrido ({self.examples_count} ejemplos, {self.categories_count} categorías)"
+        return f"Modelo: reglas ({self.categories_count} categorías)"
+
+    def _sync_categories_state(self, reset_model: bool) -> list[str]:
+        categories = self._available_categories()
+        if categories != self._known_categories:
+            self._known_categories = categories
+            if reset_model and self.model_path.exists():
+                self.model_path.unlink()
+                self.ml_model = MLEmailModel(model_path=self.model_path)
+        return categories
+
+    def _available_categories(self) -> list[str]:
+        if self.email_repo is None:
+            return list(MLEmailModel.DEFAULT_CLASSES)
+        names = self.email_repo.get_category_names()
+        return names or list(MLEmailModel.DEFAULT_CLASSES)
 
     def _classify_by_rules(self, subject: str, sender: str) -> str | None:
         scores = {"priority": 0, "order": 0, "subscription": 0, "marketing": 0, "other": 0}
