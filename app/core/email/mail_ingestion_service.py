@@ -26,7 +26,9 @@ class MailIngestionService:
             full_message = self.gmail_client.get_message(gmail_id, format="full")
             payload = full_message.get("payload", {})
 
-            subject, sender = self._extract_headers(payload)
+            headers = self._extract_headers(payload)
+            subject = headers["subject"]
+            sender = headers["from"]
             body_text, body_html, has_attachments = self._extract_body_and_attachments(
                 payload
             )
@@ -39,6 +41,10 @@ class MailIngestionService:
                 thread_id=full_message.get("threadId"),
                 subject=subject,
                 sender=sender,
+                original_from=headers["from"],
+                original_to=headers["to"],
+                original_cc=headers["cc"],
+                original_reply_to=headers["reply_to"],
                 received_at=received_at,
                 body_text=body_text,
                 body_html=body_html,
@@ -71,7 +77,11 @@ class MailIngestionService:
                 processed_at TEXT,
                 status TEXT,
                 category TEXT DEFAULT 'pending',
-                type TEXT DEFAULT 'other'
+                type TEXT DEFAULT 'other',
+                original_from TEXT DEFAULT '',
+                original_to TEXT DEFAULT '',
+                original_cc TEXT DEFAULT '',
+                original_reply_to TEXT DEFAULT ''
             );
             """
         )
@@ -81,6 +91,14 @@ class MailIngestionService:
             self.db_connection.execute("ALTER TABLE emails ADD COLUMN category TEXT DEFAULT 'pending'")
         if "type" not in column_names:
             self.db_connection.execute("ALTER TABLE emails ADD COLUMN type TEXT DEFAULT 'other'")
+        if "original_from" not in column_names:
+            self.db_connection.execute("ALTER TABLE emails ADD COLUMN original_from TEXT DEFAULT ''")
+        if "original_to" not in column_names:
+            self.db_connection.execute("ALTER TABLE emails ADD COLUMN original_to TEXT DEFAULT ''")
+        if "original_cc" not in column_names:
+            self.db_connection.execute("ALTER TABLE emails ADD COLUMN original_cc TEXT DEFAULT ''")
+        if "original_reply_to" not in column_names:
+            self.db_connection.execute("ALTER TABLE emails ADD COLUMN original_reply_to TEXT DEFAULT ''")
         self.db_connection.commit()
 
     def _insert_email(
@@ -89,6 +107,10 @@ class MailIngestionService:
         thread_id: Optional[str],
         subject: str,
         sender: str,
+        original_from: str,
+        original_to: str,
+        original_cc: str,
+        original_reply_to: str,
         received_at: Optional[str],
         body_text: str,
         body_html: str,
@@ -113,8 +135,12 @@ class MailIngestionService:
                 processed_at,
                 status,
                 category,
-                type
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                type,
+                original_from,
+                original_to,
+                original_cc,
+                original_reply_to
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 gmail_id,
@@ -130,22 +156,37 @@ class MailIngestionService:
                 self.STATUS_NEW,
                 category,
                 email_type,
+                original_from,
+                original_to,
+                original_cc,
+                original_reply_to,
             ),
         )
         return cursor.rowcount > 0
 
-    def _extract_headers(self, payload: Dict[str, Any]) -> Tuple[str, str]:
-        subject = ""
-        sender = ""
+    def _extract_headers(self, payload: Dict[str, Any]) -> Dict[str, str]:
+        extracted = {
+            "subject": "",
+            "from": "",
+            "to": "",
+            "cc": "",
+            "reply_to": "",
+        }
 
         for header in payload.get("headers", []):
             name = header.get("name", "").lower()
             if name == "subject":
-                subject = header.get("value", "")
+                extracted["subject"] = header.get("value", "")
             elif name == "from":
-                sender = header.get("value", "")
+                extracted["from"] = header.get("value", "")
+            elif name == "to":
+                extracted["to"] = header.get("value", "")
+            elif name == "cc":
+                extracted["cc"] = header.get("value", "")
+            elif name == "reply-to":
+                extracted["reply_to"] = header.get("value", "")
 
-        return subject, sender
+        return extracted
 
     def _extract_body_and_attachments(
         self,

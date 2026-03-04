@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import html
 import logging
-import re
 import sqlite3
 import tkinter as tk
 from datetime import datetime
@@ -41,9 +40,11 @@ class EmailManagerWindow(tk.Toplevel):
     ):
         super().__init__(master)
         self.note_service = note_service
+        self.gmail_client = gmail_client
         self.email_repo = EmailRepository(db_connection)
         self.mail_ingestion_service = MailIngestionService(gmail_client=gmail_client, db_connection=db_connection)
         self.outlook_service = OutlookService()
+        self.my_email = self._resolve_my_email()
 
         self.title("Gestión de Emails")
         self.geometry("1120x720")
@@ -189,6 +190,10 @@ class EmailManagerWindow(tk.Toplevel):
                 "body_html": row["body_html"] or "",
                 "status": row["status"] or "",
                 "category": row["category"] or "pending",
+                "original_from": row["original_from"] or row["sender"] or "",
+                "original_to": row["original_to"] or "",
+                "original_cc": row["original_cc"] or "",
+                "original_reply_to": row["original_reply_to"] or "",
             }
             self._all_rows.append(normalized)
             self._rows_by_id[str(row["gmail_id"])] = normalized
@@ -358,7 +363,6 @@ class EmailManagerWindow(tk.Toplevel):
         if not row:
             return
 
-        to_email = self._extract_email_address(row["sender"])
         subject = row["subject"].strip()
         draft_subject = subject if subject.lower().startswith("re:") else f"Re: {subject}"
         body = self.response_text.get("1.0", "end").strip()
@@ -367,7 +371,15 @@ class EmailManagerWindow(tk.Toplevel):
             return
 
         try:
-            self.outlook_service.create_draft(to=to_email, subject=draft_subject, body=body)
+            self.outlook_service.create_draft(
+                subject=draft_subject,
+                body=body,
+                original_from=row.get("original_from", row["sender"]),
+                original_to=row.get("original_to", ""),
+                original_cc=row.get("original_cc", ""),
+                my_email=self.my_email,
+                original_reply_to=row.get("original_reply_to", ""),
+            )
             self.status_var.set("Borrador de Outlook abierto correctamente.")
         except Exception as exc:  # noqa: BLE001
             logger.exception("No se pudo crear borrador de Outlook")
@@ -388,12 +400,12 @@ class EmailManagerWindow(tk.Toplevel):
 
         return fallback
 
-    @staticmethod
-    def _extract_email_address(sender: str) -> str:
-        match = re.search(r"<([^>]+)>", sender or "")
-        if match:
-            return match.group(1).strip()
-        return (sender or "").strip()
+    def _resolve_my_email(self) -> str:
+        try:
+            return self.gmail_client.get_my_email().strip()
+        except Exception:  # noqa: BLE001
+            logger.exception("No se pudo obtener el email del usuario desde Gmail")
+            return ""
 
     @staticmethod
     def _compose_note_text(subject: str | None, sender: str | None, body_text: str | None, body_html: str | None) -> str:
