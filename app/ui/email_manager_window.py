@@ -26,6 +26,7 @@ from app.core.service import NoteService
 from app.persistence.email_repository import EmailRepository
 from app.persistence.training_repository import TrainingRepository
 from app.ui.excel_filter import ExcelTreeFilter
+from app.utils.openai_client import MODEL_NAME, build_openai_client
 
 logger = logging.getLogger(__name__)
 
@@ -689,15 +690,78 @@ class EmailManagerWindow(tk.Toplevel):
         if not row:
             return
 
-        subject = row["subject"].strip() or "tu mensaje"
-        body = (
-            "Hola,\n\n"
-            f"Gracias por tu correo sobre '{subject}'.\n"
-            "Lo he revisado y te responderé con el detalle correspondiente a la mayor brevedad.\n\n"
-            "Saludos,"
+        examples = self.training_repo.get_similar_examples(
+            category=row["category"],
+            subject=row["subject"],
+            body=row["body_text"],
+            limit=3,
         )
+
+        prompt = self._build_response_prompt(row, examples)
+        body = self._generate_ai_response(prompt)
+        if not body:
+            subject = row["subject"].strip() or "tu mensaje"
+            body = (
+                "Hola,\n\n"
+                f"Gracias por tu correo sobre '{subject}'.\n"
+                "Lo he revisado y te responderé con el detalle correspondiente a la mayor brevedad.\n\n"
+                "Saludos,"
+            )
+
         self.response_text.delete("1.0", "end")
         self.response_text.insert("1.0", body)
+
+    def _generate_ai_response(self, prompt: str) -> str:
+        try:
+            client = build_openai_client()
+            response = client.responses.create(
+                model=MODEL_NAME,
+                input=[
+                    {
+                        "role": "system",
+                        "content": "Redacta respuestas de email profesionales en español. Devuelve solo el texto de respuesta.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+            )
+            return str(response.output_text or "").strip()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("No se pudo generar la respuesta con IA: %s", exc)
+            self.status_var.set("No se pudo usar IA; se generó una respuesta base.")
+            return ""
+
+    def _build_response_prompt(self, row: dict[str, str], examples: list[dict[str, str]]) -> str:
+        sections: list[str] = []
+        style_profile = self._get_fixed_style_profile()
+        if style_profile:
+            sections.append("Perfil de estilo fijo:\n" + style_profile)
+
+        examples_lines = ["Ejemplos reales del usuario:", ""]
+        for index, example in enumerate(examples, start=1):
+            examples_lines.extend(
+                [
+                    f"Ejemplo {index}:",
+                    f"Asunto: {example.get('original_subject', '').strip()}",
+                    "Correo original:",
+                    example.get("original_body", "").strip(),
+                    "Respuesta enviada:",
+                    example.get("response_text", "").strip(),
+                    "",
+                ]
+            )
+        sections.append("\n".join(examples_lines).rstrip())
+
+        sections.append(
+            "Nuevo correo:\n"
+            f"Asunto: {row.get('subject', '').strip()}\n"
+            "Correo original:\n"
+            f"{row.get('body_text', '').strip()}"
+        )
+        sections.append("Redacta la mejor respuesta para este correo.")
+        return "\n\n".join(section for section in sections if section.strip())
+
+    def _get_fixed_style_profile(self) -> str:
+        return os.getenv("EMAIL_RESPONSE_STYLE_PROFILE", "").strip()
 
     def _create_outlook_draft(self) -> None:
         selection = self.tree.selection()
