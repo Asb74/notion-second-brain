@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import logging
 import queue
+import sqlite3
 import threading
 import tkinter as tk
 import webbrowser
+from pathlib import Path
 from tkinter import messagebox, ttk
 
 from tkcalendar import DateEntry
@@ -15,6 +17,7 @@ from app.core.models import AppSettings, NoteCreateRequest
 from app.core.service import NoteService
 from app.ui.excel_filter import ExcelTreeFilter
 from app.ui.masters_dialog import MastersDialog
+from app.ui.email_manager_window import EmailManagerWindow
 from app.ui.settings_dialog import SettingsDialog
 
 logger = logging.getLogger(__name__)
@@ -23,10 +26,21 @@ logger = logging.getLogger(__name__)
 class MainWindow(ttk.Frame):
     """Primary app UI with note form and sync status list."""
 
-    def __init__(self, master: tk.Tk, service: NoteService):
+    def __init__(
+        self,
+        master: tk.Tk,
+        service: NoteService,
+        db_connection: sqlite3.Connection | None = None,
+        gmail_credentials_path: str = "secrets/gmail_credentials.json",
+        gmail_token_path: str = "secrets/gmail_token.json",
+    ):
         super().__init__(master, padding=10)
         self.master = master
         self.service = service
+        self.db_connection = db_connection
+        self.gmail_credentials_path = gmail_credentials_path
+        self.gmail_token_path = gmail_token_path
+        self._email_window: EmailManagerWindow | None = None
         self.msg_queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self.status_var = tk.StringVar(value="Listo")
         self.pack(fill="both", expand=True)
@@ -76,6 +90,7 @@ class MainWindow(ttk.Frame):
 
         herramientas = tk.Menu(menubar, tearoff=0)
         herramientas.add_command(label="Configuración", command=self._open_settings)
+        herramientas.add_command(label="Gestión de Emails", command=self._open_email_manager)
         menubar.add_cascade(label="Herramientas", menu=herramientas)
 
         maestros = tk.Menu(menubar, tearoff=0)
@@ -93,6 +108,27 @@ class MainWindow(ttk.Frame):
 
     def _open_masters_dialog(self, category: str) -> None:
         MastersDialog(self.master, self.service, category, self._load_master_values)
+
+    def _open_email_manager(self) -> None:
+        if self.db_connection is None:
+            messagebox.showerror("Error", "No hay conexión de base de datos disponible para emails.")
+            return
+
+        if self._email_window is not None and self._email_window.winfo_exists():
+            self._email_window.focus_set()
+            return
+
+        try:
+            from app.core.email.gmail_client import GmailClient
+
+            credentials_path = Path(self.gmail_credentials_path)
+            token_path = Path(self.gmail_token_path)
+            token_path.parent.mkdir(parents=True, exist_ok=True)
+            gmail_client = GmailClient(str(credentials_path), str(token_path))
+            self._email_window = EmailManagerWindow(self.master, self.service, self.db_connection, gmail_client)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("No se pudo abrir la ventana de gestión de emails")
+            messagebox.showerror("Error", f"No se pudo abrir la gestión de emails.\n\n{exc}")
 
     def _build_form(self) -> None:
         form = ttk.LabelFrame(self, text="Nueva nota")

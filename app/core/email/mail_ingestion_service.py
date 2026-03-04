@@ -13,7 +13,7 @@ class MailIngestionService:
         self.db_connection = db_connection
 
     def sync_unread_emails(self, max_results: int = 20) -> List[str]:
-        self._ensure_table()
+        self.ensure_table()
 
         processed_ids: List[str] = []
         unread_ids = self.gmail_client.list_unread_messages(max_results=max_results)
@@ -47,7 +47,7 @@ class MailIngestionService:
         self.db_connection.commit()
         return processed_ids
 
-    def _ensure_table(self) -> None:
+    def ensure_table(self) -> None:
         self.db_connection.execute(
             """
             CREATE TABLE IF NOT EXISTS emails (
@@ -65,6 +65,7 @@ class MailIngestionService:
             );
             """
         )
+        self.db_connection.commit()
 
     def _insert_email(
         self,
