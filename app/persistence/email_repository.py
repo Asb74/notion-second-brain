@@ -253,10 +253,21 @@ class EmailRepository:
         row = self.conn.execute("SELECT COUNT(*) AS count FROM email_categories").fetchone()
         return int(row["count"] if row else 0)
 
-    def get_all_emails_for_classification(self) -> list[sqlite3.Row]:
+    def get_all_emails_for_classification(self, exclude_user_labeled: bool = False) -> list[sqlite3.Row]:
+        if exclude_user_labeled:
+            return self.conn.execute(
+                """
+                SELECT e.gmail_id, e.subject, e.sender, e.body_text, e.type
+                FROM emails e
+                LEFT JOIN email_labels l ON l.gmail_id = e.gmail_id
+                WHERE l.gmail_id IS NULL OR l.source != 'user'
+                ORDER BY e.received_at DESC
+                """
+            ).fetchall()
+
         return self.conn.execute(
             """
-            SELECT gmail_id, subject, sender, body_text
+            SELECT gmail_id, subject, sender, body_text, type
             FROM emails
             ORDER BY received_at DESC
             """

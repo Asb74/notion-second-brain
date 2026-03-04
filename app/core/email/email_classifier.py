@@ -12,6 +12,7 @@ class EmailClassifier:
     """Classify emails with rules and optional ML fallback using dynamic categories."""
 
     RULE_THRESHOLD = 3
+    ML_CONFIDENCE_THRESHOLD = 0.55
     MIN_TRAINING_SAMPLES = 30
 
     ORDER_PATTERNS = [
@@ -61,14 +62,21 @@ class EmailClassifier:
         self.ml_model = MLEmailModel(model_path=model_path)
         self.examples_count = 0
         self.categories_count = 0
+        self.last_training_warning: str | None = None
         self._known_categories: list[str] = []
         self.ml_model.load()
-        categories = self._sync_categories_state(reset_model=False)
+        categories = self._sync_categories_state()
         self.categories_count = len(categories)
         if self.email_repo is not None:
             self.retrain_if_possible(force=False)
 
-    def classify(self, subject: str | None, sender: str | None, body_text: str | None) -> str:
+    def classify(
+        self,
+        subject: str | None,
+        sender: str | None,
+        body_text: str | None,
+        previous_type: str | None = None,
+    ) -> str:
         subject_text = (subject or "").lower()
         sender_text = (sender or "").lower()
         body = (body_text or "")
@@ -83,7 +91,9 @@ class EmailClassifier:
             return rule_result
 
         ml_features = MLEmailModel.compose_features(subject, sender, body)
-        ml_prediction = self.ml_model.predict(ml_features)
+        ml_prediction, confidence = self.ml_model.predict_with_confidence(ml_features)
+        if ml_prediction and confidence < self.ML_CONFIDENCE_THRESHOLD and previous_type:
+            return previous_type
         if ml_prediction:
             return ml_prediction
 
@@ -95,11 +105,15 @@ class EmailClassifier:
         if self.email_repo is None:
             return False
 
-        categories = self._sync_categories_state(reset_model=True)
+        previous_categories = list(self._known_categories)
+        categories = self._available_categories()
+        self._known_categories = list(categories)
+        category_changed = categories != previous_categories
         self.categories_count = len(categories)
 
         dataset = self.email_repo.get_labeled_dataset()
         self.examples_count = len(dataset)
+        self.last_training_warning = None
         if not force and self.examples_count < self.MIN_TRAINING_SAMPLES:
             return False
         if not dataset:
@@ -108,8 +122,26 @@ class EmailClassifier:
         texts = [MLEmailModel.compose_features(row["subject"], row["sender"], row["body_text"]) for row in dataset]
         labels = [str(row["label"] or "other") for row in dataset]
 
-        self.ml_model = MLEmailModel(model_path=self.ml_model.model_path)
-        self.ml_model.fit(texts, labels, classes=categories)
+        unique_labels = {label for label in labels}
+        if len(unique_labels) == 1:
+            self.last_training_warning = "Entrenamiento insuficiente: solo una categoría detectada."
+            return False
+
+        if category_changed or not self.ml_model.is_trained:
+            candidate_model = MLEmailModel(model_path=self.ml_model.model_path)
+            candidate_model.fit(texts, labels, classes=categories)
+            if candidate_model.is_trained:
+                self.ml_model = candidate_model
+        else:
+            self.ml_model.partial_fit(texts, labels)
+
+        if self.ml_model.last_warning:
+            self.last_training_warning = self.ml_model.last_warning
+            return False
+
+        if not self.ml_model.is_trained:
+            return False
+
         self.ml_model.save()
         return True
 
@@ -117,10 +149,15 @@ class EmailClassifier:
         if self.email_repo is None:
             return 0
 
-        rows = self.email_repo.get_all_emails_for_classification()
+        rows = self.email_repo.get_all_emails_for_classification(exclude_user_labeled=True)
         updates: list[tuple[str, str]] = []
         for row in rows:
-            predicted = self.classify(subject=row["subject"], sender=row["sender"], body_text=row["body_text"])
+            predicted = self.classify(
+                subject=row["subject"],
+                sender=row["sender"],
+                body_text=row["body_text"],
+                previous_type=row["type"],
+            )
             updates.append((str(row["gmail_id"]), predicted))
         self.email_repo.bulk_update_email_types(updates)
         return len(updates)
@@ -130,13 +167,10 @@ class EmailClassifier:
             return f"Modelo: híbrido ({self.examples_count} ejemplos, {self.categories_count} categorías)"
         return f"Modelo: reglas ({self.categories_count} categorías)"
 
-    def _sync_categories_state(self, reset_model: bool) -> list[str]:
+    def _sync_categories_state(self) -> list[str]:
         categories = self._available_categories()
         if categories != self._known_categories:
             self._known_categories = categories
-            if reset_model and self.model_path.exists():
-                self.model_path.unlink()
-                self.ml_model = MLEmailModel(model_path=self.model_path)
         return categories
 
     def _available_categories(self) -> list[str]:

@@ -81,6 +81,7 @@ class EmailManagerWindow(tk.Toplevel):
         self._add_toolbar_group(toolbar, [
             ("Descargar", self._download_new_emails),
             ("Reentrenar modelo", self._retrain_model),
+            ("Reclasificar emails actuales", self._reclassify_current_emails),
             ("➕ Nueva categoría", self._create_category),
         ])
         self._add_toolbar_group(toolbar, [
@@ -308,12 +309,23 @@ class EmailManagerWindow(tk.Toplevel):
         trained = self.classifier.retrain_if_possible(force=True)
         examples = self.email_repo.count_labeled_examples()
         self.classifier.examples_count = examples
-        reclassified = self.classifier.reclassify_all_emails() if trained else 0
         self.model_var.set(self.classifier.model_status())
+        warning = self.classifier.last_training_warning
         if trained:
-            self.status_var.set(f"Modelo reentrenado con {examples} ejemplos. Correos reclasificados: {reclassified}.")
-        else:
-            self.status_var.set(f"No hay suficientes ejemplos para entrenar ({examples}).")
+            self.status_var.set(f"Modelo reentrenado con {examples} ejemplos. Reclasificación manual disponible.")
+            return
+        if warning:
+            self.status_var.set(warning)
+            return
+        self.status_var.set(f"No hay suficientes ejemplos para entrenar ({examples}).")
+
+    def _reclassify_current_emails(self) -> None:
+        if not self.classifier.ml_model.is_trained:
+            self.status_var.set("No hay modelo entrenado para reclasificar.")
+            return
+        reclassified = self.classifier.reclassify_all_emails()
+        self.refresh_emails()
+        self.status_var.set(f"Reclasificación completada. Correos actualizados: {reclassified}.")
 
     def refresh_emails(self) -> None:
         try:
