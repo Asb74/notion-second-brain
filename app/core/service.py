@@ -226,14 +226,8 @@ class NoteService:
         processed = process_text(normalized)
         final_tipo = req.tipo.strip() if req.tipo.strip() else processed.tipo_sugerido
         final_prioridad = req.prioridad.strip() if req.prioridad.strip() else processed.prioridad_sugerida
-        acciones_text = ""
-        if isinstance(processed.acciones, list):
-            acciones_text = "\n".join(str(accion).strip() for accion in processed.acciones if str(accion).strip())
-        else:
-            acciones_text = str(processed.acciones or "").strip()
-
         final_estado = req.estado
-        if not acciones_text.strip():
+        if not processed.acciones:
             final_estado = "Finalizado"
 
         final_req = NoteCreateRequest(
@@ -246,7 +240,7 @@ class NoteService:
             fecha=req.fecha,
             title=title,
             resumen=processed.resumen,
-            acciones=acciones_text,
+            acciones="",
         )
         note_id = self.note_repo.create_note(
             final_req,
@@ -319,20 +313,16 @@ class NoteService:
                     note,
                 )
 
-                if note.acciones.strip():
-                    local_actions = [a for a in self.actions_repo.get_actions_by_note(note.id) if a.status == "pendiente"]
-                    action_id_by_description: dict[str, list[int]] = {}
-                    for local_action in sorted(local_actions, key=lambda item: item.id):
-                        action_id_by_description.setdefault(local_action.description.strip(), []).append(local_action.id)
-
-                    for action in [line.strip() for line in note.acciones.splitlines() if line.strip()]:
-                        try:
-                            task_page_id = client.create_task_from_action(settings, action, note)
-                            candidates = action_id_by_description.get(action, [])
-                            if candidates:
-                                self.actions_repo.set_notion_page_id(candidates.pop(0), task_page_id)
-                        except Exception:  # noqa: BLE001
-                            logger.exception("Error creating action task for note id=%s", note.id)
+                local_actions = [a for a in self.actions_repo.get_actions_by_note(note.id) if a.status == "pendiente"]
+                for local_action in sorted(local_actions, key=lambda item: item.id):
+                    action_text = local_action.description.strip()
+                    if not action_text:
+                        continue
+                    try:
+                        task_page_id = client.create_task_from_action(settings, action_text, note)
+                        self.actions_repo.set_notion_page_id(local_action.id, task_page_id)
+                    except Exception:  # noqa: BLE001
+                        logger.exception("Error creating action task for note id=%s", note.id)
 
                 self.note_repo.mark_sent(note.id, page_id)
                 sent += 1

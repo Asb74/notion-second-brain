@@ -86,7 +86,7 @@ class DedupTests(unittest.TestCase):
         note = self.service.note_repo.get_note(note_id)
 
         self.assertEqual(note.resumen, "Resumen AI")
-        self.assertEqual(note.acciones, "Acción 1\nAcción 2")
+        self.assertEqual(note.acciones, "")
         self.assertEqual(note.tipo, "Incidencia")
         self.assertEqual(note.prioridad, "Alta")
 
