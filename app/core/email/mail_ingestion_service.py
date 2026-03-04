@@ -4,22 +4,17 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.core.email.email_classifier import EmailClassifier
+
 
 class MailIngestionService:
     STATUS_NEW = "new"
     CATEGORY_PENDING = "pending"
 
-    MARKETING_KEYWORDS = (
-        "oferta",
-        "descuento",
-        "promo",
-        "publicidad",
-        "newsletter",
-    )
-
     def __init__(self, gmail_client, db_connection: sqlite3.Connection):
         self.gmail_client = gmail_client
         self.db_connection = db_connection
+        self.classifier = EmailClassifier()
 
     def sync_unread_emails(self, max_results: int = 20) -> List[str]:
         self.ensure_table()
@@ -37,7 +32,8 @@ class MailIngestionService:
             )
 
             received_at = self._convert_internal_date(full_message.get("internalDate"))
-            category = self.classify_email(subject=subject, body_text=body_text)
+            email_type = self.classifier.classify(subject=subject, sender=sender, body_text=body_text)
+            category = "marketing" if email_type == "marketing" else "priority"
             inserted = self._insert_email(
                 gmail_id=gmail_id,
                 thread_id=full_message.get("threadId"),
@@ -49,6 +45,7 @@ class MailIngestionService:
                 has_attachments=has_attachments,
                 raw_payload_json=json.dumps(payload, ensure_ascii=False),
                 category=category,
+                email_type=email_type,
             )
 
             if inserted:
@@ -73,7 +70,8 @@ class MailIngestionService:
                 raw_payload_json TEXT,
                 processed_at TEXT,
                 status TEXT,
-                category TEXT DEFAULT 'pending'
+                category TEXT DEFAULT 'pending',
+                type TEXT DEFAULT 'other'
             );
             """
         )
@@ -81,6 +79,8 @@ class MailIngestionService:
         column_names = {str(row["name"]) for row in columns}
         if "category" not in column_names:
             self.db_connection.execute("ALTER TABLE emails ADD COLUMN category TEXT DEFAULT 'pending'")
+        if "type" not in column_names:
+            self.db_connection.execute("ALTER TABLE emails ADD COLUMN type TEXT DEFAULT 'other'")
         self.db_connection.commit()
 
     def _insert_email(
@@ -95,6 +95,7 @@ class MailIngestionService:
         has_attachments: int,
         raw_payload_json: str,
         category: str,
+        email_type: str,
     ) -> bool:
         processed_at = datetime.now(timezone.utc).isoformat()
         cursor = self.db_connection.execute(
@@ -111,8 +112,9 @@ class MailIngestionService:
                 raw_payload_json,
                 processed_at,
                 status,
-                category
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                category,
+                type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 gmail_id,
@@ -127,15 +129,10 @@ class MailIngestionService:
                 processed_at,
                 self.STATUS_NEW,
                 category,
+                email_type,
             ),
         )
         return cursor.rowcount > 0
-
-    def classify_email(self, subject: str, body_text: str) -> str:
-        normalized = f"{subject or ''} {body_text or ''}".lower()
-        if any(keyword in normalized for keyword in self.MARKETING_KEYWORDS):
-            return "marketing"
-        return "priority"
 
     def _extract_headers(self, payload: Dict[str, Any]) -> Tuple[str, str]:
         subject = ""
