@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import base64
 import shutil
 import sqlite3
 import tempfile
@@ -104,6 +105,7 @@ class EmailManagerWindow(tk.Toplevel):
         self._expanded_attachment_preview_window: tk.Toplevel | None = None
         self._expanded_attachment_preview_frame: HtmlFrame | None = None
         self._temp_opened_attachments: list[Path] = []
+        self._temp_forward_attachments_dirs: list[Path] = []
         self.detected_pedido_var = tk.StringVar(value="")
         self.detected_cliente_var = tk.StringVar(value="")
         self.detected_persona_var = tk.StringVar(value="")
@@ -280,6 +282,10 @@ class EmailManagerWindow(tk.Toplevel):
         self.system_status_text.pack(fill="both", expand=True, padx=6, pady=6)
         _SYSTEM_LOG_WIDGET = self.system_status_text
 
+    def system_log(self, message: str, level: str = "INFO") -> None:
+        """Proxy method to write messages in the system status panel."""
+        system_log(message, level=level)
+
     def _reload_category_maps(self) -> None:
         self._categories = self.category_manager.list_categories()
         self._tab_to_types = {item["display_name"]: [item["name"]] for item in self._categories}
@@ -382,16 +388,16 @@ class EmailManagerWindow(tk.Toplevel):
         self._refresh_preview()
 
     def _download_new_emails(self) -> None:
-        system_log("Iniciando descarga de emails")
+        self.system_log("Iniciando descarga de emails")
         try:
             processed_ids = self.mail_ingestion_service.sync_unread_emails()
-            system_log(f"Descarga completada. Nuevos correos: {len(processed_ids)}")
+            self.system_log(f"Descarga completada. Nuevos correos: {len(processed_ids)}")
             self.status_var.set(f"Descarga completada. Nuevos correos: {len(processed_ids)}")
             self.refresh_emails()
             messagebox.showinfo("Emails", f"Se descargaron {len(processed_ids)} correos nuevos.")
         except Exception as exc:  # noqa: BLE001
             logger.exception("Error descargando correos")
-            system_log(f"Error al descargar correos: {exc}", level="ERROR")
+            self.system_log(f"Error al descargar correos: {exc}", level="ERROR")
             self.status_var.set(f"Error al descargar correos: {exc}")
             messagebox.showerror("Error", f"No se pudieron descargar correos.\n\n{exc}")
 
@@ -399,36 +405,36 @@ class EmailManagerWindow(tk.Toplevel):
         examples = self.email_repo.count_labeled_examples()
         categories_count = len(self._categories)
         if examples < 10:
-            system_log("No hay suficientes ejemplos para entrenar", level="WARNING")
+            self.system_log("No hay suficientes ejemplos para entrenar", level="WARNING")
         else:
-            system_log("Iniciando entrenamiento")
-            system_log(f"Emails usados: {examples}")
-            system_log(f"Categorías detectadas: {categories_count}")
+            self.system_log("Iniciando entrenamiento")
+            self.system_log(f"Emails usados: {examples}")
+            self.system_log(f"Categorías detectadas: {categories_count}")
 
         trained = self.classifier.retrain_if_possible(force=True)
         self.classifier.examples_count = examples
         self.model_var.set(self.classifier.model_status())
         warning = self.classifier.last_training_warning
         if trained:
-            system_log("Entrenamiento completado")
+            self.system_log("Entrenamiento completado")
             self.status_var.set(f"Modelo reentrenado con {examples} ejemplos. Reclasificación manual disponible.")
             return
         if warning:
-            system_log(warning, level="WARNING")
+            self.system_log(warning, level="WARNING")
             self.status_var.set(warning)
             return
-        system_log(f"No hay suficientes ejemplos para entrenar ({examples}).", level="WARNING")
+        self.system_log(f"No hay suficientes ejemplos para entrenar ({examples}).", level="WARNING")
         self.status_var.set(f"No hay suficientes ejemplos para entrenar ({examples}).")
 
     def _reclassify_current_emails(self) -> None:
         if not self.classifier.ml_model.is_trained:
-            system_log("No hay modelo entrenado para reclasificar.", level="WARNING")
+            self.system_log("No hay modelo entrenado para reclasificar.", level="WARNING")
             self.status_var.set("No hay modelo entrenado para reclasificar.")
             return
-        system_log("Iniciando reclasificación de emails")
+        self.system_log("Iniciando reclasificación de emails")
         reclassified = self.classifier.reclassify_all_emails()
         self.refresh_emails()
-        system_log(f"Reclasificación completada. Correos actualizados: {reclassified}.")
+        self.system_log(f"Reclasificación completada. Correos actualizados: {reclassified}.")
         self.status_var.set(f"Reclasificación completada. Correos actualizados: {reclassified}.")
 
     def refresh_emails(self) -> None:
@@ -512,26 +518,35 @@ class EmailManagerWindow(tk.Toplevel):
         if not selected_ids:
             messagebox.showwarning("Atención", "Selecciona al menos un correo para crear notas.")
             return
-        system_log(f"Iniciando creación de notas para {len(selected_ids)} emails")
+        self.system_log(f"Iniciando creación de notas para {len(selected_ids)} emails")
 
         created_count = 0
         skipped_count = 0
         for gmail_id in selected_ids:
             row = self.email_repo.get_email_content(gmail_id)
             if row is None:
+                self.system_log(f"Email no encontrado para crear nota: {gmail_id}", level="WARNING")
                 skipped_count += 1
                 continue
             if (row["status"] or "") == "converted_to_note":
                 skipped_count += 1
                 continue
 
+            subject = (row["subject"] or "").strip()
+            body_text = (row["body_text"] or "").strip()
+            body_html = (row["body_html"] or "").strip()
+            if not subject and not body_text and not body_html:
+                self.system_log(f"Email sin contenido para crear nota: {gmail_id}", level="WARNING")
+                skipped_count += 1
+                continue
+
             req = NoteCreateRequest(
-                title=(row["subject"] or "").strip(),
+                title=subject,
                 raw_text=self._compose_note_text(
-                    row["subject"],
+                    subject,
                     row.get("real_sender") or row["sender"],
-                    row["body_text"],
-                    row["body_html"],
+                    body_text,
+                    body_html,
                 ),
                 source="email_pasted",
                 area=self._resolve_default_value("Area", "default_area", "General"),
@@ -542,25 +557,26 @@ class EmailManagerWindow(tk.Toplevel):
             )
 
             try:
-                system_log(f"Analizando nota para email {gmail_id}")
+                self.system_log(f"Analizando nota para email {gmail_id}")
                 note_id, _message = self.note_service.create_note(req)
                 if note_id is None:
-                    system_log(f"No se creó la nota para email {gmail_id}", level="WARNING")
+                    self.system_log(f"No se creó la nota para email {gmail_id}", level="WARNING")
                     skipped_count += 1
                     continue
                 tasks_count = self.note_service.actions_repo.pending_count_by_note(note_id)
-                system_log(f"Nota creada (ID {note_id})")
-                system_log(f"Tareas detectadas: {tasks_count}")
-                system_log(f"Tareas creadas: {tasks_count}")
+                self.system_log("Nota creada correctamente.")
+                self.system_log(f"Nota creada (ID {note_id})")
+                self.system_log(f"Tareas detectadas: {tasks_count}")
+                self.system_log(f"Tareas creadas: {tasks_count}")
                 self.email_repo.update_status(gmail_id, "converted_to_note")
                 created_count += 1
             except Exception:  # noqa: BLE001
                 logger.exception("No se pudo crear nota desde email %s", gmail_id)
-                system_log(f"Error al crear nota desde email {gmail_id}", level="ERROR")
+                self.system_log(f"Error al crear nota desde email {gmail_id}", level="ERROR")
                 skipped_count += 1
 
         self.refresh_emails()
-        system_log(f"Creación de notas finalizada. Notas: {created_count}, omitidos: {skipped_count}")
+        self.system_log(f"Creación de notas finalizada. Notas: {created_count}, omitidos: {skipped_count}")
         messagebox.showinfo("Resultado", f"Notas creadas: {created_count}\nOmitidos: {skipped_count}")
 
     def _delete_selected_emails(self) -> None:
@@ -987,7 +1003,7 @@ class EmailManagerWindow(tk.Toplevel):
             return
 
         attachments = self._build_email_attachments(str(row["gmail_id"]))
-        attachment_paths = [attachment["local_path"] for attachment in attachments if attachment.get("local_path")]
+        attachment_paths = self._prepare_forward_attachment_paths(attachments)
         forward_body = (
             "---- Mensaje reenviado ----\n"
             f"De: {row.get('real_sender') or row.get('sender', '')}\n"
@@ -1020,6 +1036,36 @@ class EmailManagerWindow(tk.Toplevel):
         if decision == "all":
             return [attachment["local_path"] for attachment in attachments if attachment.get("local_path")]
         return self._select_original_attachment_paths(attachments)
+
+    def _prepare_forward_attachment_paths(self, attachments: list[dict[str, str]]) -> list[str]:
+        if not attachments:
+            return []
+
+        temp_dir = Path(tempfile.gettempdir()) / "temp_email_attachments"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        self._temp_forward_attachments_dirs.append(temp_dir)
+
+        forward_paths: list[str] = []
+        for attachment in attachments:
+            local_path = str(attachment.get("local_path", "") or "").strip()
+            if not local_path:
+                continue
+            source = Path(local_path)
+            if not source.exists() or not source.is_file():
+                self.system_log(f"Adjunto no encontrado para reenviar: {local_path}", level="WARNING")
+                continue
+
+            filename = str(attachment.get("filename", "") or "").strip() or source.name
+            target_path = temp_dir / filename
+            try:
+                encoded_payload = base64.b64encode(source.read_bytes())
+                target_path.write_bytes(base64.b64decode(encoded_payload))
+                forward_paths.append(str(target_path))
+            except Exception:  # noqa: BLE001
+                logger.exception("No se pudo preparar adjunto para reenviar: %s", filename)
+                self.system_log(f"Error al preparar adjunto para reenviar: {filename}", level="ERROR")
+
+        return forward_paths
 
     def _ask_attach_original_files(self) -> str | None:
         dialog = tk.Toplevel(self)
@@ -1103,9 +1149,9 @@ class EmailManagerWindow(tk.Toplevel):
             keywords=keywords,
         )
         total_examples = self.training_repo.conn.execute("SELECT COUNT(*) FROM email_response_examples").fetchone()[0]
-        system_log("Ejemplo de respuesta guardado")
-        system_log(f"Categoría: {row.get('category', '')}")
-        system_log(f"Total ejemplos: {total_examples}")
+        self.system_log("Ejemplo de respuesta guardado")
+        self.system_log(f"Categoría: {row.get('category', '')}")
+        self.system_log(f"Total ejemplos: {total_examples}")
         logger.info(
             "Ejemplo de entrenamiento guardado para categoría '%s' con remitente '%s'.",
             row.get("category", ""),
