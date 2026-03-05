@@ -206,6 +206,7 @@ class EmailManagerWindow(tk.Toplevel):
 
         first_row_buttons = [
             ("Descargar", self._download_new_emails),
+            ("Recalcular remitentes", self._recompute_senders),
             ("Reentrenar modelo", self._retrain_model),
             ("Reclasificar emails", self._reclassify_current_emails),
             ("Nueva categoría", self._create_category),
@@ -522,6 +523,11 @@ class EmailManagerWindow(tk.Toplevel):
             self.system_log(f"Error al descargar correos: {exc}", level="ERROR")
             self.status_var.set(f"Error al descargar correos: {exc}")
             messagebox.showerror("Error", f"No se pudieron descargar correos.\n\n{exc}")
+
+    def _recompute_senders(self) -> None:
+        count = self.mail_ingestion_service.recompute_original_senders()
+        messagebox.showinfo("Remitentes", f"Remitentes recalculados: {count}")
+        self.refresh_emails()
 
     def _retrain_model(self) -> None:
         rows = self.training_repo.conn.execute(
