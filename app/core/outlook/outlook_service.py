@@ -63,6 +63,7 @@ class OutlookService:
         original_cc: str,
         my_email: str,
         original_reply_to: str = "",
+        attachment_paths: list[str] | None = None,
     ) -> None:
         import win32com.client  # type: ignore[import-not-found]
 
@@ -81,4 +82,24 @@ class OutlookService:
         draft.CC = "; ".join(clean_cc)
         draft.Subject = subject
         draft.Body = body
+        for attachment_path in attachment_paths or []:
+            if attachment_path:
+                draft.Attachments.Add(attachment_path)
+        draft.Display()
+
+    def create_forward_draft(
+        self,
+        subject: str,
+        body: str,
+        attachment_paths: list[str] | None = None,
+    ) -> None:
+        import win32com.client  # type: ignore[import-not-found]
+
+        outlook = win32com.client.Dispatch("Outlook.Application")
+        draft = outlook.CreateItem(0)
+        draft.Subject = subject
+        draft.Body = body
+        for attachment_path in attachment_paths or []:
+            if attachment_path:
+                draft.Attachments.Add(attachment_path)
         draft.Display()
