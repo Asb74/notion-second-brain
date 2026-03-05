@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from app.core.email.email_classifier import EmailClassifier
 from app.core.email.forwarded_parser import extract_real_sender
 from app.persistence.email_repository import EmailRepository
+from app.services.email_entity_extractor import EmailEntityExtractor
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,7 @@ class MailIngestionService:
             received_at = self._convert_internal_date(full_message.get("internalDate"))
             email_type = self.classifier.classify(subject=subject, sender=sender, body_text=body_text)
             category = "marketing" if email_type in {"marketing", "subscription"} else "priority"
+            entities_json = json.dumps(EmailEntityExtractor.extract_entities(subject, body_text), ensure_ascii=False)
             inserted = self._insert_email(
                 gmail_id=gmail_id,
                 thread_id=full_message.get("threadId"),
@@ -64,6 +66,7 @@ class MailIngestionService:
                 body_html=body_html,
                 has_attachments=has_attachments,
                 raw_payload_json=json.dumps(payload, ensure_ascii=False),
+                entities_json=entities_json,
                 category=category,
                 email_type=email_type,
             )
@@ -97,7 +100,8 @@ class MailIngestionService:
                 original_from TEXT DEFAULT '',
                 original_to TEXT DEFAULT '',
                 original_cc TEXT DEFAULT '',
-                original_reply_to TEXT DEFAULT ''
+                original_reply_to TEXT DEFAULT '',
+                entities_json TEXT
             );
             """
         )
@@ -130,6 +134,8 @@ class MailIngestionService:
             self.db_connection.execute("ALTER TABLE emails ADD COLUMN original_cc TEXT DEFAULT ''")
         if "original_reply_to" not in column_names:
             self.db_connection.execute("ALTER TABLE emails ADD COLUMN original_reply_to TEXT DEFAULT ''")
+        if "entities_json" not in column_names:
+            self.db_connection.execute("ALTER TABLE emails ADD COLUMN entities_json TEXT")
         self.db_connection.commit()
 
     def _insert_email(
@@ -148,6 +154,7 @@ class MailIngestionService:
         body_html: str,
         has_attachments: int,
         raw_payload_json: str,
+        entities_json: str,
         category: str,
         email_type: str,
     ) -> bool:
@@ -172,8 +179,9 @@ class MailIngestionService:
                 original_from,
                 original_to,
                 original_cc,
-                original_reply_to
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                original_reply_to,
+                entities_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 gmail_id,
@@ -194,6 +202,7 @@ class MailIngestionService:
                 original_to,
                 original_cc,
                 original_reply_to,
+                entities_json,
             ),
         )
         return cursor.rowcount > 0
