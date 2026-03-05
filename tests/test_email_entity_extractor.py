@@ -26,3 +26,12 @@ def test_extract_entities_returns_empty_when_not_found() -> None:
         "email_persona": "",
         "accion": "",
     }
+
+
+def test_extract_entities_uses_action_word_boundaries() -> None:
+    entities = EmailEntityExtractor.extract_entities(
+        subject="Información de la conversación",
+        body="Texto de prueba sin acciones explícitas.",
+    )
+
+    assert entities["accion"] == ""
