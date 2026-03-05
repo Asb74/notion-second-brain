@@ -30,6 +30,7 @@ class NoteCreateRequest:
     title: str = ""
     resumen: str = ""
     acciones: str = ""
+    email_id: str = ""
 
 
 @dataclass(slots=True)

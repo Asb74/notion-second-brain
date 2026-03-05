@@ -56,6 +56,19 @@ class OutlookService:
         clean_main = "" if main in {mine, configured_user} else (main_recipient or "").strip()
         return clean_main, clean_cc
 
+
+    def reply_all(self, email_id: str) -> None:
+        import win32com.client  # type: ignore[import-not-found]
+
+        if not email_id or not email_id.strip():
+            raise ValueError("email_id es obligatorio para responder el correo original")
+
+        outlook = win32com.client.Dispatch("Outlook.Application")
+        namespace = outlook.GetNamespace("MAPI")
+        original = namespace.GetItemFromID(email_id.strip())
+        reply = original.ReplyAll()
+        reply.Display()
+
     def create_draft(
         self,
         subject: str,
