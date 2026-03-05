@@ -14,6 +14,7 @@ from datetime import datetime
 from email.utils import parseaddr
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter.scrolledtext import ScrolledText
 from tkinterweb import HtmlFrame
 
 from app.config.mail_config import USER_EMAIL
@@ -31,6 +32,20 @@ from app.ui.excel_filter import ExcelTreeFilter
 from app.utils.openai_client import MODEL_NAME, build_openai_client
 
 logger = logging.getLogger(__name__)
+
+_SYSTEM_LOG_WIDGET: ScrolledText | None = None
+
+
+def system_log(message: str) -> None:
+    """Write timestamped messages into the system status panel."""
+    if _SYSTEM_LOG_WIDGET is None:
+        return
+
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    _SYSTEM_LOG_WIDGET.configure(state="normal")
+    _SYSTEM_LOG_WIDGET.insert("end", f"[{timestamp}] {message}\n")
+    _SYSTEM_LOG_WIDGET.see("end")
+    _SYSTEM_LOG_WIDGET.configure(state="disabled")
 
 
 class EmailManagerWindow(tk.Toplevel):
@@ -89,6 +104,8 @@ class EmailManagerWindow(tk.Toplevel):
         self.refresh_emails()
 
     def _build_layout(self) -> None:
+        global _SYSTEM_LOG_WIDGET
+
         style = ttk.Style(self)
         style.theme_use("clam")
         style.configure("Toolbar.TButton", padding=(8, 6))
@@ -236,6 +253,12 @@ class EmailManagerWindow(tk.Toplevel):
         ttk.Label(status_frame, textvariable=self.status_var, anchor="w").pack(side="left", fill="x", expand=True)
         ttk.Label(status_frame, textvariable=self.model_var, anchor="e").pack(side="right")
 
+        system_status_frame = ttk.LabelFrame(self, text="Estado del sistema")
+        system_status_frame.pack(fill="both", expand=False, padx=10, pady=(0, 10))
+        self.system_status_text = ScrolledText(system_status_frame, height=8, state="disabled", wrap="word")
+        self.system_status_text.pack(fill="both", expand=True, padx=6, pady=6)
+        _SYSTEM_LOG_WIDGET = self.system_status_text
+
     def _reload_category_maps(self) -> None:
         self._categories = self.category_manager.list_categories()
         self._tab_to_types = {item["display_name"]: [item["name"]] for item in self._categories}
@@ -349,12 +372,21 @@ class EmailManagerWindow(tk.Toplevel):
             messagebox.showerror("Error", f"No se pudieron descargar correos.\n\n{exc}")
 
     def _retrain_model(self) -> None:
-        trained = self.classifier.retrain_if_possible(force=True)
         examples = self.email_repo.count_labeled_examples()
+        categories_count = len(self._categories)
+        if examples < 10:
+            system_log("[WARNING] No hay suficientes ejemplos para entrenar")
+        else:
+            system_log("[INFO] Iniciando entrenamiento")
+            system_log(f"[INFO] Emails usados: {examples}")
+            system_log(f"[INFO] Categorías detectadas: {categories_count}")
+
+        trained = self.classifier.retrain_if_possible(force=True)
         self.classifier.examples_count = examples
         self.model_var.set(self.classifier.model_status())
         warning = self.classifier.last_training_warning
         if trained:
+            system_log("[OK] Entrenamiento completado")
             self.status_var.set(f"Modelo reentrenado con {examples} ejemplos. Reclasificación manual disponible.")
             return
         if warning:
@@ -479,10 +511,14 @@ class EmailManagerWindow(tk.Toplevel):
             )
 
             try:
+                system_log("[INFO] Analizando nota")
                 note_id, _message = self.note_service.create_note(req)
                 if note_id is None:
                     skipped_count += 1
                     continue
+                tasks_count = self.note_service.actions_repo.pending_count_by_note(note_id)
+                system_log(f"[INFO] Tareas detectadas: {tasks_count}")
+                system_log(f"[OK] Tareas creadas: {tasks_count}")
                 self.email_repo.update_status(gmail_id, "converted_to_note")
                 created_count += 1
             except Exception:  # noqa: BLE001
@@ -876,6 +912,10 @@ class EmailManagerWindow(tk.Toplevel):
             created_at=created_at,
             keywords=keywords,
         )
+        total_examples = self.training_repo.conn.execute("SELECT COUNT(*) FROM email_response_examples").fetchone()[0]
+        system_log("[INFO] Ejemplo guardado")
+        system_log(f"Categoría: {row.get('category', '')}")
+        system_log(f"Total ejemplos: {total_examples}")
         logger.info(
             "Ejemplo de entrenamiento guardado para categoría '%s' con remitente '%s'.",
             row.get("category", ""),
