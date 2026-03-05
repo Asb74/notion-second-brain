@@ -212,6 +212,40 @@ class NoteService:
         except Exception:  # noqa: BLE001
             logger.exception("No se pudo sincronizar estado en Notion para la nota id=%s", note_id)
 
+    def _filter_actions(self, actions, source):
+        if not isinstance(actions, list):
+            return []
+
+        # remove duplicates and clean text
+        cleaned = []
+        for action in actions:
+            text = str(action).strip()
+            if len(text) < 5:
+                continue
+            if text not in cleaned:
+                cleaned.append(text)
+
+        # detect urgent actions
+        urgent_keywords = ["urgente", "hoy", "mañana", "antes de", "lo antes posible"]
+
+        urgent = []
+        normal = []
+
+        for action in cleaned:
+            lower = action.lower()
+            if any(k in lower for k in urgent_keywords):
+                urgent.append(action)
+            else:
+                normal.append(action)
+
+        ordered = urgent + normal
+
+        # limit actions for emails
+        if source == "email_pasted":
+            return ordered[:3]
+
+        return ordered
+
     def create_note(self, req: NoteCreateRequest) -> tuple[int | None, str]:
         normalized = normalize_text(req.raw_text, req.source)
         source_id = compute_source_id(normalized, req.source)
@@ -226,11 +260,8 @@ class NoteService:
         processed = process_text(normalized)
         final_tipo = req.tipo.strip() if req.tipo.strip() else processed.tipo_sugerido
         final_prioridad = req.prioridad.strip() if req.prioridad.strip() else processed.prioridad_sugerida
-        acciones_text = ""
-        if isinstance(processed.acciones, list):
-            acciones_text = "\n".join(str(accion).strip() for accion in processed.acciones if str(accion).strip())
-        else:
-            acciones_text = str(processed.acciones or "").strip()
+        filtered_actions = self._filter_actions(processed.acciones, req.source)
+        acciones_text = "\n".join(filtered_actions)
 
         final_estado = req.estado
         if not acciones_text.strip():
@@ -255,19 +286,20 @@ class NoteService:
             status=NoteStatus.PENDING,
         )
 
-        if isinstance(processed.acciones, list):
-            for accion in processed.acciones:
-                try:
-                    action_description = str(accion).strip()
-                    if not action_description:
-                        continue
-                    self.actions_repo.create_action(
-                        note_id=note_id,
-                        description=action_description,
-                        area=final_req.area,
-                    )
-                except Exception:  # noqa: BLE001
-                    logger.exception("No se pudo guardar la acción para la nota id=%s", note_id)
+        for accion in filtered_actions:
+            try:
+                action_description = str(accion).strip()
+                if not action_description:
+                    continue
+
+                self.actions_repo.create_action(
+                    note_id=note_id,
+                    description=action_description,
+                    area=final_req.area,
+                )
+
+            except Exception:  # noqa: BLE001
+                logger.exception("No se pudo guardar la acción para la nota id=%s", note_id)
 
         return note_id, "Nota guardada localmente."
 
