@@ -16,6 +16,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from tkinterweb import HtmlFrame
 
+from app.config.mail_config import USER_EMAIL
 from app.core.email.category_manager import CategoryManager
 from app.core.email.gmail_client import GmailClient
 from app.core.email.forwarded_parser import extract_forwarded_headers
@@ -63,11 +64,11 @@ class EmailManagerWindow(tk.Toplevel):
         self._tab_to_types = {item["display_name"]: [item["name"]] for item in self._categories}
         self._move_label_to_type = {item["display_name"]: item["name"] for item in self._categories}
         self.move_target_var = tk.StringVar(value=default_label)
-        self.columns = ("gmail_id", "subject", "sender", "type", "received_at", "status")
+        self.columns = ("gmail_id", "subject", "real_sender", "type", "received_at", "status")
         self.column_titles = {
             "gmail_id": "Gmail ID",
             "subject": "Asunto",
-            "sender": "Remitente",
+            "real_sender": "Remitente",
             "type": "Tipo",
             "received_at": "Fecha",
             "status": "Estado",
@@ -174,7 +175,7 @@ class EmailManagerWindow(tk.Toplevel):
 
         self.tree.column("gmail_id", width=210, anchor="w")
         self.tree.column("subject", width=280, anchor="w")
-        self.tree.column("sender", width=220, anchor="w")
+        self.tree.column("real_sender", width=220, anchor="w")
         self.tree.column("type", width=110, anchor="w")
         self.tree.column("received_at", width=160, anchor="w")
         self.tree.column("status", width=120, anchor="w")
@@ -383,6 +384,7 @@ class EmailManagerWindow(tk.Toplevel):
                 "gmail_id": row["gmail_id"],
                 "subject": row["subject"] or "",
                 "sender": row["sender"] or "",
+                "real_sender": row["real_sender"] or row["sender"] or "",
                 "type": row["type"] or "other",
                 "received_at": row["received_at"] or "",
                 "received_at_display": self._format_datetime(row["received_at"]),
@@ -413,7 +415,7 @@ class EmailManagerWindow(tk.Toplevel):
             values = (
                 row["gmail_id"],
                 row["subject"],
-                row["sender"],
+                row["real_sender"],
                 row["type"],
                 row["received_at_display"],
                 row["status"],
@@ -460,7 +462,12 @@ class EmailManagerWindow(tk.Toplevel):
 
             req = NoteCreateRequest(
                 title=(row["subject"] or "").strip(),
-                raw_text=self._compose_note_text(row["subject"], row["sender"], row["body_text"], row["body_html"]),
+                raw_text=self._compose_note_text(
+                    row["subject"],
+                    row.get("real_sender") or row["sender"],
+                    row["body_text"],
+                    row["body_html"],
+                ),
                 source="email_pasted",
                 area=self._resolve_default_value("Area", "default_area", "General"),
                 tipo=self._resolve_default_value("Tipo", "default_tipo", "Nota"),
@@ -794,7 +801,7 @@ class EmailManagerWindow(tk.Toplevel):
             messagebox.showwarning("Atención", "Escribe o genera una respuesta antes de crear el borrador.")
             return
 
-        original_from = row.get("original_from", row["sender"])
+        original_from = row.get("real_sender") or row.get("original_from", row["sender"])
         original_to = row.get("original_to", "")
         original_cc = row.get("original_cc", "")
 
@@ -925,10 +932,11 @@ class EmailManagerWindow(tk.Toplevel):
 
     def _resolve_my_email(self) -> str:
         try:
-            return self.gmail_client.get_my_email().strip()
+            resolved = self.gmail_client.get_my_email().strip()
+            return resolved or USER_EMAIL
         except Exception:  # noqa: BLE001
             logger.exception("No se pudo obtener el email del usuario desde Gmail")
-            return ""
+            return USER_EMAIL
 
     @staticmethod
     def _compose_note_text(subject: str | None, sender: str | None, body_text: str | None, body_html: str | None) -> str:

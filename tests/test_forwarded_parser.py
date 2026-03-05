@@ -1,4 +1,4 @@
-from app.core.email.forwarded_parser import extract_forwarded_headers, extract_original_recipients
+from app.core.email.forwarded_parser import extract_forwarded_headers, extract_original_recipients, extract_real_sender
 
 
 def test_extract_forwarded_headers_from_mensaje_original_block() -> None:
@@ -49,3 +49,19 @@ def test_extract_original_recipients_returns_empty_when_not_forwarded() -> None:
     recipients = extract_original_recipients(body)
 
     assert recipients == {}
+
+
+def test_extract_real_sender_returns_sender_inside_forwarded_body() -> None:
+    body = "Texto\nDe: Nombre Apellido <real.sender@example.com>\nAsunto: demo"
+
+    sender = extract_real_sender(body, "forwarder@example.com")
+
+    assert sender == "real.sender@example.com"
+
+
+def test_extract_real_sender_falls_back_to_original_sender() -> None:
+    body = "Texto sin cabecera reenviada"
+
+    sender = extract_real_sender(body, "forwarder@example.com")
+
+    assert sender == "forwarder@example.com"

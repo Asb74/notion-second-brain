@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+REAL_SENDER_RE = re.compile(r"De:\s.*?<(.+?)>", re.IGNORECASE)
 
 
 @dataclass
@@ -99,6 +100,16 @@ def extract_forwarded_headers(body_text: str) -> dict:
     if not parsed["from"] and not parsed["to_list"] and not parsed["cc_list"]:
         return {}
     return parsed
+
+
+def extract_real_sender(email_body: str, original_sender: str = "") -> str:
+    if not email_body:
+        return original_sender
+
+    match = REAL_SENDER_RE.search(email_body)
+    if match:
+        return match.group(1).strip()
+    return original_sender
 
 
 def extract_original_recipients(body_text: str) -> dict:

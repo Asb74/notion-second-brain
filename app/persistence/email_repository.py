@@ -30,6 +30,7 @@ class EmailRepository:
                 thread_id TEXT,
                 subject TEXT,
                 sender TEXT,
+                real_sender TEXT,
                 received_at TEXT,
                 body_text TEXT,
                 body_html TEXT,
@@ -49,6 +50,7 @@ class EmailRepository:
         self._ensure_column("category", "TEXT DEFAULT 'pending'")
         self._ensure_column("type", "TEXT DEFAULT 'other'")
         self._ensure_column("sender", "TEXT")
+        self._ensure_column("real_sender", "TEXT")
         self._ensure_column("subject", "TEXT")
         self._ensure_column("received_at", "TEXT")
         self._ensure_column("body_text", "TEXT")
@@ -150,7 +152,7 @@ class EmailRepository:
         placeholders = ",".join("?" for _ in types)
         return self.conn.execute(
             f"""
-            SELECT gmail_id, subject, sender, received_at, body_text, body_html, status, category, type,
+            SELECT gmail_id, subject, sender, real_sender, received_at, body_text, body_html, status, category, type,
                    original_from, original_to, original_cc, original_reply_to
             FROM emails
             WHERE type IN ({placeholders})
@@ -162,7 +164,7 @@ class EmailRepository:
     def get_email_content(self, gmail_id: str) -> sqlite3.Row | None:
         return self.conn.execute(
             """
-            SELECT gmail_id, subject, sender, received_at, body_text, body_html, status, category, type,
+            SELECT gmail_id, subject, sender, real_sender, received_at, body_text, body_html, status, category, type,
                    original_from, original_to, original_cc, original_reply_to
             FROM emails
             WHERE gmail_id = ?
