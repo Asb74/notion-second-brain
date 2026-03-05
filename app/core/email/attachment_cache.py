@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 from typing import Any
@@ -21,12 +22,14 @@ class AttachmentCache:
         target_dir.mkdir(parents=True, exist_ok=True)
         target_path = (target_dir / safe_filename).resolve()
         if target_path.exists():
-            return str(target_path)
+            return self._normalize_return_path(target_path)
 
         existing_local = str(attachment_meta.get("local_path") or "").strip()
         if existing_local and Path(existing_local).exists():
             shutil.copy2(existing_local, target_path)
-            return str(target_path)
+            if not target_path.exists():
+                raise FileNotFoundError(f"No se pudo copiar adjunto en caché: {target_path}")
+            return self._normalize_return_path(target_path)
 
         attachment_id = str(attachment_meta.get("attachmentId") or "").strip()
         if not attachment_id:
@@ -36,4 +39,10 @@ class AttachmentCache:
         if not raw:
             raise ValueError(f"No se pudo descargar el adjunto '{filename}'")
         target_path.write_bytes(raw)
-        return str(target_path)
+        if not target_path.exists():
+            raise FileNotFoundError(f"No se pudo guardar adjunto descargado: {target_path}")
+        return self._normalize_return_path(target_path)
+
+    @staticmethod
+    def _normalize_return_path(path: Path) -> str:
+        return os.path.normpath(str(path.resolve()))

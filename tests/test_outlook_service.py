@@ -47,3 +47,22 @@ def test_clean_recipients_uses_to_plus_cc_and_removes_sender_duplicate() -> None
 
     assert main == "cliente@externo.com"
     assert cc == ["equipo@empresa.com", "apoyo@empresa.com"]
+
+
+def test_outlook_attachment_path_validation(tmp_path) -> None:
+    file_path = tmp_path / "file.txt"
+    file_path.write_text("ok")
+
+    validated = OutlookService._validate_attachment_path(str(file_path))
+
+    assert validated.endswith("file.txt")
+
+
+def test_outlook_attachment_path_validation_missing() -> None:
+    missing = "this/path/does/not/exist.txt"
+
+    try:
+        OutlookService._validate_attachment_path(missing)
+        assert False, "Expected FileNotFoundError"
+    except FileNotFoundError as exc:
+        assert "ruta no existe" in str(exc)

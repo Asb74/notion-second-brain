@@ -78,3 +78,21 @@ Reply-To: soporte@example.com
 """
     recipients = extract_forwarded_headers(body)
     assert recipients["reply_to"] == "soporte@example.com"
+
+
+def test_parse_forwarded_original_headers() -> None:
+    body = """
+Texto
+-----Mensaje original-----
+From: External Sender <sender@example.com>
+To: one@example.com; two@example.com
+Cc: copy@example.com
+Reply-To: reply@example.com
+"""
+
+    parsed = extract_forwarded_headers(body)
+
+    assert parsed["from"] == "sender@example.com"
+    assert parsed["to_list"] == ["one@example.com", "two@example.com"]
+    assert parsed["cc_list"] == ["copy@example.com"]
+    assert parsed["reply_to"] == "reply@example.com"
