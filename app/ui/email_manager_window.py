@@ -13,7 +13,7 @@ import sqlite3
 import tempfile
 import tkinter as tk
 from datetime import datetime
-from email.utils import parseaddr
+from email.utils import getaddresses, parseaddr
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from tkinter.scrolledtext import ScrolledText
@@ -1134,6 +1134,37 @@ class EmailManagerWindow(tk.Toplevel):
     def _get_fixed_style_profile(self) -> str:
         return os.getenv("EMAIL_RESPONSE_STYLE_PROFILE", "").strip()
 
+    def _normalize_recipients(
+        self,
+        main_sender: str,
+        original_to: str,
+        original_cc: str,
+        reply_to: str,
+    ) -> tuple[str, str]:
+        my_email = (self.my_email or "").lower().strip()
+
+        to_list: list[str] = []
+        cc_list: list[str] = []
+
+        primary = (reply_to or main_sender or "").lower().strip()
+        if primary and primary != my_email:
+            to_list.append(primary)
+
+        parsed_to = [addr for _, addr in getaddresses([original_to or ""])]
+        parsed_cc = [addr for _, addr in getaddresses([original_cc or ""])]
+
+        for email in parsed_to:
+            normalized = email.lower().strip()
+            if normalized and normalized != my_email and normalized not in to_list:
+                to_list.append(normalized)
+
+        for email in parsed_cc:
+            normalized = email.lower().strip()
+            if normalized and normalized != my_email and normalized not in to_list and normalized not in cc_list:
+                cc_list.append(normalized)
+
+        return ", ".join(to_list), ", ".join(cc_list)
+
     def _create_outlook_draft(self) -> None:
         selection = self.tree.selection()
         if len(selection) != 1:
@@ -1151,18 +1182,21 @@ class EmailManagerWindow(tk.Toplevel):
             messagebox.showwarning("Atención", "Escribe o genera una respuesta antes de crear el borrador.")
             return
 
-        recipient = row.get("reply_to") or row.get("real_sender") or row.get("sender", "")
-        if not recipient:
+        main_sender = row.get("real_sender") or row.get("sender", "")
+        to_recipients, cc_recipients = self._normalize_recipients(
+            main_sender=main_sender,
+            original_to=row.get("original_to", ""),
+            original_cc=row.get("original_cc", ""),
+            reply_to=row.get("reply_to", ""),
+        )
+        if not to_recipients:
             messagebox.showwarning("Atención", "No se encontró destinatario para responder este correo.")
             return
         reply_to = row.get("reply_to", "")
-        original_to = row.get("original_to", "")
-        original_cc = row.get("original_cc", "")
 
         reply_all = messagebox.askyesno("Responder", "¿Responder a todos (incluyendo CC)?")
         if not reply_all:
-            original_to = ""
-            original_cc = ""
+            cc_recipients = ""
 
         attachments = self._build_email_attachments(str(row["gmail_id"]))
         attachment_paths = self._resolve_reply_attachment_paths(str(row["gmail_id"]), attachments)
@@ -1173,9 +1207,9 @@ class EmailManagerWindow(tk.Toplevel):
             to_recipient, cc_recipients = self.outlook_service.create_draft(
                 subject=draft_subject,
                 body=body,
-                original_from=recipient,
-                original_to=original_to,
-                original_cc=original_cc,
+                original_from=to_recipients,
+                original_to="",
+                original_cc=cc_recipients,
                 my_email=self.my_email,
                 original_reply_to=reply_to,
                 attachment_paths=attachment_paths,
