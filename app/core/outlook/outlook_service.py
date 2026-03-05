@@ -56,8 +56,8 @@ class OutlookService:
         clean_main = "" if main in {mine, configured_user} else (main_recipient or "").strip()
         return clean_main, clean_cc
 
-
-    def reply_all(self, email_id: str) -> None:
+    @staticmethod
+    def _get_mail_by_id(email_id: str):
         import win32com.client  # type: ignore[import-not-found]
 
         if not email_id or not email_id.strip():
@@ -65,8 +65,18 @@ class OutlookService:
 
         outlook = win32com.client.Dispatch("Outlook.Application")
         namespace = outlook.GetNamespace("MAPI")
-        original = namespace.GetItemFromID(email_id.strip())
+        return namespace.GetItemFromID(email_id.strip())
+
+
+    def reply_all(self, email_id: str) -> None:
+        original = self._get_mail_by_id(email_id)
         reply = original.ReplyAll()
+        reply.Display()
+
+    def reply_all_with_body(self, email_id: str, body: str) -> None:
+        mail = self._get_mail_by_id(email_id)
+        reply = mail.ReplyAll()
+        reply.Body = f"{body}\n\n{reply.Body}"
         reply.Display()
 
     def create_draft(
