@@ -145,8 +145,20 @@ class NoteService:
             return [a for a in self.actions_repo.get_actions_by_area(area) if a.status == "pendiente"]
         return self.actions_repo.get_pending_actions()
 
-    def check_note_completion(self, note_id: int) -> None:
-        if self.actions_repo.count_open_actions(note_id) > 0:
+    def _generate_actions_summary(self, note_id: int) -> str:
+        actions = self.actions_repo.get_actions_by_note(note_id)
+
+        lines: list[str] = []
+        for action in actions:
+            desc = str(action.description).strip()
+            if desc:
+                lines.append(f"• {desc}")
+
+        return "\n".join(lines)
+
+    def _handle_note_completed(self, note_id: int) -> None:
+        open_count = self.actions_repo.count_open_actions(note_id)
+        if open_count > 0:
             return
 
         note = self.note_repo.get_note(note_id)
@@ -155,11 +167,26 @@ class NoteService:
 
         self.note_repo.update_estado(note.id, "Finalizado")
 
-        if note.source == "email_pasted" and note.source_id.strip():
-            try:
-                self.outlook_service.reply_all(note.source_id)
-            except Exception:  # noqa: BLE001
-                logger.exception("No se pudo abrir respuesta automática para note_id=%s email_id=%s", note.id, note.source_id)
+        if note.source != "email_pasted" or not note.source_id.strip():
+            return
+
+        summary = self._generate_actions_summary(note_id)
+        body = (
+            "Hola,\n\n"
+            "Hemos realizado las siguientes acciones sobre tu solicitud:\n\n"
+            f"{summary}\n\n"
+            "Todo queda gestionado.\n\n"
+            "Quedamos atentos.\n\n"
+            "Un saludo"
+        )
+
+        try:
+            self.outlook_service.reply_all_with_body(note.source_id, body)
+        except Exception:  # noqa: BLE001
+            logger.exception("No se pudo abrir respuesta automática para note_id=%s email_id=%s", note.id, note.source_id)
+
+    def check_note_completion(self, note_id: int) -> None:
+        self._handle_note_completed(note_id)
 
     def mark_actions_done(self, action_ids: list[int]) -> int:
         completed_note_ids: set[int] = set()

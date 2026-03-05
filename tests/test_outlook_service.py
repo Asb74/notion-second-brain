@@ -66,3 +66,27 @@ def test_outlook_attachment_path_validation_missing() -> None:
         assert False, "Expected FileNotFoundError"
     except FileNotFoundError as exc:
         assert "ruta no existe" in str(exc)
+
+
+def test_reply_all_with_body_prepends_message(monkeypatch) -> None:
+    class _Reply:
+        Body = "Original"
+
+        def Display(self):
+            self.displayed = True
+
+    class _Mail:
+        def __init__(self):
+            self.reply = _Reply()
+
+        def ReplyAll(self):
+            return self.reply
+
+    mail = _Mail()
+    monkeypatch.setattr(OutlookService, "_get_mail_by_id", staticmethod(lambda _email_id: mail))
+
+    service = OutlookService()
+    service.reply_all_with_body("email-id", "Hola")
+
+    assert mail.reply.Body == "Hola\n\nOriginal"
+    assert getattr(mail.reply, "displayed", False) is True

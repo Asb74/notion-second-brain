@@ -373,12 +373,16 @@ class DedupTests(unittest.TestCase):
         note_id, _ = self.service.create_note(req)
         actions = self.service.actions_repo.get_actions_by_note(note_id)
 
-        with patch.object(self.service.outlook_service, "reply_all") as mock_reply_all:
+        with patch.object(self.service.outlook_service, "reply_all_with_body") as mock_reply_all:
             self.service.mark_action_done(actions[0].id)
             mock_reply_all.assert_not_called()
 
             self.service.mark_action_done(actions[1].id)
-            mock_reply_all.assert_called_once_with("email-entry-123")
+            mock_reply_all.assert_called_once()
+            called_email_id, called_body = mock_reply_all.call_args[0]
+            self.assertEqual(called_email_id, "email-entry-123")
+            self.assertIn("• Revisar", called_body)
+            self.assertIn("• Confirmar", called_body)
     @patch("app.core.service.process_text")
     def test_create_note_keeps_manual_tipo_prioridad(self, mock_process_text):
         mock_process_text.return_value = ProcessedNote(
