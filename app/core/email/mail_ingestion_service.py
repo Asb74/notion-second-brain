@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.core.email.email_classifier import EmailClassifier
 from app.core.email.forwarded_parser import extract_forwarded_headers, extract_real_sender
+from app.config.mail_config import USER_EMAIL
 from app.persistence.email_repository import EmailRepository
 from app.services.email_entity_extractor import EmailEntityExtractor
 
@@ -51,7 +52,7 @@ class MailIngestionService:
             original_to = headers["to"]
             original_cc = headers["cc"]
             original_reply_to = headers["reply_to"]
-            if self._is_forwarded(subject, body_text):
+            if self._should_extract_forwarded_original_headers(subject, sender, body_text):
                 forwarded = extract_forwarded_headers(body_text)
                 if forwarded.get("from"):
                     original_from = forwarded["from"]
@@ -325,6 +326,19 @@ class MailIngestionService:
         if normalized_subject.startswith(("rv:", "fw:", "fwd:")):
             return True
         return "-----mensaje original-----" in (body_text or "").lower()
+
+    def _should_extract_forwarded_original_headers(self, subject: str, sender: str, body_text: str) -> bool:
+        if not self._is_forwarded(subject, body_text):
+            return False
+        sender_email = self._extract_email(sender)
+        my_email = self._extract_email(USER_EMAIL)
+        return bool(sender_email and my_email and sender_email == my_email)
+
+    @staticmethod
+    def _extract_email(raw_value: str) -> str:
+        from email.utils import parseaddr
+
+        return parseaddr(raw_value or "")[1].strip().lower()
 
     def _convert_internal_date(self, internal_date: Optional[str]) -> Optional[str]:
         if not internal_date:

@@ -262,6 +262,12 @@ class EmailRepository:
             """
         ).fetchall()
 
+    def get_type_distribution(self) -> dict[str, int]:
+        rows = self.conn.execute(
+            "SELECT type, COUNT(1) AS cnt FROM emails GROUP BY type ORDER BY type"
+        ).fetchall()
+        return {str(row["type"] or "other"): int(row["cnt"] or 0) for row in rows}
+
     def get_category_names(self) -> list[str]:
         rows = self.conn.execute(
             "SELECT name FROM email_categories ORDER BY is_base DESC, created_at ASC, name ASC"

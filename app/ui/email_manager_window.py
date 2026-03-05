@@ -105,6 +105,9 @@ class EmailManagerWindow(tk.Toplevel):
         self._expanded_attachment_preview_frame: tk.Widget | None = None
         self._temp_opened_attachments: list[Path] = []
         self._temp_forward_attachments_dirs: list[Path] = []
+        self._logs_visible = True
+        self._logs_frame: ttk.LabelFrame | None = None
+        self._main_paned: ttk.PanedWindow | None = None
         self.detected_pedido_var = tk.StringVar(value="")
         self.detected_cliente_var = tk.StringVar(value="")
         self.detected_persona_var = tk.StringVar(value="")
@@ -195,8 +198,19 @@ class EmailManagerWindow(tk.Toplevel):
         self.tab_menu.add_command(label="Renombrar categoría", command=self._rename_current_category)
         self.tab_menu.add_command(label="Eliminar categoría", command=self._delete_current_category)
 
-        table_frame = ttk.Frame(self)
-        table_frame.pack(fill="both", expand=True, padx=10, pady=(0, 6))
+        self._main_paned = ttk.PanedWindow(self, orient="vertical")
+        self._main_paned.pack(fill="both", expand=True, padx=10, pady=(0, 6))
+
+        top_zone = ttk.Frame(self._main_paned)
+        middle_zone = ttk.Frame(self._main_paned)
+        self._logs_frame = ttk.LabelFrame(self._main_paned, text="Estado / Logs")
+
+        self._main_paned.add(top_zone, weight=4)
+        self._main_paned.add(middle_zone, weight=3)
+        self._main_paned.add(self._logs_frame, weight=1)
+
+        table_frame = ttk.Frame(top_zone)
+        table_frame.pack(fill="both", expand=True)
 
         self.tree = ttk.Treeview(table_frame, columns=self.columns, show="headings", height=12, selectmode="extended")
         for col in self.columns:
@@ -225,8 +239,8 @@ class EmailManagerWindow(tk.Toplevel):
             set_rows=self._set_filtered_rows,
         )
 
-        lower_panel = ttk.PanedWindow(self, orient="horizontal")
-        lower_panel.pack(fill="both", expand=False, padx=10, pady=(0, 6))
+        lower_panel = ttk.PanedWindow(middle_zone, orient="horizontal")
+        lower_panel.pack(fill="both", expand=True)
 
         preview_frame = ttk.LabelFrame(lower_panel, text="Vista previa")
         html_preview_frame = ttk.Frame(preview_frame)
@@ -280,15 +294,32 @@ class EmailManagerWindow(tk.Toplevel):
         status_frame.pack(fill="x", padx=10, pady=(0, 10))
         ttk.Label(status_frame, textvariable=self.status_var, anchor="w").pack(side="left", fill="x", expand=True)
         ttk.Label(status_frame, textvariable=self.model_var, anchor="e").pack(side="right")
+        self._toggle_logs_button = ttk.Button(status_frame, text="Ocultar logs", command=self._toggle_logs_panel)
+        self._toggle_logs_button.pack(side="right", padx=(8, 0))
 
-        system_status_frame = ttk.LabelFrame(self, text="Estado / Logs")
-        system_status_frame.pack(fill="x", expand=False, padx=10, pady=(0, 10))
-        self.system_status_text = tk.Text(system_status_frame, height=6, state="disabled", wrap="word")
-        status_scroll = ttk.Scrollbar(system_status_frame, orient="vertical", command=self.system_status_text.yview)
+        self.system_status_text = tk.Text(self._logs_frame, height=8, state="disabled", wrap="word")
+        status_scroll = ttk.Scrollbar(self._logs_frame, orient="vertical", command=self.system_status_text.yview)
         self.system_status_text.configure(yscrollcommand=status_scroll.set)
         self.system_status_text.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
         status_scroll.pack(side="right", fill="y", padx=(0, 6), pady=6)
         _SYSTEM_LOG_WIDGET = self.system_status_text
+
+    def _toggle_logs_panel(self) -> None:
+        if self._main_paned is None or self._logs_frame is None:
+            return
+        if self._logs_visible:
+            try:
+                self._main_paned.forget(self._logs_frame)
+            except tk.TclError:
+                pass
+            self._logs_visible = False
+            self._toggle_logs_button.configure(text="Mostrar logs")
+            self.log("Panel de logs oculto")
+            return
+        self._main_paned.add(self._logs_frame, weight=1)
+        self._logs_visible = True
+        self._toggle_logs_button.configure(text="Ocultar logs")
+        self.log("Panel de logs visible")
 
     def log(self, message: str, level: str = "INFO") -> None:
         self.status_var.set(message)
@@ -419,11 +450,21 @@ class EmailManagerWindow(tk.Toplevel):
         counts = {str(r["category"]): int(r["cnt"]) for r in rows}
         active = {k: v for k, v in counts.items() if v > 0}
         summary = ", ".join(f"{k}: {v}" for k, v in sorted(active.items())) or "sin datos"
-        self.log(f"Reentrenar modelo. Ejemplos por categoría: {summary}")
+        total = sum(active.values())
+        sufficient_by_category = bool(active) and all(count >= 5 for count in active.values())
+        sufficient_by_total = total >= 30
+        is_sufficient = sufficient_by_category or sufficient_by_total
+        self.log(
+            f"Reentrenar modelo. Ejemplos por categoría: {summary}. Total: {total}. "
+            f"Suficiente: {'sí' if is_sufficient else 'no'}"
+        )
 
-        invalid = [f"{cat}({cnt})" for cat, cnt in active.items() if cnt < 10]
-        if len(active) < 2 or invalid:
-            reason = f"Insuficiente para entrenar: categorías={len(active)}, con menos de 10: {', '.join(invalid) or 'ninguna'}"
+        if not is_sufficient:
+            invalid = [f"{cat}({cnt})" for cat, cnt in sorted(active.items()) if cnt < 5]
+            reason = (
+                "Insuficiente para entrenar: se requieren >=5 por categoría activa "
+                f"o >=30 en total. Total={total}. Debajo de mínimo: {', '.join(invalid) or 'ninguna'}"
+            )
             self.log(reason, level="WARNING")
             messagebox.showwarning("Entrenamiento", reason)
             return
@@ -443,10 +484,12 @@ class EmailManagerWindow(tk.Toplevel):
             self.system_log("No hay modelo entrenado para reclasificar.", level="WARNING")
             self.status_var.set("No hay modelo entrenado para reclasificar.")
             return
-        self.system_log("Iniciando reclasificación de emails")
+        before = self.email_repo.get_type_distribution()
+        self.system_log(f"Iniciando reclasificación de emails. Distribución antes: {before}")
         reclassified = self.classifier.reclassify_all_emails()
+        after = self.email_repo.get_type_distribution()
         self.refresh_emails()
-        self.system_log(f"Reclasificación completada. Correos actualizados: {reclassified}.")
+        self.system_log(f"Reclasificación completada. Correos actualizados: {reclassified}. Distribución después: {after}")
         self.status_var.set(f"Reclasificación completada. Correos actualizados: {reclassified}.")
 
     def refresh_emails(self) -> None:
@@ -553,23 +596,8 @@ class EmailManagerWindow(tk.Toplevel):
                 skipped_count += 1
                 continue
 
-            req = NoteCreateRequest(
-                title=subject,
-                raw_text=self._compose_note_text(
-                    subject,
-                    row.get("real_sender") or row["sender"],
-                    body_text,
-                    body_html,
-                ),
-                source="email_pasted",
-                area=self._resolve_default_value("Area", "default_area", "General"),
-                tipo=self._resolve_default_value("Tipo", "default_tipo", "Nota"),
-                estado=self._resolve_default_value("Estado", "default_estado", "Pendiente"),
-                prioridad=self._resolve_default_value("Prioridad", "default_prioridad", "Media"),
-                fecha=self._resolve_note_date(row["received_at"]),
-            )
-
             try:
+                req = self._build_note_request_from_row(row)
                 self.system_log(f"Analizando nota para email {gmail_id}")
                 note_id, _message = self.note_service.create_note(req)
                 if note_id is None:
@@ -577,8 +605,7 @@ class EmailManagerWindow(tk.Toplevel):
                     skipped_count += 1
                     continue
                 tasks_count = self.note_service.actions_repo.pending_count_by_note(note_id)
-                self.system_log("Nota creada correctamente.")
-                self.system_log(f"Nota creada (ID {note_id})")
+                self.system_log(f"Nota creada OK gmail_id={gmail_id} notion_id={note_id}")
                 self.system_log(f"Tareas detectadas: {tasks_count}")
                 self.system_log(f"Tareas creadas: {tasks_count}")
                 self.email_repo.update_status(gmail_id, "converted_to_note")
@@ -592,6 +619,24 @@ class EmailManagerWindow(tk.Toplevel):
         self.refresh_emails()
         self.system_log(f"Creación de notas finalizada. Notas: {created_count}, omitidos: {skipped_count}")
         messagebox.showinfo("Resultado", f"Notas creadas: {created_count}\nOmitidos: {skipped_count}")
+
+    def _build_note_request_from_row(self, row: sqlite3.Row) -> NoteCreateRequest:
+        sender_for_note = row["original_from"] or row["real_sender"] or row["sender"] or ""
+        return NoteCreateRequest(
+            title=(row["subject"] or "").strip(),
+            raw_text=self._compose_note_text(
+                (row["subject"] or "").strip(),
+                sender_for_note,
+                (row["body_text"] or "").strip(),
+                (row["body_html"] or "").strip(),
+            ),
+            source="email_pasted",
+            area=self._resolve_default_value("Area", "default_area", "General"),
+            tipo=self._resolve_default_value("Tipo", "default_tipo", "Nota"),
+            estado=self._resolve_default_value("Estado", "default_estado", "Pendiente"),
+            prioridad=self._resolve_default_value("Prioridad", "default_prioridad", "Media"),
+            fecha=self._resolve_note_date(row["received_at"]),
+        )
 
     def _delete_selected_emails(self) -> None:
         selected_ids = self._selected_ids()
@@ -738,7 +783,13 @@ class EmailManagerWindow(tk.Toplevel):
             self.attachments_list.insert("end", "(sin adjuntos)")
             return
         for attachment in attachments:
-            self.attachments_list.insert("end", attachment.get("filename", "(sin nombre)"))
+            filename = attachment.get("filename", "(sin nombre)")
+            mime = attachment.get("mime", "")
+            size = str(attachment.get("size", "") or "").strip()
+            suffix = f" [{mime}]"
+            if size and size != "0":
+                suffix += f" ({size} bytes)"
+            self.attachments_list.insert("end", f"{filename}{suffix}")
 
     def _selected_attachment(self) -> dict[str, str] | None:
         if not hasattr(self, "_current_attachments"):
@@ -766,7 +817,7 @@ class EmailManagerWindow(tk.Toplevel):
         try:
             local_path = self.attachment_cache.ensure_downloaded(gmail_id, attachment)
             attachment["local_path"] = local_path
-            self.log(f"Adjunto descargado: {attachment.get('filename', '')}")
+            self.log(f"Adjunto descargado en: {local_path}")
         except Exception as exc:  # noqa: BLE001
             logger.exception("Error descargando adjunto")
             self.log(f"Error al descargar adjunto: {exc}", level="ERROR")
@@ -803,6 +854,7 @@ class EmailManagerWindow(tk.Toplevel):
         local_path = attachment.get("local_path", "")
         path = Path(local_path)
         if not path.exists():
+            self.log(f"Adjunto no encontrado para abrir: {local_path}", level="ERROR")
             messagebox.showerror("Adjunto", f"No existe el archivo:\n{local_path}")
             return
 
@@ -814,15 +866,18 @@ class EmailManagerWindow(tk.Toplevel):
             self._temp_opened_attachments.append(temp_path)
             if hasattr(os, "startfile"):
                 os.startfile(str(temp_path))  # type: ignore[attr-defined]
+                self.log(f"Adjunto abierto: {temp_path}")
             else:
                 raise RuntimeError("Abrir adjuntos solo está soportado en Windows (os.startfile).")
         except Exception as exc:  # noqa: BLE001
             logger.exception("No se pudo abrir adjunto")
+            self.log(f"No se pudo abrir adjunto: {exc}", level="ERROR")
             messagebox.showerror("Adjunto", f"No se pudo abrir el adjunto.\n\n{exc}")
 
     def _save_attachment_as(self, local_path: str, filename: str) -> None:
         source = Path(local_path)
         if not source.exists():
+            self.log(f"Adjunto no encontrado para guardar: {local_path}", level="ERROR")
             messagebox.showerror("Adjunto", f"No existe el archivo:\n{local_path}")
             return
 
@@ -998,7 +1053,7 @@ class EmailManagerWindow(tk.Toplevel):
             messagebox.showwarning("Atención", "Escribe o genera una respuesta antes de crear el borrador.")
             return
 
-        original_from = row.get("real_sender") or row.get("original_from", row["sender"])
+        original_from = row.get("original_from") or row.get("real_sender") or row["sender"]
         original_to = row.get("original_to", "")
         original_cc = row.get("original_cc", "")
 
@@ -1013,7 +1068,7 @@ class EmailManagerWindow(tk.Toplevel):
             return
 
         try:
-            self.outlook_service.create_draft(
+            to_recipient, cc_recipients = self.outlook_service.create_draft(
                 subject=draft_subject,
                 body=body,
                 original_from=original_from,
@@ -1023,6 +1078,9 @@ class EmailManagerWindow(tk.Toplevel):
                 original_reply_to=row.get("original_reply_to", ""),
                 attachment_paths=attachment_paths,
             )
+            self.log(f"Responder a: {to_recipient} / CC: {', '.join(cc_recipients)}")
+            for path in attachment_paths or []:
+                self.log(f"Adjunto añadido a borrador: {path}")
             self.log("Borrador de Outlook abierto correctamente.")
 
             if self._is_trainable_response(body, row["category"]):
@@ -1049,6 +1107,8 @@ class EmailManagerWindow(tk.Toplevel):
 
         attachments = self._build_email_attachments(str(row["gmail_id"]))
         attachment_paths = self._resolve_reply_attachment_paths(str(row["gmail_id"]), attachments)
+        if attachment_paths is None:
+            return
         forward_body = (
             "---- Mensaje reenviado ----\n"
             f"De: {row.get('real_sender') or row.get('sender', '')}\n"
@@ -1064,6 +1124,8 @@ class EmailManagerWindow(tk.Toplevel):
                 body=forward_body,
                 attachment_paths=attachment_paths,
             )
+            for path in attachment_paths or []:
+                self.log(f"Adjunto añadido a borrador: {path}")
             self.log("Borrador de reenvío abierto correctamente.")
         except Exception as exc:  # noqa: BLE001
             logger.exception("No se pudo crear borrador de reenvío")
@@ -1074,7 +1136,7 @@ class EmailManagerWindow(tk.Toplevel):
         if not attachments:
             self.log("Sin adjuntos")
             return []
-        decision = self._ask_attach_original_files()
+        decision = self._ask_attach_original_files(len(attachments))
         if decision is None or decision == "none":
             self.log("Sin adjuntos")
             return []
@@ -1083,6 +1145,7 @@ class EmailManagerWindow(tk.Toplevel):
             try:
                 local_path = self.attachment_cache.ensure_downloaded(gmail_id, attachment)
                 attachment["local_path"] = local_path
+                self.log(f"Adjunto descargado en: {local_path}")
                 paths.append(local_path)
             except Exception as exc:  # noqa: BLE001
                 self.log(f"Error preparando adjunto {attachment.get('filename', '')}: {exc}", level="ERROR")
@@ -1091,8 +1154,8 @@ class EmailManagerWindow(tk.Toplevel):
         self.log(f"Adjuntos incluidos: {len(paths)}")
         return paths
 
-    def _ask_attach_original_files(self) -> str | None:
-        include = messagebox.askyesno("Adjuntos", "¿Incluir adjuntos?")
+    def _ask_attach_original_files(self, count: int) -> str | None:
+        include = messagebox.askyesno("Adjuntos", f"¿Adjuntar {count} archivos?")
         return "all" if include else "none"
 
     def _select_original_attachment_paths(self, attachments: list[dict[str, str]]) -> list[str]:

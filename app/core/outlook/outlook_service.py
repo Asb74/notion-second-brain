@@ -66,7 +66,7 @@ class OutlookService:
         my_email: str,
         original_reply_to: str = "",
         attachment_paths: list[str] | None = None,
-    ) -> None:
+    ) -> tuple[str, list[str]]:
         import win32com.client  # type: ignore[import-not-found]
 
         main_recipient_candidates = self._parse_addresses(original_reply_to) or self._parse_addresses(original_from)
@@ -88,6 +88,7 @@ class OutlookService:
             if attachment_path:
                 draft.Attachments.Add(Source=self._validate_attachment_path(attachment_path))
         draft.Display()
+        return clean_main, clean_cc
 
     def create_forward_draft(
         self,
@@ -105,10 +106,10 @@ class OutlookService:
             if attachment_path:
                 draft.Attachments.Add(Source=self._validate_attachment_path(attachment_path))
         draft.Display()
+
     @staticmethod
     def _validate_attachment_path(path: str) -> str:
         absolute = os.path.abspath(path)
         if not os.path.exists(absolute):
             raise FileNotFoundError(f"Adjunto no encontrado (ruta no existe): {absolute}")
         return absolute
-
