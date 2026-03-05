@@ -247,39 +247,43 @@ class MailIngestionService:
         return extracted
 
     def _extract_body_and_attachments(self, payload: Dict[str, Any]) -> Tuple[str, str, int, List[Dict[str, Any]]]:
-        body_text_parts: List[str] = []
-        body_html_parts: List[str] = []
+        body_text = ""
+        body_html = ""
         attachments: List[Dict[str, Any]] = []
+        has_attachments = 0
 
         def walk_part(part: Dict[str, Any]) -> None:
+            nonlocal body_text, body_html, has_attachments
             filename = (part.get("filename") or "").strip()
             body = part.get("body", {}) or {}
+            mime_type = part.get("mimeType", "")
+
+            body_data = body.get("data")
+            decoded = self._decode_base64_url(body_data)
+            if mime_type == "text/html" and decoded and not body_html:
+                body_html = decoded
+            elif mime_type == "text/plain" and decoded and not body_text:
+                body_text = decoded
+
             if filename:
                 attachments.append(
                     {
                         "filename": filename,
-                        "mimeType": part.get("mimeType", "application/octet-stream"),
+                        "mimeType": mime_type or "application/octet-stream",
                         "attachmentId": body.get("attachmentId", ""),
                         "partId": part.get("partId", ""),
                         "size": int(body.get("size") or 0),
                     }
                 )
-
-            mime_type = part.get("mimeType", "")
-            body_data = body.get("data")
-            decoded = self._decode_base64_url(body_data)
-            if mime_type == "text/plain" and decoded:
-                body_text_parts.append(decoded)
-            elif mime_type == "text/html" and decoded:
-                body_html_parts.append(decoded)
+                has_attachments = 1
 
             for child in part.get("parts", []):
                 walk_part(child)
 
         walk_part(payload)
-        body_text = "\n\n".join(body_text_parts).strip()
-        body_html = "\n\n".join(body_html_parts).strip()
-        return body_text, body_html, 1 if attachments else 0, attachments
+        if not body_html and body_text and payload.get("mimeType") == "text/plain":
+            body_html = body_text
+        return body_text.strip(), body_html.strip(), has_attachments, attachments
 
     def _persist_attachments(self, gmail_id: str, attachments: List[Dict[str, Any]]) -> None:
         if not attachments:
