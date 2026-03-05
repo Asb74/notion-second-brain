@@ -32,7 +32,15 @@ sys.modules.setdefault("googleapiclient", apiclient)
 sys.modules.setdefault("googleapiclient.discovery", discovery)
 sys.modules.setdefault("googleapiclient.errors", errors)
 
-from app.ui.email_manager_window import EmailManagerWindow
+from app.ui.email_manager_window import EmailManagerWindow, is_real_html
+
+
+class _PreviewStub:
+    def __init__(self) -> None:
+        self.value = ""
+
+    def set_html(self, value: str) -> None:
+        self.value = value
 
 
 def test_create_notes_no_row_get() -> None:
@@ -70,3 +78,34 @@ def test_create_notes_no_row_get() -> None:
 
     assert request.title == "Asunto"
     assert "preferred@example.com" in request.raw_text
+
+
+def test_is_real_html_detects_known_html_tags() -> None:
+    assert is_real_html("<html><body><p>hola</p></body></html>")
+    assert is_real_html("<table><tr><td>row</td></tr></table>")
+    assert not is_real_html("Normal DocumentEmail table.MsoNormalTable font-family: Times New Roman")
+    assert not is_real_html("")
+
+
+def test_set_html_preview_uses_text_fallback_for_non_html() -> None:
+    window = EmailManagerWindow.__new__(EmailManagerWindow)
+    window.preview_html = _PreviewStub()
+    window._expanded_html_frame = None
+    window._current_html_content = ""
+
+    EmailManagerWindow._set_html_preview(window, "Normal DocumentEmail", "line 1\nline <2>")
+
+    assert window._current_html_content == ""
+    assert window.preview_html.value == "<pre>line 1\nline &lt;2&gt;</pre>"
+
+
+def test_set_html_preview_keeps_html_for_real_html_content() -> None:
+    window = EmailManagerWindow.__new__(EmailManagerWindow)
+    window.preview_html = _PreviewStub()
+    window._expanded_html_frame = None
+    window._current_html_content = ""
+
+    EmailManagerWindow._set_html_preview(window, "<div><p>ok</p></div>", "text")
+
+    assert window._current_html_content == "<div><p>ok</p></div>"
+    assert window.preview_html.value == "<div><p>ok</p></div>"

@@ -38,6 +38,16 @@ logger = logging.getLogger(__name__)
 _SYSTEM_LOG_WIDGET: ScrolledText | None = None
 
 
+def is_real_html(content: str | None) -> bool:
+    """Return True when the input includes actual HTML tags for rendering."""
+    if not content:
+        return False
+
+    lowered_content = content.lower()
+    html_tags = ["<html", "<body", "<div", "<table", "<p", "<span", "<br"]
+    return any(tag in lowered_content for tag in html_tags)
+
+
 def system_log(message: str, level: str = "INFO") -> None:
     """Write timestamped messages into the system status panel."""
     if _SYSTEM_LOG_WIDGET is None:
@@ -738,17 +748,22 @@ class EmailManagerWindow(tk.Toplevel):
         self.detected_accion_var.set(str(entities.get("accion", "") or ""))
 
     def _set_html_preview(self, body_html: str, body_text: str = "") -> None:
-        self._current_html_content = body_html.strip()
-        if self._current_html_content:
-            preview_content = self._current_html_content
+        html_body = (body_html or "").strip()
+        text_body = body_text or ""
+
+        if is_real_html(html_body):
+            self._current_html_content = html_body
+            preview_content = html_body
         else:
-            preview_content = f"<pre>{html.escape(body_text or '')}</pre>"
+            self._current_html_content = ""
+            clean_text = html.escape(text_body)
+            preview_content = f"<pre>{clean_text}</pre>"
 
         if self.preview_html is not None:
             self.preview_html.set_html(preview_content)
 
         if self._expanded_html_frame is not None:
-            content = self._html_to_text(self._current_html_content) or body_text or "Sin contenido HTML."
+            content = self._html_to_text(self._current_html_content) or text_body or "Sin contenido HTML."
             self._expanded_html_frame.configure(state="normal")
             self._expanded_html_frame.delete("1.0", "end")
             self._expanded_html_frame.insert("1.0", content)
