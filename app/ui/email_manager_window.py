@@ -48,21 +48,34 @@ def is_real_html(content: str | None) -> bool:
     return any(tag in lowered_content for tag in html_tags)
 
 
-def clean_outlook_styles(text: str | None) -> str:
-    """Strip Word/Outlook style noise from plain-text bodies."""
+def clean_outlook_content(text: str | None) -> str:
+    """Strip Word/Outlook CSS noise and keep only the meaningful message body."""
     if not text:
         return ""
 
     cleaned = re.sub(r"\{mso-[^}]+\}", "", text)
-    cleaned = re.sub(r"^\s*@list.*$", "", cleaned, flags=re.IGNORECASE | re.MULTILINE)
+    cleaned = re.sub(r"@list[^;]+;", "", cleaned, flags=re.IGNORECASE)
 
     cleaned_lines: list[str] = []
     for line in cleaned.splitlines():
-        if "mso-" in line.lower():
+        lowered_line = line.lower()
+        if "mso-" in lowered_line:
+            continue
+        if "wordsection" in lowered_line:
             continue
         cleaned_lines.append(line)
 
-    return "\n".join(cleaned_lines).strip()
+    cleaned = "\n".join(cleaned_lines)
+    header_match = re.search(r"(de:|from:)", cleaned, flags=re.IGNORECASE)
+    if header_match:
+        cleaned = cleaned[header_match.start():]
+
+    return cleaned.strip()
+
+
+def clean_outlook_styles(text: str | None) -> str:
+    """Backward-compatible alias for the Outlook plain-text cleaner."""
+    return clean_outlook_content(text)
 
 
 def system_log(message: str, level: str = "INFO") -> None:
@@ -773,7 +786,7 @@ class EmailManagerWindow(tk.Toplevel):
             preview_content = html_body
         else:
             self._current_html_content = ""
-            clean_text = clean_outlook_styles(text_body)
+            clean_text = clean_outlook_content(text_body)
             clean_text = html.escape(clean_text)
             preview_content = f"<pre>{clean_text}</pre>"
 
