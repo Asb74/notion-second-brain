@@ -18,7 +18,7 @@ class EmailEntityExtractor:
 
     @classmethod
     def extract_entities(cls, subject: str, body: str) -> dict[str, str]:
-        text = f"{subject or ''}\n{body or ''}".strip()
+        text = f"{str(subject or '')}\n{str(body or '')}".strip()
         entities = {
             "pedido": "",
             "cliente": "",
@@ -44,7 +44,7 @@ class EmailEntityExtractor:
 
         lowered = text.lower()
         for action in cls.ACTION_WORDS:
-            if action in lowered:
+            if re.search(rf"\b{re.escape(action)}\b", lowered):
                 entities["accion"] = action
                 break
 
