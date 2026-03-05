@@ -40,8 +40,7 @@ class _AttachmentClient(_DummyGmailClient):
 
     def get_attachment(self, message_id: str, attachment_id: str):
         self.attachment_requests.append((message_id, attachment_id))
-        raw = base64.urlsafe_b64encode(b"hola adjunto").decode("ascii")
-        return {"data": raw}
+        return b"hola adjunto"
 
 
 def test_extract_headers_includes_reply_to_to_and_cc() -> None:
@@ -94,11 +93,7 @@ def test_extract_body_and_attachments_collects_attachment_metadata() -> None:
     assert body_html == ""
     assert has_attachments == 1
     assert attachments == [
-        {
-            "filename": "factura.pdf",
-            "mime_type": "application/pdf",
-            "attachment_id": "att-1",
-        }
+{"filename": "factura.pdf", "mimeType": "application/pdf", "attachmentId": "att-1", "partId": "", "size": 0}
     ]
 
 
@@ -114,8 +109,8 @@ def test_persist_attachments_downloads_and_registers(tmp_path: Path) -> None:
         attachments=[
             {
                 "filename": "reporte.txt",
-                "mime_type": "text/plain",
-                "attachment_id": "att-1",
+                "mimeType": "text/plain",
+                "attachmentId": "att-1",
             }
         ],
     )

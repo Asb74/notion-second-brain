@@ -1,3 +1,4 @@
+import base64
 import os
 from typing import List
 
@@ -106,12 +107,17 @@ class GmailClient:
             format=format
         ).execute()
 
-    def get_attachment(self, message_id: str, attachment_id: str):
-        return self.service.users().messages().attachments().get(
+    def get_attachment(self, message_id: str, attachment_id: str) -> bytes:
+        response = self.service.users().messages().attachments().get(
             userId="me",
             messageId=message_id,
             id=attachment_id,
         ).execute()
+        data = response.get("data", "")
+        if not data:
+            return b""
+        padding = "=" * (-len(data) % 4)
+        return base64.urlsafe_b64decode(data + padding)
 
     def get_message_subject(self, message_id: str) -> str:
         message = self.service.users().messages().get(

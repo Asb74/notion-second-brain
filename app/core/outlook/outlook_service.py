@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from app.config.mail_config import USER_EMAIL
 
 
@@ -67,7 +69,7 @@ class OutlookService:
     ) -> None:
         import win32com.client  # type: ignore[import-not-found]
 
-        main_recipient_candidates = self._parse_addresses(original_from) or self._parse_addresses(original_reply_to)
+        main_recipient_candidates = self._parse_addresses(original_reply_to) or self._parse_addresses(original_from)
         main_recipient = main_recipient_candidates[0] if main_recipient_candidates else ""
         clean_main, clean_cc = self.clean_recipients(
             to_list=original_to,
@@ -84,7 +86,7 @@ class OutlookService:
         draft.Body = body
         for attachment_path in attachment_paths or []:
             if attachment_path:
-                draft.Attachments.Add(attachment_path)
+                draft.Attachments.Add(Source=self._validate_attachment_path(attachment_path))
         draft.Display()
 
     def create_forward_draft(
@@ -101,5 +103,12 @@ class OutlookService:
         draft.Body = body
         for attachment_path in attachment_paths or []:
             if attachment_path:
-                draft.Attachments.Add(attachment_path)
+                draft.Attachments.Add(Source=self._validate_attachment_path(attachment_path))
         draft.Display()
+    @staticmethod
+    def _validate_attachment_path(path: str) -> str:
+        absolute = os.path.abspath(path)
+        if not os.path.exists(absolute):
+            raise FileNotFoundError(f"Adjunto no encontrado (ruta no existe): {absolute}")
+        return absolute
+

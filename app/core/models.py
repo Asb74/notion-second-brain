@@ -62,6 +62,7 @@ class AppSettings:
 
     notion_token: str = ""
     notion_database_id: str = ""
+    managed_email: str = ""
     default_area: str = ""
     default_tipo: str = ""
     default_estado: str = "Pendiente"

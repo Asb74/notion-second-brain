@@ -12,18 +12,16 @@ import shutil
 import sqlite3
 import tempfile
 import tkinter as tk
-import webbrowser
 from datetime import datetime
 from email.utils import parseaddr
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from tkinter.scrolledtext import ScrolledText
-from tkinterweb import HtmlFrame
 
 from app.config.mail_config import USER_EMAIL
 from app.core.email.category_manager import CategoryManager
 from app.core.email.gmail_client import GmailClient
-from app.core.email.forwarded_parser import extract_forwarded_headers
+from app.core.email.attachment_cache import AttachmentCache
 from app.core.email.mail_ingestion_service import MailIngestionService
 from app.core.models import NoteCreateRequest
 from app.core.outlook.outlook_service import OutlookService
@@ -73,6 +71,7 @@ class EmailManagerWindow(tk.Toplevel):
         self.mail_ingestion_service = MailIngestionService(gmail_client=gmail_client, db_connection=db_connection)
         self.classifier = self.mail_ingestion_service.classifier
         self.outlook_service = OutlookService()
+        self.attachment_cache = AttachmentCache(gmail_client=gmail_client)
         self.my_email = self._resolve_my_email()
 
         self.title("Gestión de Emails")
@@ -101,9 +100,9 @@ class EmailManagerWindow(tk.Toplevel):
         self._current_tab = default_label
         self._current_html_content = ""
         self._expanded_html_window: tk.Toplevel | None = None
-        self._expanded_html_frame: HtmlFrame | None = None
+        self._expanded_html_frame: ScrolledText | None = None
         self._expanded_attachment_preview_window: tk.Toplevel | None = None
-        self._expanded_attachment_preview_frame: HtmlFrame | None = None
+        self._expanded_attachment_preview_frame: tk.Widget | None = None
         self._temp_opened_attachments: list[Path] = []
         self._temp_forward_attachments_dirs: list[Path] = []
         self.detected_pedido_var = tk.StringVar(value="")
@@ -232,13 +231,19 @@ class EmailManagerWindow(tk.Toplevel):
         preview_frame = ttk.LabelFrame(lower_panel, text="Vista previa")
         html_preview_frame = ttk.Frame(preview_frame)
         html_preview_frame.pack(fill="both", expand=True, padx=4, pady=(4, 2))
-        self.html_view = HtmlFrame(html_preview_frame, messages_enabled=False)
+        self.html_view = ScrolledText(html_preview_frame, height=14, wrap="word", state="disabled")
         self.html_view.pack(fill="both", expand=True)
 
-        attachments_frame = ttk.LabelFrame(html_preview_frame, text="Adjuntos")
-        attachments_frame.pack(fill="x", pady=(6, 2))
-        self.attachments_container = ttk.Frame(attachments_frame)
-        self.attachments_container.pack(fill="x", padx=6, pady=6)
+        attachments_frame = ttk.LabelFrame(preview_frame, text="Adjuntos")
+        attachments_frame.pack(fill="x", padx=4, pady=(0, 4))
+        self.attachments_list = tk.Listbox(attachments_frame, height=5, exportselection=False)
+        self.attachments_list.pack(fill="x", padx=6, pady=(6, 2))
+        attachments_actions = ttk.Frame(attachments_frame)
+        attachments_actions.pack(fill="x", padx=6, pady=(0, 6))
+        ttk.Button(attachments_actions, text="Abrir", command=self._open_selected_attachment).pack(side="left")
+        ttk.Button(attachments_actions, text="Guardar como…", command=self._save_selected_attachment).pack(side="left", padx=(6, 0))
+        ttk.Button(attachments_actions, text="Descargar", command=self._download_selected_attachment).pack(side="left", padx=(6, 0))
+        ttk.Button(attachments_actions, text="Adjuntar al borrador", command=self._attach_selected_to_draft).pack(side="left", padx=(6, 0))
 
         preview_actions = ttk.Frame(preview_frame)
         preview_actions.pack(fill="x", padx=4, pady=(0, 4))
@@ -276,15 +281,21 @@ class EmailManagerWindow(tk.Toplevel):
         ttk.Label(status_frame, textvariable=self.status_var, anchor="w").pack(side="left", fill="x", expand=True)
         ttk.Label(status_frame, textvariable=self.model_var, anchor="e").pack(side="right")
 
-        system_status_frame = ttk.LabelFrame(self, text="Estado del sistema")
-        system_status_frame.pack(fill="both", expand=False, padx=10, pady=(0, 10))
-        self.system_status_text = ScrolledText(system_status_frame, height=6, state="disabled", wrap="word")
-        self.system_status_text.pack(fill="both", expand=True, padx=6, pady=6)
+        system_status_frame = ttk.LabelFrame(self, text="Estado / Logs")
+        system_status_frame.pack(fill="x", expand=False, padx=10, pady=(0, 10))
+        self.system_status_text = tk.Text(system_status_frame, height=6, state="disabled", wrap="word")
+        status_scroll = ttk.Scrollbar(system_status_frame, orient="vertical", command=self.system_status_text.yview)
+        self.system_status_text.configure(yscrollcommand=status_scroll.set)
+        self.system_status_text.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
+        status_scroll.pack(side="right", fill="y", padx=(0, 6), pady=6)
         _SYSTEM_LOG_WIDGET = self.system_status_text
 
-    def system_log(self, message: str, level: str = "INFO") -> None:
-        """Proxy method to write messages in the system status panel."""
+    def log(self, message: str, level: str = "INFO") -> None:
+        self.status_var.set(message)
         system_log(message, level=level)
+
+    def system_log(self, message: str, level: str = "INFO") -> None:
+        self.log(message, level=level)
 
     def _reload_category_maps(self) -> None:
         self._categories = self.category_manager.list_categories()
@@ -402,29 +413,30 @@ class EmailManagerWindow(tk.Toplevel):
             messagebox.showerror("Error", f"No se pudieron descargar correos.\n\n{exc}")
 
     def _retrain_model(self) -> None:
-        examples = self.email_repo.count_labeled_examples()
-        categories_count = len(self._categories)
-        if examples < 10:
-            self.system_log("No hay suficientes ejemplos para entrenar", level="WARNING")
-        else:
-            self.system_log("Iniciando entrenamiento")
-            self.system_log(f"Emails usados: {examples}")
-            self.system_log(f"Categorías detectadas: {categories_count}")
+        rows = self.training_repo.conn.execute(
+            "SELECT category, COUNT(1) AS cnt FROM email_response_examples GROUP BY category"
+        ).fetchall()
+        counts = {str(r["category"]): int(r["cnt"]) for r in rows}
+        active = {k: v for k, v in counts.items() if v > 0}
+        summary = ", ".join(f"{k}: {v}" for k, v in sorted(active.items())) or "sin datos"
+        self.log(f"Reentrenar modelo. Ejemplos por categoría: {summary}")
+
+        invalid = [f"{cat}({cnt})" for cat, cnt in active.items() if cnt < 10]
+        if len(active) < 2 or invalid:
+            reason = f"Insuficiente para entrenar: categorías={len(active)}, con menos de 10: {', '.join(invalid) or 'ninguna'}"
+            self.log(reason, level="WARNING")
+            messagebox.showwarning("Entrenamiento", reason)
+            return
 
         trained = self.classifier.retrain_if_possible(force=True)
-        self.classifier.examples_count = examples
         self.model_var.set(self.classifier.model_status())
-        warning = self.classifier.last_training_warning
         if trained:
-            self.system_log("Entrenamiento completado")
-            self.status_var.set(f"Modelo reentrenado con {examples} ejemplos. Reclasificación manual disponible.")
+            self.log(f"Entrenamiento OK: modelo actualizado ({datetime.now().isoformat(timespec='seconds')})")
             return
-        if warning:
-            self.system_log(warning, level="WARNING")
-            self.status_var.set(warning)
-            return
-        self.system_log(f"No hay suficientes ejemplos para entrenar ({examples}).", level="WARNING")
-        self.status_var.set(f"No hay suficientes ejemplos para entrenar ({examples}).")
+
+        warning = self.classifier.last_training_warning or "No se pudo reentrenar el modelo."
+        self.log(warning, level="WARNING")
+        messagebox.showwarning("Entrenamiento", warning)
 
     def _reclassify_current_emails(self) -> None:
         if not self.classifier.ml_model.is_trained:
@@ -453,7 +465,7 @@ class EmailManagerWindow(tk.Toplevel):
                 "gmail_id": row["gmail_id"],
                 "subject": row["subject"] or "",
                 "sender": row["sender"] or "",
-                "real_sender": row["real_sender"] or row["sender"] or "",
+                "real_sender": row["original_from"] or row["real_sender"] or row["sender"] or "",
                 "type": row["type"] or "other",
                 "received_at": row["received_at"] or "",
                 "received_at_display": self._format_datetime(row["received_at"]),
@@ -465,6 +477,7 @@ class EmailManagerWindow(tk.Toplevel):
                 "original_to": row["original_to"] or "",
                 "original_cc": row["original_cc"] or "",
                 "original_reply_to": row["original_reply_to"] or "",
+                "attachments_json": row["attachments_json"] or "[]",
                 "entities_json": row["entities_json"] or "",
             }
             self._all_rows.append(normalized)
@@ -570,9 +583,10 @@ class EmailManagerWindow(tk.Toplevel):
                 self.system_log(f"Tareas creadas: {tasks_count}")
                 self.email_repo.update_status(gmail_id, "converted_to_note")
                 created_count += 1
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
                 logger.exception("No se pudo crear nota desde email %s", gmail_id)
-                self.system_log(f"Error al crear nota desde email {gmail_id}", level="ERROR")
+                self.system_log(f"Error al crear nota desde email {gmail_id}: {exc}", level="ERROR")
+                messagebox.showerror("Crear nota", f"Error al crear nota desde {gmail_id}.\n\n{exc}")
                 skipped_count += 1
 
         self.refresh_emails()
@@ -670,61 +684,121 @@ class EmailManagerWindow(tk.Toplevel):
 
     def _set_html_preview(self, body_html: str) -> None:
         self._current_html_content = body_html.strip()
-        if self._current_html_content:
-            self.html_view.load_html(self._current_html_content)
-        else:
-            self.html_view.load_html("<html><body><p>Sin contenido HTML.</p></body></html>")
+        content = self._html_to_text(self._current_html_content) or "Sin contenido HTML."
+        self.html_view.configure(state="normal")
+        self.html_view.delete("1.0", "end")
+        self.html_view.insert("1.0", content)
+        self.html_view.configure(state="disabled")
 
         if self._expanded_html_frame is not None:
-            self._expanded_html_frame.load_html(self._current_html_content or "<html><body><p>Sin contenido HTML.</p></body></html>")
+            self._expanded_html_frame.configure(state="normal")
+            self._expanded_html_frame.delete("1.0", "end")
+            self._expanded_html_frame.insert("1.0", content)
+            self._expanded_html_frame.configure(state="disabled")
 
     def _build_email_attachments(self, gmail_id: str) -> list[dict[str, str]]:
-        email_attachments = []
+        row = self._rows_by_id.get(str(gmail_id), {})
+        attachments: list[dict[str, str]] = []
+        raw_json = str(row.get("attachments_json", "") or "").strip()
+        if raw_json:
+            try:
+                parsed = json.loads(raw_json)
+                if isinstance(parsed, list):
+                    for item in parsed:
+                        if not isinstance(item, dict):
+                            continue
+                        attachments.append(
+                            {
+                                "filename": str(item.get("filename") or ""),
+                                "mime": str(item.get("mimeType") or "application/octet-stream"),
+                                "attachmentId": str(item.get("attachmentId") or ""),
+                                "partId": str(item.get("partId") or ""),
+                                "size": str(item.get("size") or 0),
+                                "local_path": "",
+                            }
+                        )
+            except json.JSONDecodeError:
+                self.log(f"attachments_json inválido para {gmail_id}", level="WARNING")
+
+        by_name = {item.get("filename", ""): item for item in attachments}
         for attachment in self.email_repo.get_attachments(gmail_id):
-            email_attachments.append(
-                {
-                    "filename": str(attachment["filename"] or ""),
-                    "mime": str(attachment["mime_type"] or "application/octet-stream"),
-                    "attachment_id": str(attachment["id"]),
-                    "local_path": str(attachment["local_path"] or ""),
-                }
-            )
-        return email_attachments
+            name = str(attachment["filename"] or "")
+            current = by_name.get(name)
+            if current is None:
+                current = {"filename": name, "mime": str(attachment["mime_type"] or "application/octet-stream")}
+                attachments.append(current)
+                by_name[name] = current
+            current["local_path"] = str(attachment["local_path"] or "")
+        return attachments
 
     def _render_attachments(self, attachments: list[dict[str, str]]) -> None:
-        for child in self.attachments_container.winfo_children():
-            child.destroy()
-
+        self._current_attachments = attachments
+        self.attachments_list.delete(0, "end")
         if not attachments:
-            ttk.Label(self.attachments_container, text="(sin adjuntos)").pack(anchor="w")
+            self.attachments_list.insert("end", "(sin adjuntos)")
             return
-
         for attachment in attachments:
-            row_frame = ttk.Frame(self.attachments_container)
-            row_frame.pack(fill="x", pady=2)
-            filename = attachment.get("filename", "") or "(sin nombre)"
-            local_path = attachment.get("local_path", "")
-            ttk.Label(row_frame, text=f"📎 {filename}").pack(side="left")
-            ttk.Button(
-                row_frame,
-                text="Abrir",
-                command=lambda current_attachment=attachment: self._open_attachment(current_attachment),
-                width=8,
-            ).pack(side="left", padx=(6, 0))
-            ttk.Button(
-                row_frame,
-                text="Guardar",
-                command=lambda path=local_path, name=filename: self._save_attachment_as(path, name),
-                width=8,
-            ).pack(side="left", padx=(6, 0))
-            if self._is_image_attachment(filename, attachment.get("mime", "")):
-                ttk.Button(
-                    row_frame,
-                    text="Vista previa",
-                    command=lambda path=local_path, name=filename: self._preview_attachment_image(path, name),
-                    width=11,
-                ).pack(side="left", padx=(6, 0))
+            self.attachments_list.insert("end", attachment.get("filename", "(sin nombre)"))
 
+    def _selected_attachment(self) -> dict[str, str] | None:
+        if not hasattr(self, "_current_attachments"):
+            return None
+        idx = self.attachments_list.curselection()
+        if not idx:
+            return None
+        if not self._current_attachments:
+            return None
+        pos = int(idx[0])
+        if pos >= len(self._current_attachments):
+            return None
+        return self._current_attachments[pos]
+
+    def _download_selected_attachment(self) -> None:
+        attachment = self._selected_attachment()
+        if not attachment:
+            messagebox.showwarning("Adjuntos", "Selecciona un adjunto.")
+            return
+        row_id = self.tree.selection()
+        if len(row_id) != 1:
+            messagebox.showwarning("Adjuntos", "Selecciona un email.")
+            return
+        gmail_id = str(row_id[0])
+        try:
+            local_path = self.attachment_cache.ensure_downloaded(gmail_id, attachment)
+            attachment["local_path"] = local_path
+            self.log(f"Adjunto descargado: {attachment.get('filename', '')}")
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Error descargando adjunto")
+            self.log(f"Error al descargar adjunto: {exc}", level="ERROR")
+            messagebox.showerror("Adjuntos", str(exc))
+
+    def _open_selected_attachment(self) -> None:
+        attachment = self._selected_attachment()
+        if not attachment:
+            messagebox.showwarning("Adjuntos", "Selecciona un adjunto.")
+            return
+        self._open_attachment(attachment)
+
+    def _save_selected_attachment(self) -> None:
+        attachment = self._selected_attachment()
+        if not attachment:
+            messagebox.showwarning("Adjuntos", "Selecciona un adjunto.")
+            return
+        local_path = attachment.get("local_path", "")
+        if not local_path:
+            self._download_selected_attachment()
+            local_path = attachment.get("local_path", "")
+        if not local_path:
+            return
+        self._save_attachment_as(local_path, attachment.get("filename", "adjunto"))
+
+    def _attach_selected_to_draft(self) -> None:
+        attachment = self._selected_attachment()
+        if not attachment:
+            messagebox.showwarning("Adjuntos", "Selecciona un adjunto.")
+            return
+        self._download_selected_attachment()
+        messagebox.showinfo("Adjuntos", "El adjunto se incluirá si creas borrador/reenvío con adjuntos.")
     def _open_attachment(self, attachment: dict[str, str]) -> None:
         local_path = attachment.get("local_path", "")
         path = Path(local_path)
@@ -741,7 +815,7 @@ class EmailManagerWindow(tk.Toplevel):
             if hasattr(os, "startfile"):
                 os.startfile(str(temp_path))  # type: ignore[attr-defined]
             else:
-                webbrowser.open(temp_path.resolve().as_uri())
+                raise RuntimeError("Abrir adjuntos solo está soportado en Windows (os.startfile).")
         except Exception as exc:  # noqa: BLE001
             logger.exception("No se pudo abrir adjunto")
             messagebox.showerror("Adjunto", f"No se pudo abrir el adjunto.\n\n{exc}")
@@ -758,7 +832,7 @@ class EmailManagerWindow(tk.Toplevel):
 
         try:
             shutil.copy2(source, Path(target))
-            self.status_var.set(f"Adjunto guardado en: {target}")
+            self.log(f"Adjunto guardado en: {target}")
         except Exception as exc:  # noqa: BLE001
             logger.exception("No se pudo guardar adjunto")
             messagebox.showerror("Adjunto", f"No se pudo guardar el adjunto.\n\n{exc}")
@@ -770,32 +844,7 @@ class EmailManagerWindow(tk.Toplevel):
         return lowered_mime.startswith("image/") or lowered_name.endswith((".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"))
 
     def _preview_attachment_image(self, local_path: str, filename: str) -> None:
-        path = Path(local_path)
-        if not path.exists():
-            messagebox.showerror("Adjunto", f"No existe el archivo:\n{local_path}")
-            return
-
-        if self._expanded_attachment_preview_window is None or not self._expanded_attachment_preview_window.winfo_exists():
-            self._expanded_attachment_preview_window = tk.Toplevel(self)
-            self._expanded_attachment_preview_window.geometry("980x680")
-            self._expanded_attachment_preview_frame = HtmlFrame(self._expanded_attachment_preview_window, messages_enabled=False)
-            self._expanded_attachment_preview_frame.pack(fill="both", expand=True)
-            self._expanded_attachment_preview_window.protocol("WM_DELETE_WINDOW", self._close_attachment_preview)
-
-        self._expanded_attachment_preview_window.title(f"Vista previa: {filename}")
-        safe_name = html.escape(filename)
-        image_uri = path.resolve().as_uri()
-        preview_html = (
-            "<html><body style='margin:0;padding:8px;background:#f0f0f0;'>"
-            f"<h4 style='margin:0 0 8px 0;font-family:Arial, sans-serif;'>{safe_name}</h4>"
-            f"<img src='{image_uri}' style='max-width:100%;height:auto;border:1px solid #ccc;background:#fff;' />"
-            "</body></html>"
-        )
-        if self._expanded_attachment_preview_frame is not None:
-            self._expanded_attachment_preview_frame.load_html(preview_html)
-
-        self._expanded_attachment_preview_window.lift()
-        self._expanded_attachment_preview_window.focus_force()
+        messagebox.showinfo("Adjunto", "La vista previa embebida no está disponible. Usa 'Abrir'.")
 
     def _close_attachment_preview(self) -> None:
         if self._expanded_attachment_preview_window is not None:
@@ -808,12 +857,15 @@ class EmailManagerWindow(tk.Toplevel):
             self._expanded_html_window = tk.Toplevel(self)
             self._expanded_html_window.title("Vista HTML expandida")
             self._expanded_html_window.geometry("1100x700")
-            self._expanded_html_frame = HtmlFrame(self._expanded_html_window, messages_enabled=False)
+            self._expanded_html_frame = ScrolledText(self._expanded_html_window, wrap="word", state="disabled")
             self._expanded_html_frame.pack(fill="both", expand=True)
             self._expanded_html_window.protocol("WM_DELETE_WINDOW", self._close_expanded_html_view)
 
         if self._expanded_html_frame is not None:
-            self._expanded_html_frame.load_html(self._current_html_content or "<html><body><p>Sin contenido HTML.</p></body></html>")
+            self._expanded_html_frame.configure(state="normal")
+            self._expanded_html_frame.delete("1.0", "end")
+            self._expanded_html_frame.insert("1.0", self._html_to_text(self._current_html_content) or "Sin contenido HTML.")
+            self._expanded_html_frame.configure(state="disabled")
 
         self._expanded_html_window.lift()
         self._expanded_html_window.focus_force()
@@ -950,21 +1002,13 @@ class EmailManagerWindow(tk.Toplevel):
         original_to = row.get("original_to", "")
         original_cc = row.get("original_cc", "")
 
-        is_forwarded = bool(re.match(r"^\s*(rv:|fw:|fwd:)", subject, re.IGNORECASE))
-        if is_forwarded:
-            parsed = extract_forwarded_headers(row.get("body_text", ""))
-            if parsed and parsed.get("from"):
-                original_from = parsed["from"]
-                original_to = "; ".join(parsed.get("to_list", []))
-                original_cc = "; ".join(parsed.get("cc_list", []))
-
         reply_all = messagebox.askyesno("Responder", "¿Responder a todos (incluyendo CC)?")
         if not reply_all:
             original_to = ""
             original_cc = ""
 
         attachments = self._build_email_attachments(str(row["gmail_id"]))
-        attachment_paths = self._resolve_reply_attachment_paths(attachments)
+        attachment_paths = self._resolve_reply_attachment_paths(str(row["gmail_id"]), attachments)
         if attachment_paths is None:
             return
 
@@ -979,7 +1023,7 @@ class EmailManagerWindow(tk.Toplevel):
                 original_reply_to=row.get("original_reply_to", ""),
                 attachment_paths=attachment_paths,
             )
-            self.status_var.set("Borrador de Outlook abierto correctamente.")
+            self.log("Borrador de Outlook abierto correctamente.")
 
             if self._is_trainable_response(body, row["category"]):
                 save = messagebox.askyesno(
@@ -990,6 +1034,7 @@ class EmailManagerWindow(tk.Toplevel):
                     self._save_training_example(row, body)
         except Exception as exc:  # noqa: BLE001
             logger.exception("No se pudo crear borrador de Outlook")
+            self.log(f"Error creando borrador Outlook: {exc}", level="ERROR")
             messagebox.showerror("Error", f"No se pudo crear el borrador en Outlook.\n\n{exc}")
 
     def _forward_email(self) -> None:
@@ -1003,7 +1048,7 @@ class EmailManagerWindow(tk.Toplevel):
             return
 
         attachments = self._build_email_attachments(str(row["gmail_id"]))
-        attachment_paths = self._prepare_forward_attachment_paths(attachments)
+        attachment_paths = self._resolve_reply_attachment_paths(str(row["gmail_id"]), attachments)
         forward_body = (
             "---- Mensaje reenviado ----\n"
             f"De: {row.get('real_sender') or row.get('sender', '')}\n"
@@ -1019,74 +1064,36 @@ class EmailManagerWindow(tk.Toplevel):
                 body=forward_body,
                 attachment_paths=attachment_paths,
             )
-            self.status_var.set("Borrador de reenvío abierto correctamente.")
+            self.log("Borrador de reenvío abierto correctamente.")
         except Exception as exc:  # noqa: BLE001
             logger.exception("No se pudo crear borrador de reenvío")
+            self.log(f"Error creando borrador de reenvío: {exc}", level="ERROR")
             messagebox.showerror("Error", f"No se pudo crear el borrador de reenvío en Outlook.\n\n{exc}")
 
-    def _resolve_reply_attachment_paths(self, attachments: list[dict[str, str]]) -> list[str] | None:
+    def _resolve_reply_attachment_paths(self, gmail_id: str, attachments: list[dict[str, str]]) -> list[str] | None:
         if not attachments:
+            self.log("Sin adjuntos")
             return []
-
         decision = self._ask_attach_original_files()
-        if decision is None:
-            return None
-        if decision == "none":
+        if decision is None or decision == "none":
+            self.log("Sin adjuntos")
             return []
-        if decision == "all":
-            return [attachment["local_path"] for attachment in attachments if attachment.get("local_path")]
-        return self._select_original_attachment_paths(attachments)
-
-    def _prepare_forward_attachment_paths(self, attachments: list[dict[str, str]]) -> list[str]:
-        if not attachments:
-            return []
-
-        temp_dir = Path(tempfile.gettempdir()) / "temp_email_attachments"
-        temp_dir.mkdir(parents=True, exist_ok=True)
-        self._temp_forward_attachments_dirs.append(temp_dir)
-
-        forward_paths: list[str] = []
+        paths: list[str] = []
         for attachment in attachments:
-            local_path = str(attachment.get("local_path", "") or "").strip()
-            if not local_path:
-                continue
-            source = Path(local_path)
-            if not source.exists() or not source.is_file():
-                self.system_log(f"Adjunto no encontrado para reenviar: {local_path}", level="WARNING")
-                continue
-
-            filename = str(attachment.get("filename", "") or "").strip() or source.name
-            target_path = temp_dir / filename
             try:
-                encoded_payload = base64.b64encode(source.read_bytes())
-                target_path.write_bytes(base64.b64decode(encoded_payload))
-                forward_paths.append(str(target_path))
-            except Exception:  # noqa: BLE001
-                logger.exception("No se pudo preparar adjunto para reenviar: %s", filename)
-                self.system_log(f"Error al preparar adjunto para reenviar: {filename}", level="ERROR")
-
-        return forward_paths
+                local_path = self.attachment_cache.ensure_downloaded(gmail_id, attachment)
+                attachment["local_path"] = local_path
+                paths.append(local_path)
+            except Exception as exc:  # noqa: BLE001
+                self.log(f"Error preparando adjunto {attachment.get('filename', '')}: {exc}", level="ERROR")
+                messagebox.showerror("Adjuntos", str(exc))
+                return None
+        self.log(f"Adjuntos incluidos: {len(paths)}")
+        return paths
 
     def _ask_attach_original_files(self) -> str | None:
-        dialog = tk.Toplevel(self)
-        dialog.title("Adjuntos")
-        dialog.transient(self)
-        dialog.grab_set()
-        ttk.Label(dialog, text="¿Adjuntar archivos originales?").pack(padx=16, pady=(14, 8))
-        response: dict[str, str | None] = {"value": None}
-
-        def choose(value: str) -> None:
-            response["value"] = value
-            dialog.destroy()
-
-        buttons = ttk.Frame(dialog)
-        buttons.pack(padx=12, pady=(0, 12))
-        ttk.Button(buttons, text="Sí", command=lambda: choose("all"), width=12).pack(side="left", padx=4)
-        ttk.Button(buttons, text="No", command=lambda: choose("none"), width=12).pack(side="left", padx=4)
-        ttk.Button(buttons, text="Seleccionar", command=lambda: choose("select"), width=12).pack(side="left", padx=4)
-        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
-        self.wait_window(dialog)
-        return response["value"]
+        include = messagebox.askyesno("Adjuntos", "¿Incluir adjuntos?")
+        return "all" if include else "none"
 
     def _select_original_attachment_paths(self, attachments: list[dict[str, str]]) -> list[str]:
         selection_dialog = tk.Toplevel(self)
@@ -1209,6 +1216,12 @@ class EmailManagerWindow(tk.Toplevel):
         return fallback
 
     def _resolve_my_email(self) -> str:
+        try:
+            managed = str(self.note_service.get_settings().managed_email or "").strip()
+            if managed:
+                return managed
+        except Exception:  # noqa: BLE001
+            logger.exception("No se pudo leer correo gestionado desde configuración")
         profile_email = self.user_profile_repo.get_profile().get("email", "").strip()
         if profile_email:
             return profile_email
