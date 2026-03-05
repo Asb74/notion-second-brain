@@ -384,6 +384,48 @@ class DedupTests(unittest.TestCase):
             self.assertIn("Hemos revisado tu pedido y realizado las gestiones necesarias.", called_body)
             self.assertIn("• Revisar pedido", called_body)
             self.assertIn("• Confirmar transporte", called_body)
+            self.assertEqual(
+                mock_reply_all.call_args.kwargs.get("exclude_email"),
+                self.service.get_settings().managed_email.strip().lower(),
+            )
+
+    @patch("app.core.service.process_text")
+    def test_mark_action_done_uses_fallback_summary_when_actions_are_empty(self, mock_process_text):
+        mock_process_text.return_value = ProcessedNote(
+            resumen="Resumen AI",
+            acciones=["Gestionar caso"],
+            tipo_sugerido="Nota",
+            prioridad_sugerida="Media",
+        )
+        req = NoteCreateRequest(
+            title="",
+            raw_text="Consulta general",
+            source="email_pasted",
+            area="Operaciones",
+            tipo="",
+            estado="Pendiente",
+            prioridad="",
+            fecha=datetime.now().date().isoformat(),
+            email_id="email-entry-456",
+        )
+        note_id, _ = self.service.create_note(req)
+        action = self.service.actions_repo.get_actions_by_note(note_id)[0]
+
+        with (
+            patch.object(self.service, "_generate_actions_summary", return_value="   "),
+            patch.object(self.service.outlook_service, "reply_all_with_body") as mock_reply_all,
+        ):
+            self.service.mark_action_done(action.id)
+
+            mock_reply_all.assert_called_once()
+            called_email_id, called_body = mock_reply_all.call_args[0]
+            self.assertEqual(called_email_id, "email-entry-456")
+            self.assertIn("• Gestión completada.", called_body)
+            self.assertEqual(
+                mock_reply_all.call_args.kwargs.get("exclude_email"),
+                self.service.get_settings().managed_email.strip().lower(),
+            )
+
     @patch("app.core.service.process_text")
     def test_create_note_keeps_manual_tipo_prioridad(self, mock_process_text):
         mock_process_text.return_value = ProcessedNote(

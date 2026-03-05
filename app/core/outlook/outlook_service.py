@@ -73,9 +73,21 @@ class OutlookService:
         reply = original.ReplyAll()
         reply.Display()
 
-    def reply_all_with_body(self, email_id: str, body: str) -> None:
+    def reply_all_with_body(self, email_id: str, body: str, exclude_email: str | None = None) -> None:
         mail = self._get_mail_by_id(email_id)
         reply = mail.ReplyAll()
+        excluded = (exclude_email or "").strip().lower()
+
+        if excluded:
+            for field in ("To", "CC", "BCC"):
+                current = getattr(reply, field, "")
+                filtered = [
+                    address
+                    for address in self._parse_addresses(current)
+                    if address.strip().lower() != excluded
+                ]
+                setattr(reply, field, "; ".join(filtered))
+
         reply.Body = f"{body}\n\n{reply.Body}"
         reply.Display()
 

@@ -237,17 +237,27 @@ Un saludo""",
         if not note:
             return
 
+        settings = self.get_settings()
+        managed_email = settings.managed_email.strip().lower()
+
         self.note_repo.update_estado(note.id, "Finalizado")
 
         if note.source != "email_pasted" or not note.source_id.strip():
             return
 
         summary = self._generate_actions_summary(note_id)
+        if not summary.strip():
+            summary = "• Gestión completada."
+
         tipo = self._detect_email_type(note)
         body = self._build_email_template(tipo, summary)
 
         try:
-            self.outlook_service.reply_all_with_body(note.source_id, body)
+            self.outlook_service.reply_all_with_body(
+                note.source_id,
+                body,
+                exclude_email=managed_email,
+            )
         except Exception:  # noqa: BLE001
             logger.exception("No se pudo abrir respuesta automática para note_id=%s email_id=%s", note.id, note.source_id)
 
