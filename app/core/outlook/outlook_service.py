@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.config.mail_config import USER_EMAIL
+
 
 class OutlookService:
     """Create drafts in Outlook desktop without auto-sending."""
@@ -32,6 +34,7 @@ class OutlookService:
     ) -> tuple[str, list[str]]:
         main = (main_recipient or "").strip().lower()
         mine = (my_email or "").strip().lower()
+        configured_user = USER_EMAIL.strip().lower()
 
         normalized_to = [to_list] if isinstance(to_list, str) else (to_list or [])
         normalized_cc = [cc_list] if isinstance(cc_list, str) else (cc_list or [])
@@ -43,12 +46,12 @@ class OutlookService:
             normalized = candidate.lower()
             if not normalized or normalized in normalized_seen:
                 continue
-            if normalized == main or normalized == mine:
+            if normalized in {main, mine, configured_user}:
                 continue
             normalized_seen.add(normalized)
             clean_cc.append(candidate)
 
-        clean_main = "" if main == mine else (main_recipient or "").strip()
+        clean_main = "" if main in {mine, configured_user} else (main_recipient or "").strip()
         return clean_main, clean_cc
 
     def create_draft(

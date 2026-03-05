@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.core.email.email_classifier import EmailClassifier
+from app.core.email.forwarded_parser import extract_real_sender
 from app.persistence.email_repository import EmailRepository
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,7 @@ class MailIngestionService:
             subject = headers["subject"]
             sender = headers["from"]
             body_text, body_html, has_attachments, attachments = self._extract_body_and_attachments(payload)
+            real_sender = extract_real_sender(body_text, sender)
 
             received_at = self._convert_internal_date(full_message.get("internalDate"))
             email_type = self.classifier.classify(subject=subject, sender=sender, body_text=body_text)
@@ -52,6 +54,7 @@ class MailIngestionService:
                 thread_id=full_message.get("threadId"),
                 subject=subject,
                 sender=sender,
+                real_sender=real_sender,
                 original_from=headers["from"],
                 original_to=headers["to"],
                 original_cc=headers["cc"],
@@ -81,6 +84,7 @@ class MailIngestionService:
                 thread_id TEXT,
                 subject TEXT,
                 sender TEXT,
+                real_sender TEXT,
                 received_at TEXT,
                 body_text TEXT,
                 body_html TEXT,
@@ -118,6 +122,8 @@ class MailIngestionService:
             self.db_connection.execute("ALTER TABLE emails ADD COLUMN type TEXT DEFAULT 'other'")
         if "original_from" not in column_names:
             self.db_connection.execute("ALTER TABLE emails ADD COLUMN original_from TEXT DEFAULT ''")
+        if "real_sender" not in column_names:
+            self.db_connection.execute("ALTER TABLE emails ADD COLUMN real_sender TEXT DEFAULT ''")
         if "original_to" not in column_names:
             self.db_connection.execute("ALTER TABLE emails ADD COLUMN original_to TEXT DEFAULT ''")
         if "original_cc" not in column_names:
@@ -132,6 +138,7 @@ class MailIngestionService:
         thread_id: Optional[str],
         subject: str,
         sender: str,
+        real_sender: str,
         original_from: str,
         original_to: str,
         original_cc: str,
@@ -152,6 +159,7 @@ class MailIngestionService:
                 thread_id,
                 subject,
                 sender,
+                real_sender,
                 received_at,
                 body_text,
                 body_html,
@@ -165,13 +173,14 @@ class MailIngestionService:
                 original_to,
                 original_cc,
                 original_reply_to
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 gmail_id,
                 thread_id,
                 subject,
                 sender,
+                real_sender,
                 received_at,
                 body_text,
                 body_html,

@@ -23,3 +23,15 @@ def test_clean_recipients_main_is_cleared_if_my_email() -> None:
 
     assert main == ""
     assert cc == ["otro@empresa.com"]
+
+
+def test_clean_recipients_excludes_configured_user_email() -> None:
+    main, cc = OutlookService.clean_recipients(
+        to_list=["a.sanchez@sansebas.es"],
+        cc_list=["Otro <otro@empresa.com>; a.sanchez@sansebas.es"],
+        main_recipient="a.sanchez@sansebas.es",
+        my_email="",
+    )
+
+    assert main == ""
+    assert cc == ["otro@empresa.com"]

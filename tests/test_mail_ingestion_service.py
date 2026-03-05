@@ -9,6 +9,30 @@ class _DummyGmailClient:
     def list_unread_messages(self, max_results: int = 20):
         return []
 
+    def mark_as_read(self, gmail_id: str) -> None:
+        return None
+
+
+class _SyncClient(_DummyGmailClient):
+    def list_unread_messages(self, max_results: int = 20):
+        return ["gmail-1"]
+
+    def get_message(self, gmail_id: str, format: str = "full"):
+        body = base64.urlsafe_b64encode(
+            "Intro\nDe: Real Sender <real.sender@example.com>\nMensaje".encode("utf-8")
+        ).decode("ascii")
+        return {
+            "threadId": "thread-1",
+            "internalDate": "1700000000000",
+            "payload": {
+                "headers": [
+                    {"name": "Subject", "value": "Fwd: Demo"},
+                    {"name": "From", "value": "Forwarder <forwarder@example.com>"},
+                ],
+                "parts": [{"mimeType": "text/plain", "body": {"data": body}}],
+            },
+        }
+
 
 class _AttachmentClient(_DummyGmailClient):
     def __init__(self):
@@ -108,3 +132,17 @@ def test_persist_attachments_downloads_and_registers(tmp_path: Path) -> None:
     assert Path(row["local_path"]).read_bytes() == b"hola adjunto"
     assert row["size"] == len(b"hola adjunto")
     assert client.attachment_requests == [("gmail-1", "att-1")]
+
+
+def test_sync_unread_emails_persists_real_sender() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    service = MailIngestionService(gmail_client=_SyncClient(), db_connection=conn)
+
+    processed = service.sync_unread_emails(max_results=5)
+
+    row = conn.execute("SELECT sender, real_sender FROM emails WHERE gmail_id = ?", ("gmail-1",)).fetchone()
+    assert processed == ["gmail-1"]
+    assert row is not None
+    assert row["sender"] == "Forwarder <forwarder@example.com>"
+    assert row["real_sender"] == "real.sender@example.com"
