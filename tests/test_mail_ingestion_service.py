@@ -141,8 +141,20 @@ def test_sync_unread_emails_persists_real_sender() -> None:
 
     processed = service.sync_unread_emails(max_results=5)
 
-    row = conn.execute("SELECT sender, real_sender FROM emails WHERE gmail_id = ?", ("gmail-1",)).fetchone()
+    row = conn.execute("SELECT sender, real_sender, entities_json FROM emails WHERE gmail_id = ?", ("gmail-1",)).fetchone()
     assert processed == ["gmail-1"]
     assert row is not None
     assert row["sender"] == "Forwarder <forwarder@example.com>"
     assert row["real_sender"] == "real.sender@example.com"
+
+
+def test_sync_unread_emails_persists_entities_json() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    service = MailIngestionService(gmail_client=_SyncClient(), db_connection=conn)
+
+    service.sync_unread_emails(max_results=5)
+
+    row = conn.execute("SELECT entities_json FROM emails WHERE gmail_id = ?", ("gmail-1",)).fetchone()
+    assert row is not None
+    assert "pedido" in str(row["entities_json"] or "")

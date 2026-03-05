@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import json
 import logging
 import os
 import re
@@ -29,6 +30,7 @@ from app.core.service import NoteService
 from app.persistence.email_repository import EmailRepository
 from app.persistence.training_repository import TrainingRepository
 from app.persistence.user_profile_repository import UserProfileRepository
+from app.services.email_entity_extractor import EmailEntityExtractor
 from app.ui.excel_filter import ExcelTreeFilter
 from app.utils.openai_client import MODEL_NAME, build_openai_client
 
@@ -102,6 +104,10 @@ class EmailManagerWindow(tk.Toplevel):
         self._expanded_attachment_preview_window: tk.Toplevel | None = None
         self._expanded_attachment_preview_frame: HtmlFrame | None = None
         self._temp_opened_attachments: list[Path] = []
+        self.detected_pedido_var = tk.StringVar(value="")
+        self.detected_cliente_var = tk.StringVar(value="")
+        self.detected_persona_var = tk.StringVar(value="")
+        self.detected_accion_var = tk.StringVar(value="")
 
         self._build_layout()
         self.refresh_emails()
@@ -235,6 +241,17 @@ class EmailManagerWindow(tk.Toplevel):
         preview_actions = ttk.Frame(preview_frame)
         preview_actions.pack(fill="x", padx=4, pady=(0, 4))
         ttk.Button(preview_actions, text="Expandir vista", command=self._expand_html_view).pack(side="left")
+
+        entities_frame = ttk.LabelFrame(preview_frame, text="Datos detectados")
+        entities_frame.pack(fill="x", padx=4, pady=(0, 4))
+        ttk.Label(entities_frame, text="Pedido:").grid(row=0, column=0, sticky="w", padx=4, pady=2)
+        ttk.Label(entities_frame, textvariable=self.detected_pedido_var).grid(row=0, column=1, sticky="w", padx=4, pady=2)
+        ttk.Label(entities_frame, text="Cliente:").grid(row=1, column=0, sticky="w", padx=4, pady=2)
+        ttk.Label(entities_frame, textvariable=self.detected_cliente_var).grid(row=1, column=1, sticky="w", padx=4, pady=2)
+        ttk.Label(entities_frame, text="Persona:").grid(row=2, column=0, sticky="w", padx=4, pady=2)
+        ttk.Label(entities_frame, textvariable=self.detected_persona_var).grid(row=2, column=1, sticky="w", padx=4, pady=2)
+        ttk.Label(entities_frame, text="Acción:").grid(row=3, column=0, sticky="w", padx=4, pady=2)
+        ttk.Label(entities_frame, textvariable=self.detected_accion_var).grid(row=3, column=1, sticky="w", padx=4, pady=2)
 
         response_frame = ttk.LabelFrame(lower_panel, text="Respuesta")
         self.response_text = tk.Text(response_frame, wrap="word", height=12)
@@ -442,6 +459,7 @@ class EmailManagerWindow(tk.Toplevel):
                 "original_to": row["original_to"] or "",
                 "original_cc": row["original_cc"] or "",
                 "original_reply_to": row["original_reply_to"] or "",
+                "entities_json": row["entities_json"] or "",
             }
             self._all_rows.append(normalized)
             self._rows_by_id[str(row["gmail_id"])] = normalized
@@ -597,14 +615,42 @@ class EmailManagerWindow(tk.Toplevel):
         selection = self.tree.selection()
         attachments: list[dict[str, str]] = []
         body_html = ""
+        detected_entities: dict[str, str] = {}
         if len(selection) == 1:
             row = self._rows_by_id.get(str(selection[0]))
             if row:
                 body_html = row.get("body_html", "").strip()
                 attachments = self._build_email_attachments(str(row["gmail_id"]))
+                detected_entities = self._resolve_entities(row)
 
         self._set_html_preview(body_html)
         self._render_attachments(attachments)
+        self._set_detected_entities(detected_entities)
+
+
+    def _resolve_entities(self, row: dict[str, str]) -> dict[str, str]:
+        entities_raw = str(row.get("entities_json", "") or "").strip()
+        if entities_raw:
+            try:
+                parsed = json.loads(entities_raw)
+                if isinstance(parsed, dict):
+                    return {
+                        "pedido": str(parsed.get("pedido", "") or ""),
+                        "cliente": str(parsed.get("cliente", "") or ""),
+                        "producto": str(parsed.get("producto", "") or ""),
+                        "persona": str(parsed.get("persona", "") or ""),
+                        "email_persona": str(parsed.get("email_persona", "") or ""),
+                        "accion": str(parsed.get("accion", "") or ""),
+                    }
+            except json.JSONDecodeError:
+                logger.warning("entities_json inválido para email %s", row.get("gmail_id", ""))
+        return EmailEntityExtractor.extract_entities(row.get("subject", ""), row.get("body_text", ""))
+
+    def _set_detected_entities(self, entities: dict[str, str]) -> None:
+        self.detected_pedido_var.set(str(entities.get("pedido", "") or ""))
+        self.detected_cliente_var.set(str(entities.get("cliente", "") or ""))
+        self.detected_persona_var.set(str(entities.get("persona", "") or ""))
+        self.detected_accion_var.set(str(entities.get("accion", "") or ""))
 
     def _set_html_preview(self, body_html: str) -> None:
         self._current_html_content = body_html.strip()
@@ -840,9 +886,18 @@ class EmailManagerWindow(tk.Toplevel):
                     "",
                 ]
             )
+        entities = self._resolve_entities(row)
         examples_lines.extend(
             [
                 "--------------------------------------",
+                "",
+                "Datos detectados:",
+                f"- Pedido: {entities.get('pedido', '').strip()}",
+                f"- Cliente: {entities.get('cliente', '').strip()}",
+                f"- Producto: {entities.get('producto', '').strip()}",
+                f"- Persona: {entities.get('persona', '').strip()}",
+                f"- Email persona: {entities.get('email_persona', '').strip()}",
+                f"- Acción: {entities.get('accion', '').strip()}",
                 "",
                 "Ahora redacta la respuesta al siguiente correo:",
                 "",
