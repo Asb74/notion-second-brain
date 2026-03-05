@@ -39,13 +39,24 @@ _SYSTEM_LOG_WIDGET: ScrolledText | None = None
 
 
 def is_real_html(content: str | None) -> bool:
-    """Return True when the input includes actual HTML tags for rendering."""
+    """Return True when the input includes actual structural HTML tags."""
     if not content:
         return False
 
-    lowered_content = content.lower()
-    html_tags = ["<html", "<body", "<div", "<table", "<p", "<span", "<br"]
-    return any(tag in lowered_content for tag in html_tags)
+    lowered = content.lower()
+
+    html_tags = [
+        "<html",
+        "<body",
+        "<table",
+        "<div",
+        "<p>",
+        "<br>",
+        "<tr>",
+        "<td>",
+    ]
+
+    return any(tag in lowered for tag in html_tags)
 
 
 def clean_outlook_content(text: str | None) -> str:
@@ -71,6 +82,28 @@ def clean_outlook_content(text: str | None) -> str:
         cleaned = cleaned[header_match.start():]
 
     return cleaned.strip()
+
+
+def strip_outlook_word_html(html_content: str) -> str:
+    """Remove Outlook Word CSS blocks and style tags."""
+    if not html_content:
+        return ""
+
+    html_content = re.sub(
+        r"<style[^>]*>.*?</style>",
+        "",
+        html_content,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    html_content = re.sub(
+        r"<!--\[if.*?endif\]-->",
+        "",
+        html_content,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    return html_content.strip()
 
 
 def clean_outlook_styles(text: str | None) -> str:
@@ -778,7 +811,7 @@ class EmailManagerWindow(tk.Toplevel):
         self.detected_accion_var.set(str(entities.get("accion", "") or ""))
 
     def _set_html_preview(self, body_html: str, body_text: str = "") -> None:
-        html_body = (body_html or "").strip()
+        html_body = strip_outlook_word_html((body_html or "").strip())
         text_body = body_text or ""
 
         if is_real_html(html_body):
