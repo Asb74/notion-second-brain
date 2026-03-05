@@ -26,6 +26,7 @@ from app.core.outlook.outlook_service import OutlookService
 from app.core.service import NoteService
 from app.persistence.email_repository import EmailRepository
 from app.persistence.training_repository import TrainingRepository
+from app.persistence.user_profile_repository import UserProfileRepository
 from app.ui.excel_filter import ExcelTreeFilter
 from app.utils.openai_client import MODEL_NAME, build_openai_client
 
@@ -47,6 +48,7 @@ class EmailManagerWindow(tk.Toplevel):
         self.gmail_client = gmail_client
         self.email_repo = EmailRepository(db_connection)
         self.training_repo = TrainingRepository(db_connection)
+        self.user_profile_repo = UserProfileRepository(db_connection)
         self.category_manager = CategoryManager(self.email_repo)
         self.mail_ingestion_service = MailIngestionService(gmail_client=gmail_client, db_connection=db_connection)
         self.classifier = self.mail_ingestion_service.classifier
@@ -720,7 +722,7 @@ class EmailManagerWindow(tk.Toplevel):
             )
 
         self.response_text.delete("1.0", "end")
-        self.response_text.insert("1.0", body)
+        self.response_text.insert("1.0", self._apply_user_signature(body))
 
     def _generate_ai_response(self, prompt: str) -> str:
         try:
@@ -931,12 +933,29 @@ class EmailManagerWindow(tk.Toplevel):
         return fallback
 
     def _resolve_my_email(self) -> str:
+        profile_email = self.user_profile_repo.get_profile().get("email", "").strip()
+        if profile_email:
+            return profile_email
         try:
             resolved = self.gmail_client.get_my_email().strip()
             return resolved or USER_EMAIL
         except Exception:  # noqa: BLE001
             logger.exception("No se pudo obtener el email del usuario desde Gmail")
             return USER_EMAIL
+
+    def _apply_user_signature(self, text: str) -> str:
+        profile = self.user_profile_repo.get_profile()
+        replacements = {
+            "[Tu Nombre]": profile.get("nombre", ""),
+            "[Tu Cargo]": profile.get("cargo", ""),
+            "[Tu Empresa]": profile.get("empresa", ""),
+            "[Tu Teléfono]": profile.get("telefono", ""),
+        }
+
+        result = text
+        for placeholder, value in replacements.items():
+            result = result.replace(placeholder, value or "")
+        return result
 
     @staticmethod
     def _compose_note_text(subject: str | None, sender: str | None, body_text: str | None, body_html: str | None) -> str:

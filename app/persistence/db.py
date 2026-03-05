@@ -87,6 +87,26 @@ class Database:
                 """
             )
             self._migrate_masters_table(conn)
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_profile (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    nombre TEXT NOT NULL DEFAULT '',
+                    cargo TEXT NOT NULL DEFAULT '',
+                    empresa TEXT NOT NULL DEFAULT '',
+                    telefono TEXT NOT NULL DEFAULT '',
+                    email TEXT NOT NULL DEFAULT '',
+                    dominio_interno TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO user_profile (id)
+                VALUES (1)
+                ON CONFLICT(id) DO NOTHING
+                """
+            )
             conn.commit()
 
     def _migrate_masters_table(self, conn: sqlite3.Connection) -> None:

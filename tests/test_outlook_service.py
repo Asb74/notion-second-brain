@@ -35,3 +35,15 @@ def test_clean_recipients_excludes_configured_user_email() -> None:
 
     assert main == ""
     assert cc == ["otro@empresa.com"]
+
+
+def test_clean_recipients_uses_to_plus_cc_and_removes_sender_duplicate() -> None:
+    main, cc = OutlookService.clean_recipients(
+        to_list=["cliente@externo.com; equipo@empresa.com"],
+        cc_list=["Cliente <cliente@externo.com>; apoyo@empresa.com"],
+        main_recipient="cliente@externo.com",
+        my_email="yo@empresa.com",
+    )
+
+    assert main == "cliente@externo.com"
+    assert cc == ["equipo@empresa.com", "apoyo@empresa.com"]

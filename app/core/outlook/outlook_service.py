@@ -40,7 +40,7 @@ class OutlookService:
         normalized_cc = [cc_list] if isinstance(cc_list, str) else (cc_list or [])
         all_candidates = cls._parse_addresses(",".join([*normalized_to, *normalized_cc]))
 
-        normalized_seen: set[str] = set()
+        normalized_seen: set[str] = {main} if main else set()
         clean_cc: list[str] = []
         for candidate in all_candidates:
             normalized = candidate.lower()
@@ -66,7 +66,7 @@ class OutlookService:
     ) -> None:
         import win32com.client  # type: ignore[import-not-found]
 
-        main_recipient_candidates = self._parse_addresses(original_reply_to) or self._parse_addresses(original_from)
+        main_recipient_candidates = self._parse_addresses(original_from) or self._parse_addresses(original_reply_to)
         main_recipient = main_recipient_candidates[0] if main_recipient_candidates else ""
         clean_main, clean_cc = self.clean_recipients(
             to_list=original_to,
