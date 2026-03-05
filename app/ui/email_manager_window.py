@@ -101,6 +101,7 @@ class EmailManagerWindow(tk.Toplevel):
         self._current_html_content = ""
         self._expanded_html_window: tk.Toplevel | None = None
         self._expanded_html_frame: ScrolledText | None = None
+        self.preview_html: tk.Widget | None = None
         self._expanded_attachment_preview_window: tk.Toplevel | None = None
         self._expanded_attachment_preview_frame: tk.Widget | None = None
         self._temp_opened_attachments: list[Path] = []
@@ -245,8 +246,14 @@ class EmailManagerWindow(tk.Toplevel):
         preview_frame = ttk.LabelFrame(lower_panel, text="Vista previa")
         html_preview_frame = ttk.Frame(preview_frame)
         html_preview_frame.pack(fill="both", expand=True, padx=4, pady=(4, 2))
-        self.html_view = ScrolledText(html_preview_frame, height=14, wrap="word", state="disabled")
-        self.html_view.pack(fill="both", expand=True)
+        from tkhtmlview import HTMLScrolledText
+
+        self.preview_html = HTMLScrolledText(
+            html_preview_frame,
+            html="",
+            background="white",
+        )
+        self.preview_html.pack(fill="both", expand=True)
 
         attachments_frame = ttk.LabelFrame(preview_frame, text="Adjuntos")
         attachments_frame.pack(fill="x", padx=4, pady=(0, 4))
@@ -284,7 +291,7 @@ class EmailManagerWindow(tk.Toplevel):
         response_actions = ttk.Frame(response_frame)
         response_actions.pack(fill="x", padx=4, pady=(0, 4))
         ttk.Button(response_actions, text="Generar respuesta", command=self._generate_response).pack(side="left", padx=(0, 6))
-        ttk.Button(response_actions, text="Crear borrador Outlook", command=self._create_outlook_draft).pack(side="left")
+        ttk.Button(response_actions, text="Responder", command=self._create_outlook_draft).pack(side="left")
         ttk.Button(response_actions, text="Reenviar", command=self._forward_email).pack(side="left", padx=(6, 0))
 
         lower_panel.add(preview_frame, weight=1)
@@ -520,6 +527,7 @@ class EmailManagerWindow(tk.Toplevel):
                 "original_to": row["original_to"] or "",
                 "original_cc": row["original_cc"] or "",
                 "original_reply_to": row["original_reply_to"] or "",
+                "reply_to": row["original_reply_to"] or "",
                 "attachments_json": row["attachments_json"] or "[]",
                 "entities_json": row["entities_json"] or "",
             }
@@ -690,15 +698,17 @@ class EmailManagerWindow(tk.Toplevel):
         selection = self.tree.selection()
         attachments: list[dict[str, str]] = []
         body_html = ""
+        body_text = ""
         detected_entities: dict[str, str] = {}
         if len(selection) == 1:
             row = self._rows_by_id.get(str(selection[0]))
             if row:
                 body_html = row.get("body_html", "").strip()
+                body_text = row.get("body_text", "")
                 attachments = self._build_email_attachments(str(row["gmail_id"]))
                 detected_entities = self._resolve_entities(row)
 
-        self._set_html_preview(body_html)
+        self._set_html_preview(body_html, body_text)
         self._render_attachments(attachments)
         self._set_detected_entities(detected_entities)
 
@@ -727,15 +737,18 @@ class EmailManagerWindow(tk.Toplevel):
         self.detected_persona_var.set(str(entities.get("persona", "") or ""))
         self.detected_accion_var.set(str(entities.get("accion", "") or ""))
 
-    def _set_html_preview(self, body_html: str) -> None:
+    def _set_html_preview(self, body_html: str, body_text: str = "") -> None:
         self._current_html_content = body_html.strip()
-        content = self._html_to_text(self._current_html_content) or "Sin contenido HTML."
-        self.html_view.configure(state="normal")
-        self.html_view.delete("1.0", "end")
-        self.html_view.insert("1.0", content)
-        self.html_view.configure(state="disabled")
+        if self._current_html_content:
+            preview_content = self._current_html_content
+        else:
+            preview_content = f"<pre>{html.escape(body_text or '')}</pre>"
+
+        if self.preview_html is not None:
+            self.preview_html.set_html(preview_content)
 
         if self._expanded_html_frame is not None:
+            content = self._html_to_text(self._current_html_content) or body_text or "Sin contenido HTML."
             self._expanded_html_frame.configure(state="normal")
             self._expanded_html_frame.delete("1.0", "end")
             self._expanded_html_frame.insert("1.0", content)
@@ -1053,7 +1066,11 @@ class EmailManagerWindow(tk.Toplevel):
             messagebox.showwarning("Atención", "Escribe o genera una respuesta antes de crear el borrador.")
             return
 
-        original_from = row.get("original_from") or row.get("real_sender") or row["sender"]
+        recipient = row.get("reply_to") or row.get("real_sender") or row.get("sender", "")
+        if not recipient:
+            messagebox.showwarning("Atención", "No se encontró destinatario para responder este correo.")
+            return
+        reply_to = row.get("reply_to", "")
         original_to = row.get("original_to", "")
         original_cc = row.get("original_cc", "")
 
@@ -1071,11 +1088,11 @@ class EmailManagerWindow(tk.Toplevel):
             to_recipient, cc_recipients = self.outlook_service.create_draft(
                 subject=draft_subject,
                 body=body,
-                original_from=original_from,
+                original_from=recipient,
                 original_to=original_to,
                 original_cc=original_cc,
                 my_email=self.my_email,
-                original_reply_to=row.get("original_reply_to", ""),
+                original_reply_to=reply_to,
                 attachment_paths=attachment_paths,
             )
             self.log(f"Responder a: {to_recipient} / CC: {', '.join(cc_recipients)}")
