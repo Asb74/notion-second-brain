@@ -19,6 +19,7 @@ from app.ui.excel_filter import ExcelTreeFilter
 from app.ui.masters_dialog import MastersDialog
 from app.ui.email_manager_window import EmailManagerWindow
 from app.ui.settings_dialog import SettingsDialog
+from app.ui.user_profile_window import UserProfileWindow
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,7 @@ class MainWindow(ttk.Frame):
         self.gmail_credentials_path = gmail_credentials_path
         self.gmail_token_path = gmail_token_path
         self._email_window: EmailManagerWindow | None = None
+        self._profile_window: UserProfileWindow | None = None
         self.msg_queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self.status_var = tk.StringVar(value="Listo")
         self.pack(fill="both", expand=True)
@@ -131,6 +133,10 @@ class MainWindow(ttk.Frame):
             messagebox.showerror("Error", f"No se pudo abrir la gestión de emails.\n\n{exc}")
 
     def _build_form(self) -> None:
+        style = ttk.Style(self)
+        style.theme_use("clam")
+        style.configure("Toolbar.TButton", padding=(8, 6))
+
         form = ttk.LabelFrame(self, text="Nueva nota")
         form.pack(fill="x", pady=5)
 
@@ -141,44 +147,71 @@ class MainWindow(ttk.Frame):
         self.prioridad_var = tk.StringVar(value="Media")
         self.title_var = tk.StringVar()
 
-        ttk.Label(form, text="Título").grid(row=0, column=0, padx=4, pady=4)
-        ttk.Entry(form, textvariable=self.title_var, width=40).grid(row=0, column=1, padx=4, pady=4)
+        ttk.Label(form, text="Título").grid(row=0, column=0, padx=6, pady=6, sticky="e")
+        ttk.Entry(form, textvariable=self.title_var, width=40).grid(row=0, column=1, padx=6, pady=6, sticky="ew")
 
-        ttk.Label(form, text="Fuente").grid(row=0, column=2, padx=4, pady=4)
-        ttk.Combobox(form, textvariable=self.source_var, values=["manual", "email_pasted"], state="readonly", width=15).grid(row=0, column=3, padx=4, pady=4)
+        ttk.Label(form, text="Fuente").grid(row=0, column=2, padx=6, pady=6, sticky="e")
+        ttk.Combobox(form, textvariable=self.source_var, values=["manual", "email_pasted"], state="readonly", width=15).grid(row=0, column=3, padx=6, pady=6, sticky="w")
 
         self.text_widget = tk.Text(form, height=10, width=100)
-        self.text_widget.grid(row=1, column=0, columnspan=4, sticky="ew", padx=4, pady=4)
+        self.text_widget.grid(row=1, column=0, columnspan=10, sticky="ew", padx=6, pady=6)
 
-        ttk.Label(form, text="Área").grid(row=2, column=0, padx=4, pady=4, sticky="e")
+        ttk.Label(form, text="Área").grid(row=2, column=0, padx=6, pady=6, sticky="e")
         self.area_combo = ttk.Combobox(form, textvariable=self.area_var, state="readonly", width=15)
-        self.area_combo.grid(row=2, column=1, padx=4, pady=4)
+        self.area_combo.grid(row=2, column=1, padx=6, pady=6)
 
-        ttk.Label(form, text="Tipo").grid(row=2, column=2, padx=4, pady=4, sticky="e")
+        ttk.Label(form, text="Tipo").grid(row=2, column=2, padx=6, pady=6, sticky="e")
         self.tipo_combo = ttk.Combobox(form, textvariable=self.tipo_var, state="readonly", width=15)
-        self.tipo_combo.grid(row=2, column=3, padx=4, pady=4)
+        self.tipo_combo.grid(row=2, column=3, padx=6, pady=6)
 
-        ttk.Label(form, text="Estado").grid(row=2, column=4, padx=4, pady=4, sticky="e")
+        ttk.Label(form, text="Estado").grid(row=2, column=4, padx=6, pady=6, sticky="e")
         self.estado_combo = ttk.Combobox(form, textvariable=self.estado_var, state="readonly", width=15)
-        self.estado_combo.grid(row=2, column=5, padx=4, pady=4)
+        self.estado_combo.grid(row=2, column=5, padx=6, pady=6)
 
-        ttk.Label(form, text="Prioridad").grid(row=2, column=6, padx=4, pady=4, sticky="e")
+        ttk.Label(form, text="Prioridad").grid(row=2, column=6, padx=6, pady=6, sticky="e")
         self.prioridad_combo = ttk.Combobox(form, textvariable=self.prioridad_var, state="readonly", width=15)
-        self.prioridad_combo.grid(row=2, column=7, padx=4, pady=4)
+        self.prioridad_combo.grid(row=2, column=7, padx=6, pady=6)
 
-        ttk.Label(form, text="Fecha").grid(row=2, column=8, padx=4, pady=4, sticky="e")
+        ttk.Label(form, text="Fecha").grid(row=2, column=8, padx=6, pady=6, sticky="e")
         self.date_entry = DateEntry(form, width=15, date_pattern="yyyy-mm-dd")
-        self.date_entry.grid(row=2, column=9, padx=4, pady=4)
+        self.date_entry.grid(row=2, column=9, padx=6, pady=6)
+
+        for column in (1, 3):
+            form.columnconfigure(column, weight=1)
 
         actions = ttk.Frame(form)
-        actions.grid(row=3, column=0, columnspan=10, sticky="e", pady=6)
-        ttk.Button(actions, text="Configuración", command=self._open_settings).pack(side="left", padx=3)
-        ttk.Button(actions, text="Guardar", command=self._save_note).pack(side="left", padx=3)
-        ttk.Button(actions, text="Enviar", command=self._sync).pack(side="left", padx=3)
-        ttk.Button(actions, text="Reintentar", command=self._sync).pack(side="left", padx=3)
-        ttk.Button(actions, text="Abrir en Notion", command=self._open_notion).pack(side="left", padx=3)
-        self.create_db_button = ttk.Button(actions, text="Crear Base Notion", command=self._create_notion_database)
-        self.create_db_button.pack(side="left", padx=3)
+        actions.grid(row=3, column=0, columnspan=10, sticky="ew", pady=(4, 8), padx=6)
+        action_buttons = [
+            ("⚙ Perfil usuario", self._open_user_profile),
+            ("Configuración", self._open_settings),
+            ("Guardar", self._save_note),
+            ("Enviar", self._sync),
+            ("Reintentar", self._sync),
+            ("Abrir en Notion", self._open_notion),
+        ]
+        for idx, (label, command) in enumerate(action_buttons):
+            ttk.Button(actions, text=label, command=command, style="Toolbar.TButton").grid(
+                row=0,
+                column=idx * 2,
+                sticky="ew",
+                padx=(0, 6),
+            )
+            actions.columnconfigure(idx * 2, weight=1, uniform="main-actions")
+            ttk.Separator(actions, orient="vertical").grid(row=0, column=idx * 2 + 1, sticky="ns", padx=(0, 6))
+
+        self.create_db_button = ttk.Button(actions, text="Crear Base Notion", command=self._create_notion_database, style="Toolbar.TButton")
+        create_idx = len(action_buttons) * 2
+        self.create_db_button.grid(row=0, column=create_idx, sticky="ew")
+        actions.columnconfigure(create_idx, weight=1, uniform="main-actions")
+
+    def _open_user_profile(self) -> None:
+        if self.db_connection is None:
+            messagebox.showerror("Error", "No hay conexión de base de datos disponible.")
+            return
+        if self._profile_window is not None and self._profile_window.winfo_exists():
+            self._profile_window.focus_set()
+            return
+        self._profile_window = UserProfileWindow(self.master, self.db_connection)
 
     def _build_sections(self) -> None:
         sections = ttk.Notebook(self)
