@@ -25,6 +25,7 @@ class SettingsDialog(tk.Toplevel):
         fields = [
             ("notion_token", "Notion Token"),
             ("notion_database_id", "Notion Database ID"),
+            ("managed_email", "Correo gestionado"),
             ("default_area", "Área por defecto"),
             ("default_tipo", "Tipo por defecto"),
             ("default_estado", "Estado por defecto"),
@@ -58,6 +59,7 @@ class SettingsDialog(tk.Toplevel):
         new_settings = AppSettings(
             notion_token=notion_token,
             notion_database_id=self.entries["notion_database_id"].get().strip(),
+            managed_email=self.entries["managed_email"].get().strip(),
             default_area=self.entries["default_area"].get().strip(),
             default_tipo=self.entries["default_tipo"].get().strip(),
             default_estado=self.entries["default_estado"].get().strip() or "Pendiente",

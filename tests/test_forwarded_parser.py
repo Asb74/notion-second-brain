@@ -18,6 +18,7 @@ Asunto: Prueba
         "from": "alice@example.com",
         "to_list": ["bob@example.com", "carol@example.com"],
         "cc_list": ["dave@example.com"],
+        "reply_to": "",
     }
 
 
@@ -40,6 +41,7 @@ Asunto: Demo
         "from": "juan@example.com",
         "to_list": ["maria@example.com", "carlos@example.com"],
         "cc_list": ["equipo@example.com", "soporte@example.com"],
+        "reply_to": "",
     }
 
 
@@ -65,3 +67,14 @@ def test_extract_real_sender_falls_back_to_original_sender() -> None:
     sender = extract_real_sender(body, "forwarder@example.com")
 
     assert sender == "forwarder@example.com"
+
+
+def test_extract_forwarded_headers_with_reply_to() -> None:
+    body = """
+-----Mensaje original-----
+De: N <n@example.com>
+Para: p@example.com
+Reply-To: soporte@example.com
+"""
+    recipients = extract_forwarded_headers(body)
+    assert recipients["reply_to"] == "soporte@example.com"
