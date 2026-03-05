@@ -355,13 +355,13 @@ class DedupTests(unittest.TestCase):
     def test_mark_action_done_replies_email_when_last_task_is_completed(self, mock_process_text):
         mock_process_text.return_value = ProcessedNote(
             resumen="Resumen AI",
-            acciones=["Revisar", "Confirmar"],
+            acciones=["Revisar pedido", "Confirmar transporte"],
             tipo_sugerido="Nota",
             prioridad_sugerida="Media",
         )
         req = NoteCreateRequest(
             title="",
-            raw_text="Texto desde correo",
+            raw_text="Te envío el pedido para revisión",
             source="email_pasted",
             area="Operaciones",
             tipo="",
@@ -381,8 +381,9 @@ class DedupTests(unittest.TestCase):
             mock_reply_all.assert_called_once()
             called_email_id, called_body = mock_reply_all.call_args[0]
             self.assertEqual(called_email_id, "email-entry-123")
-            self.assertIn("• Revisar", called_body)
-            self.assertIn("• Confirmar", called_body)
+            self.assertIn("Hemos revisado tu pedido y realizado las gestiones necesarias.", called_body)
+            self.assertIn("• Revisar pedido", called_body)
+            self.assertIn("• Confirmar transporte", called_body)
     @patch("app.core.service.process_text")
     def test_create_note_keeps_manual_tipo_prioridad(self, mock_process_text):
         mock_process_text.return_value = ProcessedNote(
