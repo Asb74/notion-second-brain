@@ -156,6 +156,78 @@ class NoteService:
 
         return "\n".join(lines)
 
+    def _detect_email_type(self, note: Note) -> str:
+        text = f"{note.title or ''} {note.raw_text or ''}".lower()
+
+        if any(w in text for w in ["pedido", "orden", "confirmar pedido"]):
+            return "pedido"
+
+        if any(w in text for w in ["transporte", "camión", "logistica", "carga"]):
+            return "logistica"
+
+        if any(w in text for w in ["incidencia", "problema", "error", "reclamación"]):
+            return "incidencia"
+
+        if any(w in text for w in ["consulta", "información", "pregunta"]):
+            return "informacion"
+
+        return "general"
+
+    def _build_email_template(self, tipo: str, acciones: str) -> str:
+        templates = {
+            "pedido": f"""Hola,
+
+Hemos revisado tu pedido y realizado las gestiones necesarias.
+
+Acciones realizadas:
+{acciones}
+
+Quedamos atentos a cualquier detalle adicional.
+
+Un saludo""",
+            "logistica": f"""Hola,
+
+La gestión logística solicitada ha sido revisada.
+
+Acciones realizadas:
+{acciones}
+
+Si necesitas cualquier ajuste adicional, quedamos pendientes.
+
+Un saludo""",
+            "incidencia": f"""Hola,
+
+Hemos revisado la incidencia indicada.
+
+Acciones realizadas:
+{acciones}
+
+Si necesitas ampliar información estaremos encantados de ayudarte.
+
+Un saludo""",
+            "informacion": f"""Hola,
+
+Hemos revisado tu consulta.
+
+Acciones realizadas:
+{acciones}
+
+Quedamos atentos a cualquier otra cuestión.
+
+Un saludo""",
+            "general": f"""Hola,
+
+Hemos realizado las siguientes acciones sobre tu solicitud:
+
+{acciones}
+
+Quedamos atentos.
+
+Un saludo""",
+        }
+
+        return templates.get(tipo, templates["general"])
+
     def _handle_note_completed(self, note_id: int) -> None:
         open_count = self.actions_repo.count_open_actions(note_id)
         if open_count > 0:
@@ -171,14 +243,8 @@ class NoteService:
             return
 
         summary = self._generate_actions_summary(note_id)
-        body = (
-            "Hola,\n\n"
-            "Hemos realizado las siguientes acciones sobre tu solicitud:\n\n"
-            f"{summary}\n\n"
-            "Todo queda gestionado.\n\n"
-            "Quedamos atentos.\n\n"
-            "Un saludo"
-        )
+        tipo = self._detect_email_type(note)
+        body = self._build_email_template(tipo, summary)
 
         try:
             self.outlook_service.reply_all_with_body(note.source_id, body)
