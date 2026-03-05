@@ -250,10 +250,17 @@ class MainWindow(ttk.Frame):
         toolbar = ttk.Frame(actions_frame)
         toolbar.pack(fill="x", padx=4, pady=4)
         ttk.Button(toolbar, text="Marcar como hecha", command=self._mark_selected_action_done).pack(side="left", padx=6)
+        ttk.Button(toolbar, text="Finalizar seleccionadas", command=self._mark_selected_actions_done).pack(side="left", padx=6)
         ttk.Button(toolbar, text="Refrescar", command=self.refresh_actions).pack(side="left", padx=6)
         ttk.Button(toolbar, text="Abrir", command=self._open_selected_action).pack(side="left", padx=6)
 
-        self.actions_tree = ttk.Treeview(actions_frame, columns=self.action_columns, show="headings", height=12)
+        self.actions_tree = ttk.Treeview(
+            actions_frame,
+            columns=self.action_columns,
+            show="headings",
+            height=12,
+            selectmode="extended",
+        )
         self.actions_tree.heading("id", text="ID")
         self.actions_tree.heading("area", text="Área")
         self.actions_tree.heading("description", text="Descripción")
@@ -498,6 +505,22 @@ class MainWindow(ttk.Frame):
         except Exception:  # noqa: BLE001
             logger.exception("No se pudo marcar la acción id=%s como hecha", action_id)
             messagebox.showerror("Error", "No se pudo actualizar la acción.")
+
+    def _mark_selected_actions_done(self) -> None:
+        selection = self.actions_tree.selection()
+        if not selection:
+            messagebox.showwarning("Atención", "Selecciona al menos una acción.")
+            return
+
+        action_ids = [int(self.actions_tree.item(iid, "values")[0]) for iid in selection]
+
+        try:
+            self.service.mark_actions_done(action_ids)
+            self.status_var.set(f"Acciones finalizadas: {len(action_ids)}")
+            self.refresh_actions()
+        except Exception:  # noqa: BLE001
+            logger.exception("No se pudieron finalizar las acciones seleccionadas: %s", action_ids)
+            messagebox.showerror("Error", "No se pudieron finalizar las acciones seleccionadas.")
 
     def _open_notion(self) -> None:
         self._open_selected_note()

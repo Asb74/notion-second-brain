@@ -230,6 +230,9 @@ class ActionsRepository:
         ).fetchone()
         return int(row["cnt"]) if row else 0
 
+    def count_open_actions(self, note_id: int) -> int:
+        return self.pending_count_by_note(note_id)
+
     def get_actions_by_note(self, note_id: int) -> list[Action]:
         rows = self.conn.execute(
             """

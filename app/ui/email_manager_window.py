@@ -723,6 +723,7 @@ class EmailManagerWindow(tk.Toplevel):
             estado=self._resolve_default_value("Estado", "default_estado", "Pendiente"),
             prioridad=self._resolve_default_value("Prioridad", "default_prioridad", "Media"),
             fecha=self._resolve_note_date(row["received_at"]),
+            email_id=str(row["gmail_id"] or "").strip(),
         )
 
     def _delete_selected_emails(self) -> None:

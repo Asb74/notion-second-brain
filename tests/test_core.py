@@ -322,6 +322,63 @@ class DedupTests(unittest.TestCase):
             "Estado",
         )
 
+
+    @patch("app.core.service.process_text")
+    def test_mark_actions_done_supports_bulk_updates(self, mock_process_text):
+        mock_process_text.return_value = ProcessedNote(
+            resumen="Resumen AI",
+            acciones=["Tarea 1", "Tarea 2"],
+            tipo_sugerido="Nota",
+            prioridad_sugerida="Media",
+        )
+        req = NoteCreateRequest(
+            title="",
+            raw_text="Texto con tareas",
+            source="manual",
+            area="Operaciones",
+            tipo="",
+            estado="Pendiente",
+            prioridad="",
+            fecha=datetime.now().date().isoformat(),
+        )
+        note_id, _ = self.service.create_note(req)
+        actions = self.service.actions_repo.get_actions_by_note(note_id)
+
+        self.service.mark_actions_done([action.id for action in actions])
+
+        updated_actions = self.service.actions_repo.get_actions_by_note(note_id)
+        self.assertTrue(all(action.status == "hecha" for action in updated_actions))
+        note = self.service.note_repo.get_note(note_id)
+        self.assertEqual(note.estado, "Finalizado")
+
+    @patch("app.core.service.process_text")
+    def test_mark_action_done_replies_email_when_last_task_is_completed(self, mock_process_text):
+        mock_process_text.return_value = ProcessedNote(
+            resumen="Resumen AI",
+            acciones=["Revisar", "Confirmar"],
+            tipo_sugerido="Nota",
+            prioridad_sugerida="Media",
+        )
+        req = NoteCreateRequest(
+            title="",
+            raw_text="Texto desde correo",
+            source="email_pasted",
+            area="Operaciones",
+            tipo="",
+            estado="Pendiente",
+            prioridad="",
+            fecha=datetime.now().date().isoformat(),
+            email_id="email-entry-123",
+        )
+        note_id, _ = self.service.create_note(req)
+        actions = self.service.actions_repo.get_actions_by_note(note_id)
+
+        with patch.object(self.service.outlook_service, "reply_all") as mock_reply_all:
+            self.service.mark_action_done(actions[0].id)
+            mock_reply_all.assert_not_called()
+
+            self.service.mark_action_done(actions[1].id)
+            mock_reply_all.assert_called_once_with("email-entry-123")
     @patch("app.core.service.process_text")
     def test_create_note_keeps_manual_tipo_prioridad(self, mock_process_text):
         mock_process_text.return_value = ProcessedNote(

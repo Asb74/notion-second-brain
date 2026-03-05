@@ -7,6 +7,7 @@ from datetime import datetime
 
 from app.core.hashing import compute_source_id
 from app.core.models import Action, AppSettings, Note, NoteCreateRequest, NoteStatus
+from app.core.outlook.outlook_service import OutlookService
 from app.core.normalizer import normalize_text
 from app.core.processor import process_text
 from app.integrations.notion_client import NotionClient, NotionError
@@ -37,11 +38,13 @@ class NoteService:
         settings_repo: SettingsRepository,
         masters_repo: MastersRepository,
         actions_repo: ActionsRepository,
+        outlook_service: OutlookService | None = None,
     ):
         self.note_repo = note_repo
         self.settings_repo = settings_repo
         self.masters_repo = masters_repo
         self.actions_repo = actions_repo
+        self.outlook_service = outlook_service or OutlookService()
         self.masters_repo.ensure_default_values()
 
     def get_settings(self) -> AppSettings:
@@ -142,25 +145,52 @@ class NoteService:
             return [a for a in self.actions_repo.get_actions_by_area(area) if a.status == "pendiente"]
         return self.actions_repo.get_pending_actions()
 
-    def mark_action_done(self, action_id: int) -> None:
-        self.actions_repo.mark_action_done(action_id)
-
-        action = self.actions_repo.get_action(action_id)
-        if not action:
+    def check_note_completion(self, note_id: int) -> None:
+        if self.actions_repo.count_open_actions(note_id) > 0:
             return
 
-        note = self.note_repo.get_note(action.note_id)
+        note = self.note_repo.get_note(note_id)
         if not note:
             return
 
-        if self.actions_repo.pending_count_by_note(note.id) == 0:
-            self.note_repo.update_estado(note.id, "Finalizado")
+        self.note_repo.update_estado(note.id, "Finalizado")
+
+        if note.source == "email_pasted" and note.source_id.strip():
+            try:
+                self.outlook_service.reply_all(note.source_id)
+            except Exception:  # noqa: BLE001
+                logger.exception("No se pudo abrir respuesta automática para note_id=%s email_id=%s", note.id, note.source_id)
+
+    def mark_actions_done(self, action_ids: list[int]) -> int:
+        completed_note_ids: set[int] = set()
+
+        for action_id in action_ids:
+            action = self.actions_repo.get_action(action_id)
+            if not action:
+                continue
+
+            self.actions_repo.mark_action_done(action_id)
+            completed_note_ids.add(action.note_id)
+            self._sync_action_done_with_notion(action)
+
+        for note_id in completed_note_ids:
+            self.check_note_completion(note_id)
+
+        return len(completed_note_ids)
+
+    def mark_action_done(self, action_id: int) -> None:
+        self.mark_actions_done([action_id])
+
+    def _sync_action_done_with_notion(self, action: Action) -> None:
+        note = self.note_repo.get_note(action.note_id)
+        if not note:
+            return
 
         settings = self.get_settings()
         if not settings.notion_token.strip():
             logger.warning(
                 "No se sincronizó acción id=%s con Notion por falta de token",
-                action_id,
+                action.id,
             )
             return
 
@@ -187,7 +217,7 @@ class NoteService:
         except Exception:  # noqa: BLE001
             logger.exception(
                 "No se pudo sincronizar estado en Notion para la acción id=%s (task_page=%s)",
-                action_id,
+                action.id,
                 action.notion_page_id,
             )
 
@@ -248,7 +278,7 @@ class NoteService:
 
     def create_note(self, req: NoteCreateRequest) -> tuple[int | None, str]:
         normalized = normalize_text(req.raw_text, req.source)
-        source_id = compute_source_id(normalized, req.source)
+        source_id = req.email_id.strip() if req.source == "email_pasted" and req.email_id.strip() else compute_source_id(normalized, req.source)
 
         if self.note_repo.source_exists(source_id):
             return None, "Nota duplicada detectada, no se guardó nuevamente."
