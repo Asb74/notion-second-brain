@@ -32,7 +32,7 @@ sys.modules.setdefault("googleapiclient", apiclient)
 sys.modules.setdefault("googleapiclient.discovery", discovery)
 sys.modules.setdefault("googleapiclient.errors", errors)
 
-from app.ui.email_manager_window import EmailManagerWindow, is_real_html
+from app.ui.email_manager_window import EmailManagerWindow, clean_outlook_styles, is_real_html
 
 
 class _PreviewStub:
@@ -97,6 +97,16 @@ def test_set_html_preview_uses_text_fallback_for_non_html() -> None:
 
     assert window._current_html_content == ""
     assert window.preview_html.value == "<pre>line 1\nline &lt;2&gt;</pre>"
+
+
+def test_clean_outlook_styles_removes_mso_and_list_noise() -> None:
+    raw = """{mso-level-number-format:bullet; mso-level-text:\\F0B7;}\n@list l1:level6 {mso-level-number-format:bullet; font-family:Wingdings;}\nfont-family: Times New Roman\nDe: Antonio Sánchez"""
+
+    cleaned = clean_outlook_styles(raw)
+
+    assert "mso-" not in cleaned.lower()
+    assert "@list" not in cleaned.lower()
+    assert "De: Antonio Sánchez" in cleaned
 
 
 def test_set_html_preview_keeps_html_for_real_html_content() -> None:

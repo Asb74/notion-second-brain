@@ -48,6 +48,23 @@ def is_real_html(content: str | None) -> bool:
     return any(tag in lowered_content for tag in html_tags)
 
 
+def clean_outlook_styles(text: str | None) -> str:
+    """Strip Word/Outlook style noise from plain-text bodies."""
+    if not text:
+        return ""
+
+    cleaned = re.sub(r"\{mso-[^}]+\}", "", text)
+    cleaned = re.sub(r"^\s*@list.*$", "", cleaned, flags=re.IGNORECASE | re.MULTILINE)
+
+    cleaned_lines: list[str] = []
+    for line in cleaned.splitlines():
+        if "mso-" in line.lower():
+            continue
+        cleaned_lines.append(line)
+
+    return "\n".join(cleaned_lines).strip()
+
+
 def system_log(message: str, level: str = "INFO") -> None:
     """Write timestamped messages into the system status panel."""
     if _SYSTEM_LOG_WIDGET is None:
@@ -756,7 +773,8 @@ class EmailManagerWindow(tk.Toplevel):
             preview_content = html_body
         else:
             self._current_html_content = ""
-            clean_text = html.escape(text_body)
+            clean_text = clean_outlook_styles(text_body)
+            clean_text = html.escape(clean_text)
             preview_content = f"<pre>{clean_text}</pre>"
 
         if self.preview_html is not None:
