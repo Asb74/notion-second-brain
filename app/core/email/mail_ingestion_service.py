@@ -48,21 +48,20 @@ class MailIngestionService:
             body_text, body_html, has_attachments, attachments = self._extract_body_and_attachments(payload)
             real_sender = extract_real_sender(body_text, sender)
 
-            original_from = headers["from"]
+            original_from = real_sender or headers["from"]
             original_to = headers["to"]
             original_cc = headers["cc"]
             original_reply_to = headers["reply_to"]
-            if self._should_extract_forwarded_original_headers(subject, sender, body_text):
-                forwarded = extract_forwarded_headers(body_text)
-                if forwarded.get("from"):
-                    original_from = forwarded["from"]
-                    real_sender = forwarded["from"]
-                if forwarded.get("to_list"):
-                    original_to = ", ".join(forwarded["to_list"])
-                if forwarded.get("cc_list"):
-                    original_cc = ", ".join(forwarded["cc_list"])
-                if forwarded.get("reply_to"):
-                    original_reply_to = forwarded["reply_to"]
+            forwarded = extract_forwarded_headers(body_text)
+            if forwarded.get("from"):
+                original_from = forwarded["from"]
+                real_sender = forwarded["from"]
+            if forwarded.get("to_list"):
+                original_to = ", ".join(forwarded["to_list"])
+            if forwarded.get("cc_list"):
+                original_cc = ", ".join(forwarded["cc_list"])
+            if forwarded.get("reply_to"):
+                original_reply_to = forwarded["reply_to"]
 
             received_at = self._convert_internal_date(full_message.get("internalDate"))
             email_type = self.classifier.classify(subject=subject, sender=sender, body_text=body_text)
@@ -96,6 +95,40 @@ class MailIngestionService:
 
         self.db_connection.commit()
         return processed_ids
+
+    def recompute_original_senders(self) -> int:
+        """
+        Recalculate original_from and real_sender for all stored emails.
+        Temporary maintenance tool.
+        """
+        cursor = self.db_connection.execute(
+            "SELECT gmail_id, sender, body_text FROM emails"
+        )
+
+        updated = 0
+
+        for row in cursor.fetchall():
+            gmail_id = row["gmail_id"]
+            sender = row["sender"]
+            body_text = row["body_text"] or ""
+
+            real_sender = extract_real_sender(body_text, sender)
+            original_from = real_sender or sender
+
+            self.db_connection.execute(
+                """
+                UPDATE emails
+                SET real_sender = ?, original_from = ?
+                WHERE gmail_id = ?
+                """,
+                (real_sender, original_from, gmail_id),
+            )
+
+            updated += 1
+
+        self.db_connection.commit()
+
+        return updated
 
     def ensure_table(self) -> None:
         self.db_connection.execute(
