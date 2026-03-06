@@ -1,3 +1,6 @@
+import sys
+import types
+
 from app.core.outlook.outlook_service import OutlookService
 
 
@@ -81,18 +84,53 @@ def test_reply_all_with_body_prepends_message(monkeypatch) -> None:
     class _Mail:
         def __init__(self):
             self.reply = _Reply()
+            self.displayed = False
+
+        def Display(self):
+            self.displayed = True
 
         def ReplyAll(self):
             return self.reply
 
+    class _Session:
+        def __init__(self, mail):
+            self.mail = mail
+
+        def GetItemFromID(self, _entry_id):
+            return self.mail
+
+    class _Outlook:
+        def __init__(self, mail):
+            self.Session = _Session(mail)
+
     mail = _Mail()
-    monkeypatch.setattr(OutlookService, "_find_mail_by_entry_id", staticmethod(lambda _email_id: mail))
+    win32_client = types.SimpleNamespace(Dispatch=lambda _name: _Outlook(mail))
+    monkeypatch.setitem(sys.modules, "win32com", types.SimpleNamespace(client=win32_client))
+    monkeypatch.setitem(sys.modules, "win32com.client", win32_client)
 
     service = OutlookService()
     service.reply_all_with_body("email-id", "Hola", exclude_email="gestion@empresa.com")
 
+    assert mail.displayed is True
     assert mail.reply.To == "cliente@externo.com"
     assert mail.reply.CC == "equipo@empresa.com"
     assert mail.reply.BCC == "auditoria@empresa.com"
     assert mail.reply.Body == "Hola\n\n---\nOriginal"
     assert getattr(mail.reply, "displayed", False) is True
+
+
+def test_reply_all_with_body_returns_false_when_entry_id_not_found(monkeypatch) -> None:
+    class _Session:
+        def GetItemFromID(self, _entry_id):
+            raise RuntimeError("not found")
+
+    class _Outlook:
+        Session = _Session()
+
+    win32_client = types.SimpleNamespace(Dispatch=lambda _name: _Outlook())
+    monkeypatch.setitem(sys.modules, "win32com", types.SimpleNamespace(client=win32_client))
+    monkeypatch.setitem(sys.modules, "win32com.client", win32_client)
+
+    service = OutlookService()
+
+    assert service.reply_all_with_body("email-id", "Hola") is False
