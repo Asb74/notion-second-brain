@@ -229,39 +229,42 @@ Un saludo""",
         return templates.get(tipo, templates["general"])
 
     def _handle_note_completed(self, note_id: int) -> dict[str, str | int] | None:
-        open_count = self.actions_repo.count_open_actions(note_id)
-        if open_count > 0:
+        try:
+            open_count = self.actions_repo.count_open_actions(note_id)
+            if open_count > 0:
+                return None
+
+            note = self.note_repo.get_note(note_id)
+            if not note:
+                return None
+
+            self.note_repo.update_estado(note.id, "Finalizado")
+
+            if note.source != "email_pasted" or not note.source_id.strip():
+                return None
+
+            summary = self._generate_actions_summary(note_id)
+
+            if not summary.strip():
+                summary = "• Gestión completada."
+
+            tipo = self._detect_email_type(note)
+            body = self._build_email_template(tipo, summary)
+
+            logger.info(
+                "Email reply draft prepared for note_id=%s gmail_id=%s",
+                note.id,
+                note.source_id,
+            )
+
+            return {
+                "note_id": note.id,
+                "gmail_id": note.source_id,
+                "body": body,
+            }
+        except Exception:
+            logger.exception("Error en _handle_note_completed note_id=%s", note_id)
             return None
-
-        note = self.note_repo.get_note(note_id)
-        if not note:
-            return None
-
-        self.note_repo.update_estado(note.id, "Finalizado")
-
-        if note.source != "email_pasted" or not note.source_id.strip():
-            return None
-
-        if note.email_replied == 1:
-            return None
-
-        summary = self._generate_actions_summary(note_id)
-        if not summary.strip():
-            summary = "• Gestión completada."
-
-        tipo = self._detect_email_type(note)
-        body = self._build_email_template(tipo, summary)
-
-        logger.info(
-            "Email reply draft prepared for note_id=%s gmail_id=%s",
-            note.id,
-            note.source_id,
-        )
-        return {
-            "note_id": note.id,
-            "gmail_id": note.source_id,
-            "body": body,
-        }
 
     def check_note_completion(self, note_id: int) -> dict[str, str | int] | None:
         return self._handle_note_completed(note_id)
