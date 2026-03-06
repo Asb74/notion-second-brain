@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from tkinter import messagebox
 
 from app.core.hashing import compute_source_id
 from app.core.models import Action, AppSettings, Note, NoteCreateRequest, NoteStatus
@@ -245,6 +246,16 @@ Un saludo""",
         if note.source != "email_pasted" or not note.source_id.strip():
             return
 
+        if note.email_replied == 1:
+            return
+
+        message = (
+            "Has terminado todas las tareas asociadas a este email.\n"
+            "¿Deseas preparar una respuesta?"
+        )
+        if not messagebox.askyesno("Email finalizado", message):
+            return
+
         summary = self._generate_actions_summary(note_id)
         if not summary.strip():
             summary = "• Gestión completada."
@@ -253,11 +264,15 @@ Un saludo""",
         body = self._build_email_template(tipo, summary)
 
         try:
-            self.outlook_service.reply_all_with_body(
+            created = self.outlook_service.reply_all_with_body(
                 note.source_id,
                 body,
                 exclude_email=managed_email,
             )
+            if not created:
+                return
+            self.note_repo.set_email_replied(note.id)
+            logger.info("Email reply prepared for note_id=%s", note.id)
         except Exception:  # noqa: BLE001
             logger.exception("No se pudo abrir respuesta automática para note_id=%s email_id=%s", note.id, note.source_id)
 
