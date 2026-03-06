@@ -87,9 +87,17 @@ class OutlookService:
 
         entry_id = (email_id or "").strip()
         if not entry_id:
-            raise ValueError("entry_id es obligatorio para responder el correo original")
+            raise ValueError("entry_id es obligatorio")
 
-        outlook = win32com.client.Dispatch("Outlook.Application")
+        outlook = win32com.client.DispatchEx("Outlook.Application")
+
+        try:
+            explorer = outlook.ActiveExplorer()
+            if explorer:
+                explorer.Activate()
+        except Exception:  # noqa: BLE001
+            pass
+
         session = outlook.Session
 
         try:
@@ -97,9 +105,6 @@ class OutlookService:
         except Exception:  # noqa: BLE001
             logger.warning("Email no encontrado en Outlook entry_id=%s", entry_id)
             return False
-
-        logger.info("Opening email thread entry_id=%s", entry_id)
-        mail.Display()
 
         reply = mail.ReplyAll()
         excluded = (exclude_email or "").strip().lower()

@@ -272,6 +272,7 @@ Un saludo""",
             if not created:
                 return
             self.note_repo.set_email_replied(note.id)
+            self.note_repo.update_estado(note.id, "Responded")
             logger.info("Email reply prepared for note_id=%s", note.id)
         except Exception:  # noqa: BLE001
             logger.exception("No se pudo abrir respuesta automática para note_id=%s email_id=%s", note.id, note.source_id)
