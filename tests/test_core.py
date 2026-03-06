@@ -373,17 +373,16 @@ class DedupTests(unittest.TestCase):
         note_id, _ = self.service.create_note(req)
         actions = self.service.actions_repo.get_actions_by_note(note_id)
 
-        with patch("app.core.service.messagebox.askyesno", return_value=True):
-            first_completion = self.service.mark_action_done(actions[0].id)
-            self.assertIsNone(first_completion)
+        first_completion = self.service.mark_action_done(actions[0].id)
+        self.assertIsNone(first_completion)
 
-            second_completion = self.service.mark_action_done(actions[1].id)
-            self.assertIsNotNone(second_completion)
-            assert second_completion is not None
-            self.assertEqual(second_completion["gmail_id"], "email-entry-123")
-            self.assertIn("Hemos revisado tu pedido y realizado las gestiones necesarias.", str(second_completion["body"]))
-            self.assertIn("• Revisar pedido", str(second_completion["body"]))
-            self.assertIn("• Confirmar transporte", str(second_completion["body"]))
+        second_completion = self.service.mark_action_done(actions[1].id)
+        self.assertIsNotNone(second_completion)
+        assert second_completion is not None
+        self.assertEqual(second_completion["gmail_id"], "email-entry-123")
+        self.assertIn("Hemos revisado tu pedido y realizado las gestiones necesarias.", str(second_completion["body"]))
+        self.assertIn("• Revisar pedido", str(second_completion["body"]))
+        self.assertIn("• Confirmar transporte", str(second_completion["body"]))
 
     @patch("app.core.service.process_text")
     def test_mark_action_done_uses_fallback_summary_when_actions_are_empty(self, mock_process_text):
@@ -407,10 +406,7 @@ class DedupTests(unittest.TestCase):
         note_id, _ = self.service.create_note(req)
         action = self.service.actions_repo.get_actions_by_note(note_id)[0]
 
-        with (
-            patch("app.core.service.messagebox.askyesno", return_value=True),
-            patch.object(self.service, "_generate_actions_summary", return_value="   "),
-        ):
+        with patch.object(self.service, "_generate_actions_summary", return_value="   "):
             completion = self.service.mark_action_done(action.id)
 
             self.assertIsNotNone(completion)
@@ -444,7 +440,7 @@ class DedupTests(unittest.TestCase):
 
 
     @patch("app.core.service.process_text")
-    def test_mark_action_done_does_not_reply_if_user_declines_confirmation(self, mock_process_text):
+    def test_mark_action_done_replies_even_without_user_confirmation_prompt(self, mock_process_text):
         mock_process_text.return_value = ProcessedNote(
             resumen="Resumen AI",
             acciones=["Gestionar caso"],
@@ -465,12 +461,11 @@ class DedupTests(unittest.TestCase):
         note_id, _ = self.service.create_note(req)
         action = self.service.actions_repo.get_actions_by_note(note_id)[0]
 
-        with patch("app.core.service.messagebox.askyesno", return_value=False):
-            completion = self.service.mark_action_done(action.id)
+        completion = self.service.mark_action_done(action.id)
 
-            self.assertIsNone(completion)
-            note = self.service.note_repo.get_note(note_id)
-            self.assertEqual(note.email_replied, 0)
+        self.assertIsNotNone(completion)
+        note = self.service.note_repo.get_note(note_id)
+        self.assertEqual(note.email_replied, 0)
 
     @patch("app.core.service.process_text")
     def test_mark_action_done_avoids_duplicate_email_reply(self, mock_process_text):
@@ -494,14 +489,13 @@ class DedupTests(unittest.TestCase):
         note_id, _ = self.service.create_note(req)
         action = self.service.actions_repo.get_actions_by_note(note_id)[0]
 
-        with patch("app.core.service.messagebox.askyesno", return_value=True):
-            completion = self.service.mark_action_done(action.id)
-            follow_up = self.service.check_note_completion(note_id)
+        completion = self.service.mark_action_done(action.id)
+        follow_up = self.service.check_note_completion(note_id)
 
-            self.assertIsNotNone(completion)
-            self.assertIsNotNone(follow_up)
-            note = self.service.note_repo.get_note(note_id)
-            self.assertEqual(note.email_replied, 0)
+        self.assertIsNotNone(completion)
+        self.assertIsNotNone(follow_up)
+        note = self.service.note_repo.get_note(note_id)
+        self.assertEqual(note.email_replied, 0)
 
 class DatabasePathHelper:
     @staticmethod

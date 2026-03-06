@@ -1,6 +1,7 @@
 import sqlite3
 import sys
 import types
+from unittest.mock import patch
 
 # Minimal stubs so importing UI module does not require optional google deps.
 google = types.ModuleType("google")
@@ -183,3 +184,32 @@ def test_set_response_draft_tracks_pending_note_id() -> None:
 
     assert window.response_text.value == "hola"
     assert window._pending_note_id_by_gmail_id["id-77"] == 33
+
+
+def test_select_email_by_gmail_id_warns_when_email_not_found() -> None:
+    window = EmailManagerWindow.__new__(EmailManagerWindow)
+    window.email_repo = type("Repo", (), {"get_email_content": lambda *_args: None})()
+    window._rows_by_id = {}
+    window._tab_to_types = {}
+    window._current_tab = "Prioridad"
+    window.tree = _TreeStub()
+
+    with patch("app.ui.email_manager_window.messagebox.showwarning") as showwarning:
+        selected = EmailManagerWindow.select_email_by_gmail_id(window, "missing-id")
+
+    assert selected is False
+    showwarning.assert_called_once_with("Email no encontrado", "No se encontró el correo original asociado.")
+
+
+def test_set_reply_body_delegates_to_set_response_draft() -> None:
+    window = EmailManagerWindow.__new__(EmailManagerWindow)
+    called: dict[str, int | str | None] = {}
+
+    def _capture(body: str, note_id: int | None = None) -> None:
+        called["body"] = body
+        called["note_id"] = note_id
+
+    window.set_response_draft = _capture  # type: ignore[method-assign]
+    EmailManagerWindow.set_reply_body(window, "texto de prueba", note_id=21)
+
+    assert called == {"body": "texto de prueba", "note_id": 21}

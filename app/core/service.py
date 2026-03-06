@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from tkinter import messagebox
 
 from app.core.hashing import compute_source_id
 from app.core.models import Action, AppSettings, Note, NoteCreateRequest, NoteStatus
@@ -238,22 +237,12 @@ Un saludo""",
         if not note:
             return None
 
-        settings = self.get_settings()
-        managed_email = settings.managed_email.strip().lower()
-
         self.note_repo.update_estado(note.id, "Finalizado")
 
         if note.source != "email_pasted" or not note.source_id.strip():
             return None
 
         if note.email_replied == 1:
-            return None
-
-        message = (
-            "Has terminado todas las tareas asociadas a este email.\n"
-            "¿Deseas preparar una respuesta?"
-        )
-        if not messagebox.askyesno("Email finalizado", message):
             return None
 
         summary = self._generate_actions_summary(note_id)
@@ -263,7 +252,11 @@ Un saludo""",
         tipo = self._detect_email_type(note)
         body = self._build_email_template(tipo, summary)
 
-        logger.info("Email reply draft requested for note_id=%s gmail_id=%s managed_email=%s", note.id, note.source_id, managed_email)
+        logger.info(
+            "Email reply draft prepared for note_id=%s gmail_id=%s",
+            note.id,
+            note.source_id,
+        )
         return {
             "note_id": note.id,
             "gmail_id": note.source_id,
