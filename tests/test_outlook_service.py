@@ -86,7 +86,7 @@ def test_reply_all_with_body_prepends_message(monkeypatch) -> None:
             return self.reply
 
     mail = _Mail()
-    monkeypatch.setattr(OutlookService, "_get_mail_by_id", staticmethod(lambda _email_id: mail))
+    monkeypatch.setattr(OutlookService, "_find_mail_by_entry_id", staticmethod(lambda _email_id: mail))
 
     service = OutlookService()
     service.reply_all_with_body("email-id", "Hola", exclude_email="gestion@empresa.com")
@@ -94,5 +94,5 @@ def test_reply_all_with_body_prepends_message(monkeypatch) -> None:
     assert mail.reply.To == "cliente@externo.com"
     assert mail.reply.CC == "equipo@empresa.com"
     assert mail.reply.BCC == "auditoria@empresa.com"
-    assert mail.reply.Body == "Hola\n\nOriginal"
+    assert mail.reply.Body == "Hola\n\n---\nOriginal"
     assert getattr(mail.reply, "displayed", False) is True

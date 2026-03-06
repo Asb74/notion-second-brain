@@ -51,12 +51,14 @@ class Database:
                     notion_page_id TEXT,
                     last_error TEXT,
                     attempts INTEGER NOT NULL DEFAULT 0,
-                    next_retry_at TEXT
+                    next_retry_at TEXT,
+                    email_replied INTEGER NOT NULL DEFAULT 0
                 )
                 """
             )
             self._ensure_column(conn, "notes_local", "resumen", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "notes_local", "acciones", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "notes_local", "email_replied", "INTEGER NOT NULL DEFAULT 0")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS settings (

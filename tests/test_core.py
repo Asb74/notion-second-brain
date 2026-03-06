@@ -373,7 +373,10 @@ class DedupTests(unittest.TestCase):
         note_id, _ = self.service.create_note(req)
         actions = self.service.actions_repo.get_actions_by_note(note_id)
 
-        with patch.object(self.service.outlook_service, "reply_all_with_body") as mock_reply_all:
+        with (
+            patch("app.core.service.messagebox.askyesno", return_value=True),
+            patch.object(self.service.outlook_service, "reply_all_with_body", return_value=True) as mock_reply_all,
+        ):
             self.service.mark_action_done(actions[0].id)
             mock_reply_all.assert_not_called()
 
@@ -412,8 +415,9 @@ class DedupTests(unittest.TestCase):
         action = self.service.actions_repo.get_actions_by_note(note_id)[0]
 
         with (
+            patch("app.core.service.messagebox.askyesno", return_value=True),
             patch.object(self.service, "_generate_actions_summary", return_value="   "),
-            patch.object(self.service.outlook_service, "reply_all_with_body") as mock_reply_all,
+            patch.object(self.service.outlook_service, "reply_all_with_body", return_value=True) as mock_reply_all,
         ):
             self.service.mark_action_done(action.id)
 
@@ -450,6 +454,71 @@ class DedupTests(unittest.TestCase):
         self.assertEqual(note.tipo, "Nota")
         self.assertEqual(note.prioridad, "Media")
 
+
+    @patch("app.core.service.process_text")
+    def test_mark_action_done_does_not_reply_if_user_declines_confirmation(self, mock_process_text):
+        mock_process_text.return_value = ProcessedNote(
+            resumen="Resumen AI",
+            acciones=["Gestionar caso"],
+            tipo_sugerido="Nota",
+            prioridad_sugerida="Media",
+        )
+        req = NoteCreateRequest(
+            title="",
+            raw_text="Consulta general",
+            source="email_pasted",
+            area="Operaciones",
+            tipo="",
+            estado="Pendiente",
+            prioridad="",
+            fecha=datetime.now().date().isoformat(),
+            email_id="email-entry-789",
+        )
+        note_id, _ = self.service.create_note(req)
+        action = self.service.actions_repo.get_actions_by_note(note_id)[0]
+
+        with (
+            patch("app.core.service.messagebox.askyesno", return_value=False),
+            patch.object(self.service.outlook_service, "reply_all_with_body", return_value=True) as mock_reply_all,
+        ):
+            self.service.mark_action_done(action.id)
+
+            mock_reply_all.assert_not_called()
+            note = self.service.note_repo.get_note(note_id)
+            self.assertEqual(note.email_replied, 0)
+
+    @patch("app.core.service.process_text")
+    def test_mark_action_done_avoids_duplicate_email_reply(self, mock_process_text):
+        mock_process_text.return_value = ProcessedNote(
+            resumen="Resumen AI",
+            acciones=["Gestionar caso"],
+            tipo_sugerido="Nota",
+            prioridad_sugerida="Media",
+        )
+        req = NoteCreateRequest(
+            title="",
+            raw_text="Consulta general",
+            source="email_pasted",
+            area="Operaciones",
+            tipo="",
+            estado="Pendiente",
+            prioridad="",
+            fecha=datetime.now().date().isoformat(),
+            email_id="email-entry-999",
+        )
+        note_id, _ = self.service.create_note(req)
+        action = self.service.actions_repo.get_actions_by_note(note_id)[0]
+
+        with (
+            patch("app.core.service.messagebox.askyesno", return_value=True),
+            patch.object(self.service.outlook_service, "reply_all_with_body", return_value=True) as mock_reply_all,
+        ):
+            self.service.mark_action_done(action.id)
+            self.service.check_note_completion(note_id)
+
+            mock_reply_all.assert_called_once()
+            note = self.service.note_repo.get_note(note_id)
+            self.assertEqual(note.email_replied, 1)
 
 class DatabasePathHelper:
     @staticmethod

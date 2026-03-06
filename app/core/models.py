@@ -55,6 +55,7 @@ class Note:
     last_error: Optional[str]
     attempts: int
     next_retry_at: Optional[str]
+    email_replied: int = 0
 
 
 @dataclass(slots=True)

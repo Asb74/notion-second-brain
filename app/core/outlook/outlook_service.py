@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import os
 
 from app.config.mail_config import USER_EMAIL
+
+logger = logging.getLogger(__name__)
 
 
 class OutlookService:
@@ -57,24 +60,59 @@ class OutlookService:
         return clean_main, clean_cc
 
     @staticmethod
-    def _get_mail_by_id(email_id: str):
+    def _find_mail_by_entry_id(entry_id: str):
         import win32com.client  # type: ignore[import-not-found]
 
-        if not email_id or not email_id.strip():
-            raise ValueError("email_id es obligatorio para responder el correo original")
+        normalized_id = (entry_id or "").strip()
+        if not normalized_id:
+            raise ValueError("entry_id es obligatorio para responder el correo original")
 
         outlook = win32com.client.Dispatch("Outlook.Application")
-        namespace = outlook.GetNamespace("MAPI")
-        return namespace.GetItemFromID(email_id.strip())
+        session = outlook.Session
 
+        try:
+            return session.GetItemFromID(normalized_id)
+        except Exception:  # noqa: BLE001
+            logger.debug("GetItemFromID falló, iniciando búsqueda recursiva para entry_id=%s", normalized_id)
+
+        def _iter_folders(folder):
+            yield folder
+            for index in range(1, folder.Folders.Count + 1):
+                child = folder.Folders.Item(index)
+                yield from _iter_folders(child)
+
+        for store in session.Stores:
+            root = store.GetRootFolder()
+            for folder in _iter_folders(root):
+                items = folder.Items
+                for index in range(1, items.Count + 1):
+                    try:
+                        item = items.Item(index)
+                    except Exception:  # noqa: BLE001
+                        continue
+                    try:
+                        if getattr(item, "EntryID", "") == normalized_id:
+                            return item
+                    except Exception:  # noqa: BLE001
+                        continue
+
+        return None
 
     def reply_all(self, email_id: str) -> None:
-        original = self._get_mail_by_id(email_id)
+        original = self._find_mail_by_entry_id(email_id)
+        if original is None:
+            logger.warning("Mail not found in Outlook entry_id=%s", email_id)
+            return
         reply = original.ReplyAll()
         reply.Display()
 
-    def reply_all_with_body(self, email_id: str, body: str, exclude_email: str | None = None) -> None:
-        mail = self._get_mail_by_id(email_id)
+    def reply_all_with_body(self, email_id: str, body: str, exclude_email: str | None = None) -> bool:
+        entry_id = (email_id or "").strip()
+        mail = self._find_mail_by_entry_id(entry_id)
+        if mail is None:
+            logger.warning("Mail not found in Outlook entry_id=%s", entry_id)
+            return False
+
         reply = mail.ReplyAll()
         excluded = (exclude_email or "").strip().lower()
 
@@ -88,8 +126,10 @@ class OutlookService:
                 ]
                 setattr(reply, field, "; ".join(filtered))
 
-        reply.Body = f"{body}\n\n{reply.Body}"
+        reply.Body = f"{body}\n\n---\n{reply.Body}"
         reply.Display()
+        logger.info("Reply created for entry_id=%s", entry_id)
+        return True
 
     def create_draft(
         self,

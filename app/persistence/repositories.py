@@ -80,6 +80,13 @@ class NoteRepository:
         )
         self.conn.commit()
 
+    def set_email_replied(self, note_id: int) -> None:
+        self.conn.execute(
+            "UPDATE notes_local SET email_replied = 1 WHERE id = ?",
+            (note_id,),
+        )
+        self.conn.commit()
+
     def mark_error(self, note_id: int, error_msg: str, retry_after_seconds: int) -> None:
         attempts = self.conn.execute("SELECT attempts FROM notes_local WHERE id = ?", (note_id,)).fetchone()["attempts"]
         next_retry = datetime.utcnow() + timedelta(seconds=retry_after_seconds)
