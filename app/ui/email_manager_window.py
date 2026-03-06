@@ -642,10 +642,12 @@ class EmailManagerWindow(tk.Toplevel):
     def select_email_by_gmail_id(self, gmail_id: str) -> bool:
         target_id = str(gmail_id or "").strip()
         if not target_id:
+            messagebox.showwarning("Email no encontrado", "No se encontró el correo original asociado.")
             return False
 
         row = self.email_repo.get_email_content(target_id)
         if row is None:
+            messagebox.showwarning("Email no encontrado", "No se encontró el correo original asociado.")
             return False
 
         if target_id not in self._rows_by_id:
@@ -656,6 +658,7 @@ class EmailManagerWindow(tk.Toplevel):
             self.refresh_emails()
 
         if target_id not in self._rows_by_id:
+            messagebox.showwarning("Email no encontrado", "No se encontró el correo original asociado.")
             return False
 
         self.tree.selection_set((target_id,))
@@ -663,6 +666,9 @@ class EmailManagerWindow(tk.Toplevel):
         self.tree.see(target_id)
         self._refresh_preview()
         return True
+
+    def set_reply_body(self, body: str, note_id: int | None = None) -> None:
+        self.set_response_draft(body, note_id)
 
     def set_response_draft(self, body: str, note_id: int | None = None) -> None:
         self.response_text.delete("1.0", "end")

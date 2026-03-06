@@ -148,16 +148,22 @@ class MainWindow(ttk.Frame):
         if not gmail_id:
             return
 
+        message = (
+            "Has terminado todas las tareas asociadas a este email.\n"
+            "¿Deseas preparar una respuesta?"
+        )
+        if not messagebox.askyesno("Email finalizado", message):
+            return
+
         email_window = self._ensure_email_manager_window()
         if email_window is None:
             return
 
         found = email_window.select_email_by_gmail_id(gmail_id)
         if not found:
-            messagebox.showwarning("Email no encontrado", "No se encontró el correo original asociado a esta nota.")
             return
 
-        email_window.set_response_draft(body, int(note_id) if isinstance(note_id, int) else None)
+        email_window.set_reply_body(body, int(note_id) if isinstance(note_id, int) else None)
         email_window.focus_force()
 
     def _build_form(self) -> None:
