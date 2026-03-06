@@ -1205,6 +1205,8 @@ class EmailManagerWindow(tk.Toplevel):
             return
 
         try:
+            self.log("Creando borrador en Outlook...")
+            self.log(f"Destinatarios: {to_recipients} / CC: {cc_recipients}")
             to_recipient, cc_recipients = self.outlook_service.create_draft(
                 subject=draft_subject,
                 body=body,
@@ -1215,6 +1217,7 @@ class EmailManagerWindow(tk.Toplevel):
                 original_reply_to=reply_to,
                 attachment_paths=attachment_paths,
             )
+            self.log("Borrador creado correctamente")
             self.log(f"Responder a: {to_recipient} / CC: {', '.join(cc_recipients)}")
             for path in attachment_paths or []:
                 self.log(f"Adjunto añadido a borrador: {path}")
@@ -1261,6 +1264,9 @@ class EmailManagerWindow(tk.Toplevel):
                 body=forward_body,
                 attachment_paths=attachment_paths,
             )
+            self.email_repo.update_status(row["gmail_id"], "forwarded")
+            self.log(f"Email {row['gmail_id']} marcado como forwarded")
+            self.refresh_emails()
             for path in attachment_paths or []:
                 self.log(f"Adjunto añadido a borrador: {path}")
             self.log("Borrador de reenvío abierto correctamente.")
