@@ -229,14 +229,14 @@ Un saludo""",
 
         return templates.get(tipo, templates["general"])
 
-    def _handle_note_completed(self, note_id: int) -> None:
+    def _handle_note_completed(self, note_id: int) -> dict[str, str | int] | None:
         open_count = self.actions_repo.count_open_actions(note_id)
         if open_count > 0:
-            return
+            return None
 
         note = self.note_repo.get_note(note_id)
         if not note:
-            return
+            return None
 
         settings = self.get_settings()
         managed_email = settings.managed_email.strip().lower()
@@ -244,17 +244,17 @@ Un saludo""",
         self.note_repo.update_estado(note.id, "Finalizado")
 
         if note.source != "email_pasted" or not note.source_id.strip():
-            return
+            return None
 
         if note.email_replied == 1:
-            return
+            return None
 
         message = (
             "Has terminado todas las tareas asociadas a este email.\n"
             "¿Deseas preparar una respuesta?"
         )
         if not messagebox.askyesno("Email finalizado", message):
-            return
+            return None
 
         summary = self._generate_actions_summary(note_id)
         if not summary.strip():
@@ -263,25 +263,19 @@ Un saludo""",
         tipo = self._detect_email_type(note)
         body = self._build_email_template(tipo, summary)
 
-        try:
-            created = self.outlook_service.reply_all_with_body(
-                note.source_id,
-                body,
-                exclude_email=managed_email,
-            )
-            if not created:
-                return
-            self.note_repo.set_email_replied(note.id)
-            self.note_repo.update_estado(note.id, "Responded")
-            logger.info("Email reply prepared for note_id=%s", note.id)
-        except Exception:  # noqa: BLE001
-            logger.exception("No se pudo abrir respuesta automática para note_id=%s email_id=%s", note.id, note.source_id)
+        logger.info("Email reply draft requested for note_id=%s gmail_id=%s managed_email=%s", note.id, note.source_id, managed_email)
+        return {
+            "note_id": note.id,
+            "gmail_id": note.source_id,
+            "body": body,
+        }
 
-    def check_note_completion(self, note_id: int) -> None:
-        self._handle_note_completed(note_id)
+    def check_note_completion(self, note_id: int) -> dict[str, str | int] | None:
+        return self._handle_note_completed(note_id)
 
-    def mark_actions_done(self, action_ids: list[int]) -> int:
+    def mark_actions_done(self, action_ids: list[int]) -> list[dict[str, str | int]]:
         completed_note_ids: set[int] = set()
+        completion_events: list[dict[str, str | int]] = []
 
         for action_id in action_ids:
             action = self.actions_repo.get_action(action_id)
@@ -293,12 +287,20 @@ Un saludo""",
             self._sync_action_done_with_notion(action)
 
         for note_id in completed_note_ids:
-            self.check_note_completion(note_id)
+            completion = self.check_note_completion(note_id)
+            if completion:
+                completion_events.append(completion)
 
-        return len(completed_note_ids)
+        return completion_events
 
-    def mark_action_done(self, action_id: int) -> None:
-        self.mark_actions_done([action_id])
+    def mark_action_done(self, action_id: int) -> dict[str, str | int] | None:
+        completions = self.mark_actions_done([action_id])
+        if completions:
+            return completions[0]
+        return None
+
+    def get_note_by_source(self, source: str, source_id: str) -> Note | None:
+        return self.note_repo.get_note_by_source(source, source_id)
 
     def _sync_action_done_with_notion(self, action: Action) -> None:
         note = self.note_repo.get_note(action.note_id)

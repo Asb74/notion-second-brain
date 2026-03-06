@@ -54,6 +54,13 @@ class NoteRepository:
         row = self.conn.execute("SELECT * FROM notes_local WHERE id = ?", (note_id,)).fetchone()
         return self._to_note(row) if row else None
 
+    def get_note_by_source(self, source: str, source_id: str) -> Optional[Note]:
+        row = self.conn.execute(
+            "SELECT * FROM notes_local WHERE source = ? AND source_id = ? ORDER BY id DESC LIMIT 1",
+            (source, source_id),
+        ).fetchone()
+        return self._to_note(row) if row else None
+
     def list_retryable(self, now_iso: str) -> list[Note]:
         rows = self.conn.execute(
             """
