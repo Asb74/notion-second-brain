@@ -373,24 +373,17 @@ class DedupTests(unittest.TestCase):
         note_id, _ = self.service.create_note(req)
         actions = self.service.actions_repo.get_actions_by_note(note_id)
 
-        with (
-            patch("app.core.service.messagebox.askyesno", return_value=True),
-            patch.object(self.service.outlook_service, "reply_all_with_body", return_value=True) as mock_reply_all,
-        ):
-            self.service.mark_action_done(actions[0].id)
-            mock_reply_all.assert_not_called()
+        with patch("app.core.service.messagebox.askyesno", return_value=True):
+            first_completion = self.service.mark_action_done(actions[0].id)
+            self.assertIsNone(first_completion)
 
-            self.service.mark_action_done(actions[1].id)
-            mock_reply_all.assert_called_once()
-            called_email_id, called_body = mock_reply_all.call_args[0]
-            self.assertEqual(called_email_id, "email-entry-123")
-            self.assertIn("Hemos revisado tu pedido y realizado las gestiones necesarias.", called_body)
-            self.assertIn("• Revisar pedido", called_body)
-            self.assertIn("• Confirmar transporte", called_body)
-            self.assertEqual(
-                mock_reply_all.call_args.kwargs.get("exclude_email"),
-                self.service.get_settings().managed_email.strip().lower(),
-            )
+            second_completion = self.service.mark_action_done(actions[1].id)
+            self.assertIsNotNone(second_completion)
+            assert second_completion is not None
+            self.assertEqual(second_completion["gmail_id"], "email-entry-123")
+            self.assertIn("Hemos revisado tu pedido y realizado las gestiones necesarias.", str(second_completion["body"]))
+            self.assertIn("• Revisar pedido", str(second_completion["body"]))
+            self.assertIn("• Confirmar transporte", str(second_completion["body"]))
 
     @patch("app.core.service.process_text")
     def test_mark_action_done_uses_fallback_summary_when_actions_are_empty(self, mock_process_text):
@@ -417,18 +410,13 @@ class DedupTests(unittest.TestCase):
         with (
             patch("app.core.service.messagebox.askyesno", return_value=True),
             patch.object(self.service, "_generate_actions_summary", return_value="   "),
-            patch.object(self.service.outlook_service, "reply_all_with_body", return_value=True) as mock_reply_all,
         ):
-            self.service.mark_action_done(action.id)
+            completion = self.service.mark_action_done(action.id)
 
-            mock_reply_all.assert_called_once()
-            called_email_id, called_body = mock_reply_all.call_args[0]
-            self.assertEqual(called_email_id, "email-entry-456")
-            self.assertIn("• Gestión completada.", called_body)
-            self.assertEqual(
-                mock_reply_all.call_args.kwargs.get("exclude_email"),
-                self.service.get_settings().managed_email.strip().lower(),
-            )
+            self.assertIsNotNone(completion)
+            assert completion is not None
+            self.assertEqual(completion["gmail_id"], "email-entry-456")
+            self.assertIn("• Gestión completada.", str(completion["body"]))
 
     @patch("app.core.service.process_text")
     def test_create_note_keeps_manual_tipo_prioridad(self, mock_process_text):
@@ -477,13 +465,10 @@ class DedupTests(unittest.TestCase):
         note_id, _ = self.service.create_note(req)
         action = self.service.actions_repo.get_actions_by_note(note_id)[0]
 
-        with (
-            patch("app.core.service.messagebox.askyesno", return_value=False),
-            patch.object(self.service.outlook_service, "reply_all_with_body", return_value=True) as mock_reply_all,
-        ):
-            self.service.mark_action_done(action.id)
+        with patch("app.core.service.messagebox.askyesno", return_value=False):
+            completion = self.service.mark_action_done(action.id)
 
-            mock_reply_all.assert_not_called()
+            self.assertIsNone(completion)
             note = self.service.note_repo.get_note(note_id)
             self.assertEqual(note.email_replied, 0)
 
@@ -509,16 +494,14 @@ class DedupTests(unittest.TestCase):
         note_id, _ = self.service.create_note(req)
         action = self.service.actions_repo.get_actions_by_note(note_id)[0]
 
-        with (
-            patch("app.core.service.messagebox.askyesno", return_value=True),
-            patch.object(self.service.outlook_service, "reply_all_with_body", return_value=True) as mock_reply_all,
-        ):
-            self.service.mark_action_done(action.id)
-            self.service.check_note_completion(note_id)
+        with patch("app.core.service.messagebox.askyesno", return_value=True):
+            completion = self.service.mark_action_done(action.id)
+            follow_up = self.service.check_note_completion(note_id)
 
-            mock_reply_all.assert_called_once()
+            self.assertIsNotNone(completion)
+            self.assertIsNotNone(follow_up)
             note = self.service.note_repo.get_note(note_id)
-            self.assertEqual(note.email_replied, 1)
+            self.assertEqual(note.email_replied, 0)
 
 class DatabasePathHelper:
     @staticmethod

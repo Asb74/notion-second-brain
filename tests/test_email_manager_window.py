@@ -119,3 +119,67 @@ def test_set_html_preview_keeps_html_for_real_html_content() -> None:
 
     assert window._current_html_content == "<div><p>ok</p></div>"
     assert window.preview_html.value == "<div><p>ok</p></div>"
+
+class _TreeStub:
+    def __init__(self) -> None:
+        self.selected = ()
+        self.focused = None
+        self.seen = None
+
+    def selection_set(self, ids):
+        self.selected = tuple(ids)
+
+    def focus(self, iid):
+        self.focused = iid
+
+    def see(self, iid):
+        self.seen = iid
+
+    def selection(self):
+        return self.selected
+
+
+class _TextStub:
+    def __init__(self) -> None:
+        self.value = ""
+
+    def delete(self, *_args) -> None:
+        self.value = ""
+
+    def insert(self, _index: str, text: str) -> None:
+        self.value = text
+
+
+def test_select_email_by_gmail_id_selects_row_and_refreshes_preview() -> None:
+    window = EmailManagerWindow.__new__(EmailManagerWindow)
+    window.email_repo = type("Repo", (), {"get_email_content": lambda *_args: {"type": "priority"}})()
+    window._rows_by_id = {"id-1": {"gmail_id": "id-1"}}
+    window._tab_to_types = {"Prioridad": ["priority"]}
+    window._current_tab = "Prioridad"
+    window._set_tab_by_label = lambda _label: None
+    window.refresh_emails = lambda: None
+    refreshed = {"called": False}
+    window._refresh_preview = lambda: refreshed.update(called=True)
+    window.tree = _TreeStub()
+
+    selected = EmailManagerWindow.select_email_by_gmail_id(window, "id-1")
+
+    assert selected is True
+    assert window.tree.selected == ("id-1",)
+    assert window.tree.focused == "id-1"
+    assert window.tree.seen == "id-1"
+    assert refreshed["called"] is True
+
+
+def test_set_response_draft_tracks_pending_note_id() -> None:
+    window = EmailManagerWindow.__new__(EmailManagerWindow)
+    window.response_text = _TextStub()
+    tree = _TreeStub()
+    tree.selection_set(("id-77",))
+    window.tree = tree
+    window._pending_note_id_by_gmail_id = {}
+
+    EmailManagerWindow.set_response_draft(window, "hola", note_id=33)
+
+    assert window.response_text.value == "hola"
+    assert window._pending_note_id_by_gmail_id["id-77"] == 33

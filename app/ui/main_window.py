@@ -111,14 +111,14 @@ class MainWindow(ttk.Frame):
     def _open_masters_dialog(self, category: str) -> None:
         MastersDialog(self.master, self.service, category, self._load_master_values)
 
-    def _open_email_manager(self) -> None:
+    def _ensure_email_manager_window(self) -> EmailManagerWindow | None:
         if self.db_connection is None:
             messagebox.showerror("Error", "No hay conexión de base de datos disponible para emails.")
-            return
+            return None
 
         if self._email_window is not None and self._email_window.winfo_exists():
             self._email_window.focus_set()
-            return
+            return self._email_window
 
         try:
             from app.core.email.gmail_client import GmailClient
@@ -128,9 +128,37 @@ class MainWindow(ttk.Frame):
             token_path.parent.mkdir(parents=True, exist_ok=True)
             gmail_client = GmailClient(str(credentials_path), str(token_path))
             self._email_window = EmailManagerWindow(self.master, self.service, self.db_connection, gmail_client)
+            return self._email_window
         except Exception as exc:  # noqa: BLE001
             logger.exception("No se pudo abrir la ventana de gestión de emails")
             messagebox.showerror("Error", f"No se pudo abrir la gestión de emails.\n\n{exc}")
+            return None
+
+    def _open_email_manager(self) -> None:
+        self._ensure_email_manager_window()
+
+    def _process_completion_event(self, completion: dict[str, str | int] | None) -> None:
+        if not completion:
+            return
+
+        gmail_id = str(completion.get("gmail_id", "")).strip()
+        body = str(completion.get("body", "")).strip()
+        note_id = completion.get("note_id")
+
+        if not gmail_id:
+            return
+
+        email_window = self._ensure_email_manager_window()
+        if email_window is None:
+            return
+
+        found = email_window.select_email_by_gmail_id(gmail_id)
+        if not found:
+            messagebox.showwarning("Email no encontrado", "No se encontró el correo original asociado a esta nota.")
+            return
+
+        email_window.set_response_draft(body, int(note_id) if isinstance(note_id, int) else None)
+        email_window.focus_force()
 
     def _build_form(self) -> None:
         style = ttk.Style(self)
@@ -499,7 +527,8 @@ class MainWindow(ttk.Frame):
 
         action_id = int(self.actions_tree.item(selection[0], "values")[0])
         try:
-            self.service.mark_action_done(action_id)
+            completion = self.service.mark_action_done(action_id)
+            self._process_completion_event(completion)
             self.status_var.set(f"Acción {action_id} marcada como hecha")
             self.refresh_actions()
         except Exception:  # noqa: BLE001
@@ -515,7 +544,9 @@ class MainWindow(ttk.Frame):
         action_ids = [int(self.actions_tree.item(iid, "values")[0]) for iid in selection]
 
         try:
-            self.service.mark_actions_done(action_ids)
+            completions = self.service.mark_actions_done(action_ids)
+            for completion in completions:
+                self._process_completion_event(completion)
             self.status_var.set(f"Acciones finalizadas: {len(action_ids)}")
             self.refresh_actions()
         except Exception:  # noqa: BLE001

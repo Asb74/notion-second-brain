@@ -186,6 +186,7 @@ class EmailManagerWindow(tk.Toplevel):
         self.detected_cliente_var = tk.StringVar(value="")
         self.detected_persona_var = tk.StringVar(value="")
         self.detected_accion_var = tk.StringVar(value="")
+        self._pending_note_id_by_gmail_id: dict[str, int] = {}
 
         self._build_layout()
         self.refresh_emails()
@@ -637,6 +638,39 @@ class EmailManagerWindow(tk.Toplevel):
             self.tree.insert("", "end", iid=iid, values=values)
             if iid in selected_ids:
                 self.tree.selection_add(iid)
+
+    def select_email_by_gmail_id(self, gmail_id: str) -> bool:
+        target_id = str(gmail_id or "").strip()
+        if not target_id:
+            return False
+
+        row = self.email_repo.get_email_content(target_id)
+        if row is None:
+            return False
+
+        if target_id not in self._rows_by_id:
+            email_type = row["type"] or "other"
+            tab_label = next((label for label, types in self._tab_to_types.items() if email_type in types), self._current_tab)
+            if tab_label != self._current_tab:
+                self._set_tab_by_label(tab_label)
+            self.refresh_emails()
+
+        if target_id not in self._rows_by_id:
+            return False
+
+        self.tree.selection_set((target_id,))
+        self.tree.focus(target_id)
+        self.tree.see(target_id)
+        self._refresh_preview()
+        return True
+
+    def set_response_draft(self, body: str, note_id: int | None = None) -> None:
+        self.response_text.delete("1.0", "end")
+        self.response_text.insert("1.0", body or "")
+
+        selection = self.tree.selection()
+        if len(selection) == 1 and note_id is not None:
+            self._pending_note_id_by_gmail_id[str(selection[0])] = note_id
 
     def _move_selected_emails(self) -> None:
         selected_ids = self._selected_ids()
@@ -1223,6 +1257,16 @@ class EmailManagerWindow(tk.Toplevel):
                 self.log(f"Adjunto añadido a borrador: {path}")
             self.log("Borrador de Outlook abierto correctamente.")
 
+            gmail_id = str(row["gmail_id"])
+            note_id = self._pending_note_id_by_gmail_id.get(gmail_id)
+            if note_id is None:
+                note = self.note_service.get_note_by_source("email_pasted", gmail_id)
+                note_id = note.id if note else None
+            if note_id is not None:
+                self.note_service.note_repo.update_estado(note_id, "Responded")
+                self.note_service.note_repo.set_email_replied(note_id)
+                self.log(f"Nota {note_id} actualizada a Responded")
+
             if self._is_trainable_response(body, row["category"]):
                 save = messagebox.askyesno(
                     "Entrenamiento",
@@ -1266,6 +1310,15 @@ class EmailManagerWindow(tk.Toplevel):
             )
             self.email_repo.update_status(row["gmail_id"], "forwarded")
             self.log(f"Email {row['gmail_id']} marcado como forwarded")
+            gmail_id = str(row["gmail_id"])
+            note_id = self._pending_note_id_by_gmail_id.get(gmail_id)
+            if note_id is None:
+                note = self.note_service.get_note_by_source("email_pasted", gmail_id)
+                note_id = note.id if note else None
+            if note_id is not None:
+                self.note_service.note_repo.update_estado(note_id, "Forwarded")
+                self.note_service.note_repo.set_email_replied(note_id)
+                self.log(f"Nota {note_id} actualizada a Forwarded")
             self.refresh_emails()
             for path in attachment_paths or []:
                 self.log(f"Adjunto añadido a borrador: {path}")
