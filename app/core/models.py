@@ -28,6 +28,7 @@ class NoteCreateRequest:
     prioridad: str
     fecha: str
     hora_inicio: Optional[str] = None
+    duracion: Optional[int] = None
     hora_fin: Optional[str] = None
     title: str = ""
     resumen: str = ""
@@ -53,6 +54,7 @@ class Note:
     prioridad: str
     fecha: str
     hora_inicio: Optional[str]
+    duracion: Optional[int]
     hora_fin: Optional[str]
     resumen: str
     acciones: str

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import queue
-import re
 import sqlite3
 import threading
 import tkinter as tk
@@ -30,6 +29,29 @@ from app.ui.settings_dialog import SettingsDialog
 from app.ui.user_profile_window import UserProfileWindow
 
 logger = logging.getLogger(__name__)
+
+def generar_intervalos_15() -> list[str]:
+    """Genera intervalos de 15 minutos para un día completo."""
+    horas: list[str] = []
+    for h in range(24):
+        for m in [0, 15, 30, 45]:
+            horas.append(f"{h:02d}:{m:02d}")
+    return horas
+
+
+def calcular_hora_fin(hora_inicio: str, duracion_minutos: int) -> str:
+    """Calcula hora fin desde una hora de inicio y duración en minutos."""
+    inicio = datetime.strptime(hora_inicio, "%H:%M")
+    fin = inicio + timedelta(minutes=duracion_minutos)
+    return fin.strftime("%H:%M")
+
+
+def duracion_desde_etiqueta(etiqueta: str) -> int:
+    """Convierte una etiqueta de duración (ej. "60 min") a minutos."""
+    try:
+        return int(str(etiqueta).strip().split()[0])
+    except (TypeError, ValueError, IndexError):
+        return 60
 
 
 class MainWindow(ttk.Frame):
@@ -253,13 +275,36 @@ class MainWindow(ttk.Frame):
         self.event_time_frame.grid(row=3, column=0, columnspan=10, sticky="ew", padx=6, pady=(0, 6))
         ttk.Label(self.event_time_frame, text="Hora inicio").grid(row=0, column=0, padx=6, pady=2, sticky="e")
         self.hora_inicio_var = tk.StringVar()
-        self.hora_inicio_entry = ttk.Entry(self.event_time_frame, textvariable=self.hora_inicio_var, width=10)
-        self.hora_inicio_entry.grid(row=0, column=1, padx=6, pady=2, sticky="w")
+        self.hora_inicio_combo = ttk.Combobox(
+            self.event_time_frame,
+            textvariable=self.hora_inicio_var,
+            state="readonly",
+            width=10,
+            values=generar_intervalos_15(),
+        )
+        self.hora_inicio_combo.grid(row=0, column=1, padx=6, pady=2, sticky="w")
 
-        ttk.Label(self.event_time_frame, text="Hora fin").grid(row=0, column=2, padx=6, pady=2, sticky="e")
+        self.hora_selector = tk.Listbox(self.event_time_frame, height=8, exportselection=False)
+        for hora in generar_intervalos_15():
+            self.hora_selector.insert(tk.END, hora)
+        self.hora_selector.grid(row=1, column=0, columnspan=2, padx=6, pady=2, sticky="ew")
+        self.hora_selector.bind("<<ListboxSelect>>", self._on_hora_inicio_selected)
+
+        ttk.Label(self.event_time_frame, text="Duración").grid(row=0, column=2, padx=6, pady=2, sticky="e")
+        self.duracion_var = tk.StringVar(value="60 min")
+        self.duracion_combo = ttk.Combobox(
+            self.event_time_frame,
+            textvariable=self.duracion_var,
+            state="readonly",
+            width=10,
+            values=["15 min", "30 min", "45 min", "60 min", "90 min", "120 min"],
+        )
+        self.duracion_combo.grid(row=0, column=3, padx=6, pady=2, sticky="w")
+        self.duracion_combo.bind("<<ComboboxSelected>>", self._on_duracion_changed)
+
+        ttk.Label(self.event_time_frame, text="Hora fin").grid(row=1, column=2, padx=6, pady=2, sticky="e")
         self.hora_fin_var = tk.StringVar()
-        self.hora_fin_entry = ttk.Entry(self.event_time_frame, textvariable=self.hora_fin_var, width=10)
-        self.hora_fin_entry.grid(row=0, column=3, padx=6, pady=2, sticky="w")
+        ttk.Label(self.event_time_frame, textvariable=self.hora_fin_var).grid(row=1, column=3, padx=6, pady=2, sticky="w")
         self.event_time_frame.columnconfigure(5, weight=1)
 
         for column in (1, 3):
@@ -432,15 +477,12 @@ class MainWindow(ttk.Frame):
 
         tipo = self.tipo_var.get().strip() or "Nota"
         hora_inicio = self.hora_inicio_var.get().strip() or None
-        hora_fin = self.hora_fin_var.get().strip() or None
+        duracion = duracion_desde_etiqueta(self.duracion_var.get()) if tipo.lower() == "evento" else None
+        hora_fin = calcular_hora_fin(hora_inicio, duracion) if tipo.lower() == "evento" and hora_inicio and duracion else None
 
-        if tipo.lower() == "evento":
-            if hora_inicio is None or not self._is_valid_time(hora_inicio):
-                messagebox.showwarning("Validación", "La hora de inicio del evento debe tener formato HH:MM.")
-                return
-            if hora_fin is not None and not self._is_valid_time(hora_fin):
-                messagebox.showwarning("Validación", "La hora de fin debe tener formato HH:MM.")
-                return
+        if tipo.lower() == "evento" and hora_inicio is None:
+            messagebox.showwarning("Validación", "Selecciona una hora de inicio para el evento.")
+            return
 
         req = NoteCreateRequest(
             title=self.title_var.get().strip(),
@@ -452,6 +494,7 @@ class MainWindow(ttk.Frame):
             prioridad=self.prioridad_var.get().strip() or "Media",
             fecha=self.date_entry.get_date().isoformat(),
             hora_inicio=hora_inicio,
+            duracion=duracion,
             hora_fin=hora_fin,
         )
         note_id, msg = self.service.create_note(req)
@@ -476,6 +519,7 @@ class MainWindow(ttk.Frame):
             self.text_widget.delete("1.0", "end")
             self.title_var.set("")
             self.hora_inicio_var.set("")
+            self.duracion_var.set("60 min")
             self.hora_fin_var.set("")
         self.refresh_notes()
         self.refresh_actions()
@@ -490,13 +534,26 @@ class MainWindow(ttk.Frame):
         else:
             self.event_time_frame.grid_remove()
             self.hora_inicio_var.set("")
+            self.duracion_var.set("60 min")
             self.hora_fin_var.set("")
 
-    @staticmethod
-    def _is_valid_time(value: str) -> bool:
-        if not re.fullmatch(r"([01]\d|2[0-3]):([0-5]\d)", value):
-            return False
-        return True
+
+    def _on_hora_inicio_selected(self, _event: tk.Event | None = None) -> None:
+        selection = self.hora_selector.curselection()
+        if not selection:
+            return
+        value = str(self.hora_selector.get(selection[0]))
+        self.hora_inicio_var.set(value)
+        if self.tipo_var.get().strip().lower() == "evento":
+            self.hora_fin_var.set(calcular_hora_fin(value, duracion_desde_etiqueta(self.duracion_var.get())))
+
+
+    def _on_duracion_changed(self, _event: tk.Event | None = None) -> None:
+        hora_inicio = self.hora_inicio_var.get().strip()
+        if not hora_inicio:
+            return
+        self.hora_fin_var.set(calcular_hora_fin(hora_inicio, duracion_desde_etiqueta(self.duracion_var.get())))
+
 
     def _create_google_calendar_event(self, titulo: str, descripcion: str, fecha: str, hora_inicio: str, hora_fin: str | None) -> dict | None:
         try:

@@ -34,6 +34,7 @@ class NotionClientCreatePageTests(unittest.TestCase):
             prioridad="Media",
             fecha="2025-01-01",
             hora_inicio=None,
+            duracion=None,
             hora_fin=None,
             resumen="",
             acciones="",
