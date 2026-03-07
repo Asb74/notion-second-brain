@@ -20,8 +20,8 @@ class NoteRepository:
         cursor = self.conn.execute(
             """
             INSERT INTO notes_local (
-                created_at, source, source_id, title, raw_text, area, tipo, estado, prioridad, fecha, hora_inicio, hora_fin, resumen, acciones, status, google_event_id, google_calendar_link
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                created_at, source, source_id, title, raw_text, area, tipo, estado, prioridad, fecha, hora_inicio, duracion, hora_fin, resumen, acciones, status, google_event_id, google_calendar_link
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 created_at,
@@ -35,6 +35,7 @@ class NoteRepository:
                 req.prioridad,
                 req.fecha,
                 req.hora_inicio,
+                req.duracion,
                 req.hora_fin,
                 req.resumen,
                 req.acciones,

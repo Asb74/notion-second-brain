@@ -46,6 +46,7 @@ class Database:
                     prioridad TEXT NOT NULL,
                     fecha TEXT NOT NULL,
                     hora_inicio TEXT,
+                    duracion INTEGER,
                     hora_fin TEXT,
                     resumen TEXT NOT NULL DEFAULT '',
                     acciones TEXT NOT NULL DEFAULT '',
@@ -63,6 +64,7 @@ class Database:
             self._ensure_column(conn, "notes_local", "resumen", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "notes_local", "acciones", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "notes_local", "hora_inicio", "TEXT")
+            self._ensure_column(conn, "notes_local", "duracion", "INTEGER")
             self._ensure_column(conn, "notes_local", "hora_fin", "TEXT")
             self._ensure_column(conn, "notes_local", "email_replied", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "notes_local", "google_event_id", "TEXT NOT NULL DEFAULT ''")
