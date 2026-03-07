@@ -24,7 +24,11 @@ class CalendarManagerWindow(ttk.Frame):
         super().__init__(master, padding=10)
         self.note_service = note_service
         self.calendar_client: GoogleCalendarClient | None = None
-        self.current_month = date.today().replace(day=1)
+        self.current_date = date.today()
+        self.current_month = self.current_date.replace(day=1)
+        self.view_mode = "month"
+        self.calendar_events: list[dict] = []
+        self.notes_with_dates: list[Note] = []
         self._label_metadata: dict[str, dict[str, str | int]] = {}
         self._events_by_day: dict[date, list[dict[str, str | int]]] = {}
 
@@ -36,9 +40,11 @@ class CalendarManagerWindow(ttk.Frame):
         style.configure("DayNumber.TLabel", font=("TkDefaultFont", 9, "bold"))
         style.configure("Item.TLabel", foreground="#1f2937")
         style.configure("MoreItems.TLabel", foreground="#4b5563")
+        style.configure("Time.TLabel", foreground="#4b5563")
 
         self._build_toolbar()
-        self._build_calendar_grid()
+        self.calendar_body = ttk.Frame(self)
+        self.calendar_body.pack(fill="both", expand=True)
         self._initialize_client()
         self._refresh_data()
 
@@ -65,19 +71,38 @@ class CalendarManagerWindow(ttk.Frame):
             padx=(0, 6),
         )
 
+        ttk.Button(toolbar, text="Día", command=self._set_view_day, style="Toolbar.TButton").grid(
+            row=0,
+            column=3,
+            sticky="w",
+            padx=(8, 4),
+        )
+        ttk.Button(toolbar, text="Semana", command=self._set_view_week, style="Toolbar.TButton").grid(
+            row=0,
+            column=4,
+            sticky="w",
+            padx=4,
+        )
+        ttk.Button(toolbar, text="Mes", command=self._set_view_month, style="Toolbar.TButton").grid(
+            row=0,
+            column=5,
+            sticky="w",
+            padx=(4, 10),
+        )
+
         self.month_label = ttk.Label(toolbar, text="", style="CalendarHeader.TLabel")
-        self.month_label.grid(row=0, column=3, sticky="ew")
+        self.month_label.grid(row=0, column=6, sticky="ew")
 
         ttk.Button(toolbar, text="Actualizar", command=self._refresh_data, style="Toolbar.TButton").grid(
             row=0,
-            column=4,
+            column=7,
             sticky="e",
         )
 
-        toolbar.columnconfigure(3, weight=1)
+        toolbar.columnconfigure(6, weight=1)
 
-    def _build_calendar_grid(self) -> None:
-        container = ttk.Frame(self)
+    def _build_month_grid(self) -> None:
+        container = ttk.Frame(self.calendar_body)
         container.pack(fill="both", expand=True)
 
         weekday_names = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
@@ -132,32 +157,78 @@ class CalendarManagerWindow(ttk.Frame):
             messagebox.showerror("Agenda", "No se pudo conectar con Google Calendar")
 
     def _refresh_data(self) -> None:
-        self._events_by_day = self._load_entries_by_day()
-        self._render_month()
+        self.calendar_events = self._load_calendar_events()
+        self.notes_with_dates = self._get_notes_with_date()
+        self._events_by_day = self._group_entries_by_day(self.calendar_events, self.notes_with_dates)
+        self.render_calendar()
 
     def _go_previous_month(self) -> None:
-        year = self.current_month.year
-        month = self.current_month.month - 1
-        if month < 1:
-            month = 12
-            year -= 1
-        self.current_month = date(year, month, 1)
-        self._render_month()
+        if self.view_mode == "day":
+            self.current_date -= timedelta(days=1)
+        elif self.view_mode == "week":
+            self.current_date -= timedelta(days=7)
+        else:
+            year = self.current_month.year
+            month = self.current_month.month - 1
+            if month < 1:
+                month = 12
+                year -= 1
+            self.current_month = date(year, month, 1)
+            self.current_date = self.current_month
+
+        self.current_month = self.current_date.replace(day=1)
+        self.render_calendar()
 
     def _go_next_month(self) -> None:
-        year = self.current_month.year
-        month = self.current_month.month + 1
-        if month > 12:
-            month = 1
-            year += 1
-        self.current_month = date(year, month, 1)
-        self._render_month()
+        if self.view_mode == "day":
+            self.current_date += timedelta(days=1)
+        elif self.view_mode == "week":
+            self.current_date += timedelta(days=7)
+        else:
+            year = self.current_month.year
+            month = self.current_month.month + 1
+            if month > 12:
+                month = 1
+                year += 1
+            self.current_month = date(year, month, 1)
+            self.current_date = self.current_month
+
+        self.current_month = self.current_date.replace(day=1)
+        self.render_calendar()
 
     def _go_today(self) -> None:
-        self.current_month = date.today().replace(day=1)
-        self._render_month()
+        self.current_date = date.today()
+        self.current_month = self.current_date.replace(day=1)
+        self.render_calendar()
 
-    def _render_month(self) -> None:
+    def _set_view_day(self) -> None:
+        self.view_mode = "day"
+        self.render_calendar()
+
+    def _set_view_week(self) -> None:
+        self.view_mode = "week"
+        self.render_calendar()
+
+    def _set_view_month(self) -> None:
+        self.view_mode = "month"
+        self.render_calendar()
+
+    def _clear_calendar_body(self) -> None:
+        for child in self.calendar_body.winfo_children():
+            child.destroy()
+
+    def render_calendar(self) -> None:
+        if self.view_mode == "week":
+            self._render_week_view()
+            return
+        if self.view_mode == "day":
+            self._render_day_view()
+            return
+        self._render_month_view()
+
+    def _render_month_view(self) -> None:
+        self._clear_calendar_body()
+        self._build_month_grid()
         self.month_label.configure(text=self.current_month.strftime("%B %Y").capitalize())
         self._label_metadata.clear()
 
@@ -198,30 +269,150 @@ class CalendarManagerWindow(ttk.Frame):
                     pady=(2, 0),
                 )
 
-    def _load_entries_by_day(self) -> dict[date, list[dict[str, str | int]]]:
+    def _render_week_view(self) -> None:
+        self._clear_calendar_body()
+        self._label_metadata.clear()
+
+        container = ttk.Frame(self.calendar_body)
+        container.pack(fill="both", expand=True)
+
+        week_start = self.current_date - timedelta(days=self.current_date.weekday())
+        week_end = week_start + timedelta(days=6)
+        self.month_label.configure(
+            text=f"Semana {week_start.day}–{week_end.day} {week_end.strftime('%B %Y').capitalize()}"
+        )
+
+        weekday_names = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
+        for index, day_name in enumerate(weekday_names):
+            container.columnconfigure(index, weight=1, uniform="week-col")
+            day_value = week_start + timedelta(days=index)
+
+            column = tk.Frame(
+                container,
+                bg="#ffffff",
+                highlightbackground="#d1d5db",
+                highlightthickness=1,
+                bd=0,
+                padx=6,
+                pady=6,
+            )
+            column.grid(row=0, column=index, sticky="nsew", padx=2, pady=2)
+
+            ttk.Label(column, text=f"{day_name} {day_value.day}", style="Weekday.TLabel").pack(anchor="w")
+
+            day_entries = self._events_by_day.get(day_value, [])
+            for entry in day_entries:
+                text = self._entry_label_text(entry)
+                label = ttk.Label(column, text=text, style="Item.TLabel", cursor="hand2", wraplength=165)
+                label.pack(anchor="w", fill="x", pady=1)
+                label.bind("<Double-1>", self._on_entry_double_click)
+                self._label_metadata[str(label)] = entry
+
+    def _render_day_view(self) -> None:
+        self._clear_calendar_body()
+        self._label_metadata.clear()
+        self.month_label.configure(text=self.current_date.strftime("%A %d %B %Y").capitalize())
+
+        container = ttk.Frame(self.calendar_body)
+        container.pack(fill="both", expand=True)
+        container.columnconfigure(1, weight=1)
+
+        entries = self._events_by_day.get(self.current_date, [])
+        slots = self._time_slots(entries)
+
+        entries_by_slot: dict[str, list[dict[str, str | int]]] = {}
+        for entry in entries:
+            entry_time = str(entry.get("time") or "")
+            if entry_time:
+                entries_by_slot.setdefault(entry_time, []).append(entry)
+
+        for row, slot in enumerate(slots):
+            time_label = ttk.Label(container, text=slot, style="Time.TLabel")
+            time_label.grid(row=row, column=0, sticky="nw", padx=(0, 8), pady=1)
+
+            slot_frame = tk.Frame(
+                container,
+                bg="#ffffff",
+                highlightbackground="#d1d5db",
+                highlightthickness=1,
+                bd=0,
+                padx=6,
+                pady=4,
+            )
+            slot_frame.grid(row=row, column=1, sticky="nsew", pady=1)
+
+            for entry in entries_by_slot.get(slot, []):
+                text = self._entry_label_text(entry, include_time=False)
+                label = ttk.Label(slot_frame, text=text, style="Item.TLabel", cursor="hand2", wraplength=500)
+                label.pack(anchor="w", fill="x", pady=1)
+                label.bind("<Double-1>", self._on_entry_double_click)
+                self._label_metadata[str(label)] = entry
+
+    def _time_slots(self, entries: list[dict[str, str | int]]) -> list[str]:
+        timed_entries = [str(entry.get("time")) for entry in entries if entry.get("time")]
+        if not timed_entries:
+            start_minutes = 8 * 60
+            end_minutes = 18 * 60
+        else:
+            minutes_list = [self._to_minutes(time_value) for time_value in timed_entries]
+            valid_minutes = [value for value in minutes_list if value is not None]
+            if not valid_minutes:
+                start_minutes = 8 * 60
+                end_minutes = 18 * 60
+            else:
+                start_minutes = max(0, min(valid_minutes) - 60)
+                end_minutes = min(23 * 60 + 30, max(valid_minutes) + 60)
+
+        start_minutes -= start_minutes % 30
+        end_minutes += (30 - (end_minutes % 30)) % 30
+
+        slots: list[str] = []
+        current = start_minutes
+        while current <= end_minutes:
+            slots.append(f"{current // 60:02d}:{current % 60:02d}")
+            current += 30
+        return slots
+
+    @staticmethod
+    def _to_minutes(time_value: str) -> int | None:
+        try:
+            hours, minutes = time_value.split(":")
+            return int(hours) * 60 + int(minutes)
+        except (TypeError, ValueError):
+            return None
+
+    def _load_calendar_events(self) -> list[dict]:
+        if self.calendar_client is None:
+            return []
+
+        try:
+            return self.calendar_client.list_events(days=60)
+        except Exception:  # noqa: BLE001
+            logger.exception("No se pudieron cargar eventos de Google Calendar")
+            messagebox.showerror("Agenda", "No se pudo conectar con Google Calendar")
+            return []
+
+    def _group_entries_by_day(
+        self,
+        calendar_events: list[dict],
+        notes_with_dates: list[Note],
+    ) -> dict[date, list[dict[str, str | int]]]:
         grouped: dict[date, list[dict[str, str | int]]] = {}
 
-        if self.calendar_client is not None:
-            try:
-                events = self.calendar_client.list_events(days=60)
-            except Exception:  # noqa: BLE001
-                logger.exception("No se pudieron cargar eventos de Google Calendar")
-                messagebox.showerror("Agenda", "No se pudo conectar con Google Calendar")
-                events = []
+        for event in calendar_events:
+            event_date = self._event_date(event)
+            if event_date is None:
+                continue
+            grouped.setdefault(event_date, []).append(
+                {
+                    "origin": "CALENDAR",
+                    "title": str(event.get("summary") or "(Sin título)"),
+                    "event_id": str(event.get("id") or ""),
+                    "time": self._event_time(event),
+                }
+            )
 
-            for event in events:
-                event_date = self._event_date(event)
-                if event_date is None:
-                    continue
-                grouped.setdefault(event_date, []).append(
-                    {
-                        "origin": "CALENDAR",
-                        "title": str(event.get("summary") or "(Sin título)"),
-                        "event_id": str(event.get("id") or ""),
-                    }
-                )
-
-        for note in self._get_notes_with_date():
+        for note in notes_with_dates:
             note_date = self._safe_parse_date(note.fecha)
             if note_date is None:
                 continue
@@ -230,11 +421,17 @@ class CalendarManagerWindow(ttk.Frame):
                     "origin": "NOTE",
                     "title": note.title or "(Nota sin título)",
                     "note_id": note.id,
+                    "time": "",
                 }
             )
 
         for day_items in grouped.values():
-            day_items.sort(key=lambda item: str(item.get("title", "")).lower())
+            day_items.sort(
+                key=lambda item: (
+                    str(item.get("time") or "99:99"),
+                    str(item.get("title", "")).lower(),
+                )
+            )
 
         return grouped
 
@@ -251,6 +448,17 @@ class CalendarManagerWindow(ttk.Frame):
         if not start_value:
             return None
         return CalendarManagerWindow._safe_parse_date(str(start_value))
+
+    @staticmethod
+    def _event_time(event: dict) -> str:
+        start_value = event.get("start", {}).get("dateTime")
+        if not start_value:
+            return ""
+        try:
+            normalized = str(start_value).replace("Z", "+00:00")
+            return datetime.fromisoformat(normalized).strftime("%H:%M")
+        except ValueError:
+            return ""
 
     @staticmethod
     def _safe_parse_date(value: str) -> date | None:
@@ -280,10 +488,13 @@ class CalendarManagerWindow(ttk.Frame):
         return days[:42]
 
     @staticmethod
-    def _entry_label_text(entry: dict[str, str | int]) -> str:
+    def _entry_label_text(entry: dict[str, str | int], include_time: bool = True) -> str:
+        time_prefix = ""
+        if include_time and entry.get("time"):
+            time_prefix = f"{entry.get('time')} "
         if entry.get("origin") == "NOTE":
-            return f"📌 Nota: {entry.get('title', '(Nota sin título)')}"
-        return f"📅 Evento: {entry.get('title', '(Sin título)')}"
+            return f"{time_prefix}📌 {entry.get('title', '(Nota sin título)')}"
+        return f"{time_prefix}📅 {entry.get('title', '(Sin título)')}"
 
     def _on_entry_double_click(self, event: tk.Event) -> None:
         widget = event.widget
