@@ -351,6 +351,36 @@ class DedupTests(unittest.TestCase):
         note = self.service.note_repo.get_note(note_id)
         self.assertEqual(note.estado, "Finalizado")
 
+
+    @patch("app.core.service.process_text")
+    def test_mark_actions_done_tolerates_sync_failures(self, mock_process_text):
+        mock_process_text.return_value = ProcessedNote(
+            resumen="Resumen AI",
+            acciones=["Tarea 1", "Tarea 2"],
+            tipo_sugerido="Nota",
+            prioridad_sugerida="Media",
+        )
+        req = NoteCreateRequest(
+            title="",
+            raw_text="Texto con tareas",
+            source="manual",
+            area="Operaciones",
+            tipo="",
+            estado="Pendiente",
+            prioridad="",
+            fecha=datetime.now().date().isoformat(),
+        )
+        note_id, _ = self.service.create_note(req)
+        actions = self.service.actions_repo.get_actions_by_note(note_id)
+
+        with patch.object(self.service, "_sync_action_done_with_notion", side_effect=RuntimeError("boom")):
+            self.service.mark_actions_done([action.id for action in actions])
+
+        updated_actions = self.service.actions_repo.get_actions_by_note(note_id)
+        self.assertTrue(all(action.status == "hecha" for action in updated_actions))
+        note = self.service.note_repo.get_note(note_id)
+        self.assertEqual(note.estado, "Finalizado")
+
     @patch("app.core.service.process_text")
     def test_mark_action_done_replies_email_when_last_task_is_completed(self, mock_process_text):
         mock_process_text.return_value = ProcessedNote(
