@@ -61,8 +61,8 @@ class GoogleCalendarClient:
         event = {
             "summary": title,
             "description": description,
-            "start": {"dateTime": self._to_iso(start_datetime)},
-            "end": {"dateTime": self._to_iso(end_datetime)},
+            "start": {"dateTime": self._to_iso(start_datetime), "timeZone": "Europe/Madrid"},
+            "end": {"dateTime": self._to_iso(end_datetime), "timeZone": "Europe/Madrid"},
             "reminders": {
                 "useDefault": False,
                 "overrides": [

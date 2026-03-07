@@ -33,6 +33,8 @@ class NotionClientCreatePageTests(unittest.TestCase):
             estado="Pendiente",
             prioridad="Media",
             fecha="2025-01-01",
+            hora_inicio=None,
+            hora_fin=None,
             resumen="",
             acciones="",
             status="pendiente",
