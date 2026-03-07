@@ -17,10 +17,10 @@ from tkcalendar import DateEntry
 from app.core.calendar.google_calendar_client import (
     GoogleCalendarClient,
     crear_evento_google_calendar,
-    get_calendar_service,
 )
 from app.core.models import AppSettings, NoteCreateRequest
 from app.core.service import NoteService
+from app.persistence.calendar_repository import CalendarRepository
 from app.ui.excel_filter import ExcelTreeFilter
 from app.ui.masters_dialog import MastersDialog
 from app.ui.email_manager_window import EmailManagerWindow
@@ -76,7 +76,8 @@ class MainWindow(ttk.Frame):
         self._calendar_toplevel: tk.Toplevel | None = None
         self._calendar_window: CalendarManagerWindow | None = None
         self._calendar_client: GoogleCalendarClient | None = None
-        self.calendar_service = None
+        self.calendar_repo = CalendarRepository(db_connection) if db_connection is not None else None
+        self.calendar_name_to_id: dict[str, str] = {}
         self.msg_queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self.status_var = tk.StringVar(value="Listo")
         self.pack(fill="both", expand=True)
@@ -108,6 +109,8 @@ class MainWindow(ttk.Frame):
         self._build_sections()
         self._load_master_values()
         self._refresh_database_button_state()
+        self.sync_google_calendars()
+        self._load_calendar_selector_values()
         self.refresh_notes()
         self.refresh_actions()
         self.after(150, self._poll_queue)
@@ -185,7 +188,7 @@ class MainWindow(ttk.Frame):
         toplevel.title("Agenda")
         toplevel.geometry("1120x760")
         toplevel.minsize(820, 480)
-        calendar_window = CalendarManagerWindow(toplevel, self.service)
+        calendar_window = CalendarManagerWindow(toplevel, self.service, self.calendar_repo)
         calendar_window.pack(fill="both", expand=True)
         self._calendar_toplevel = toplevel
         self._calendar_window = calendar_window
@@ -305,7 +308,17 @@ class MainWindow(ttk.Frame):
         ttk.Label(self.event_time_frame, text="Hora fin").grid(row=1, column=2, padx=6, pady=2, sticky="e")
         self.hora_fin_var = tk.StringVar()
         ttk.Label(self.event_time_frame, textvariable=self.hora_fin_var).grid(row=1, column=3, padx=6, pady=2, sticky="w")
-        self.event_time_frame.columnconfigure(5, weight=1)
+
+        ttk.Label(self.event_time_frame, text="Calendario").grid(row=0, column=4, padx=6, pady=2, sticky="e")
+        self.calendar_var = tk.StringVar()
+        self.calendar_combo = ttk.Combobox(
+            self.event_time_frame,
+            textvariable=self.calendar_var,
+            state="readonly",
+            width=24,
+        )
+        self.calendar_combo.grid(row=0, column=5, rowspan=2, padx=6, pady=2, sticky="w")
+        self.event_time_frame.columnconfigure(6, weight=1)
 
         for column in (1, 3):
             form.columnconfigure(column, weight=1)
@@ -337,6 +350,68 @@ class MainWindow(ttk.Frame):
         self.create_db_button.grid(row=0, column=create_idx, sticky="ew")
         actions.columnconfigure(create_idx, weight=1, uniform="main-actions")
         self._toggle_event_time_fields()
+
+    def sync_google_calendars(self) -> None:
+        if self.calendar_repo is None:
+            return
+
+        client = self._get_calendar_client()
+        if client is None:
+            return
+
+        try:
+            calendars = client.list_calendars()
+            now_iso = datetime.utcnow().isoformat(timespec="seconds")
+            valid_ids: list[str] = []
+            for calendar in calendars:
+                google_calendar_id = str(calendar.get("google_calendar_id") or "").strip()
+                if not google_calendar_id:
+                    continue
+                valid_ids.append(google_calendar_id)
+                self.calendar_repo.upsert_calendar(
+                    google_calendar_id=google_calendar_id,
+                    name=str(calendar.get("name") or google_calendar_id),
+                    background_color=str(calendar.get("background_color") or "#9E9E9E"),
+                    foreground_color=str(calendar.get("foreground_color") or "#000000"),
+                    is_primary=int(calendar.get("is_primary") or 0),
+                    access_role=str(calendar.get("access_role") or ""),
+                    selected=int(calendar.get("selected") if calendar.get("selected") is not None else 1),
+                    updated_at=now_iso,
+                )
+            self.calendar_repo.delete_missing_calendars(valid_ids)
+            logger.info("Calendarios sincronizados: %s", len(valid_ids))
+        except Exception:  # noqa: BLE001
+            logger.exception("Error sincronizando calendarios")
+            messagebox.showwarning("Google Calendar", "No se pudieron sincronizar los calendarios")
+
+    def _load_calendar_selector_values(self) -> None:
+        if not hasattr(self, "calendar_combo"):
+            return
+        if self.calendar_repo is None:
+            self.calendar_combo.configure(values=[])
+            self.calendar_var.set("")
+            return
+
+        calendars = self.calendar_repo.list_calendars()
+        names = [str(row["name"]) for row in calendars]
+        self.calendar_name_to_id = {str(row["name"]): str(row["google_calendar_id"]) for row in calendars}
+        self.calendar_combo.configure(values=names)
+
+        selected_name = ""
+        primary = self.calendar_repo.get_primary_calendar()
+        if primary:
+            selected_name = str(primary["name"])
+        elif names:
+            selected_name = names[0]
+
+        self.calendar_var.set(selected_name)
+
+    def _selected_google_calendar_id(self) -> str:
+        selected_name = self.calendar_var.get().strip()
+        selected_id = self.calendar_name_to_id.get(selected_name, "")
+        if selected_id:
+            return selected_id
+        return "primary"
 
     def _open_user_profile(self) -> None:
         if self.db_connection is None:
@@ -461,6 +536,8 @@ class MainWindow(ttk.Frame):
             self.service.save_settings(new_settings)
             self._apply_defaults(new_settings)
             self._refresh_database_button_state()
+            self.sync_google_calendars()
+            self._load_calendar_selector_values()
 
         SettingsDialog(self.master, current, on_save)
 
@@ -502,24 +579,28 @@ class MainWindow(ttk.Frame):
             hora_inicio=hora_inicio,
             duracion=duracion,
             hora_fin=hora_fin,
+            google_calendar_id=self._selected_google_calendar_id() if tipo.lower() == "evento" else "",
         )
         note_id, msg = self.service.create_note(req)
         if note_id is None:
             messagebox.showinfo("Duplicado", msg)
         else:
             if tipo.lower() == "evento" and hora_inicio:
+                selected_calendar_id = self._selected_google_calendar_id()
                 event_data = self._create_google_calendar_event(
                     titulo=req.title or raw_text.split("\n", 1)[0][:120] or "Sin título",
                     descripcion=raw_text,
                     fecha=req.fecha,
                     hora_inicio=hora_inicio,
                     hora_fin=hora_fin,
+                    google_calendar_id=selected_calendar_id,
                 )
                 if event_data:
                     self.service.update_note_google_event_data(
                         note_id,
                         str(event_data.get("id") or ""),
                         str(event_data.get("htmlLink") or ""),
+                        selected_calendar_id,
                     )
             messagebox.showinfo("OK", msg)
             self.text_widget.delete("1.0", "end")
@@ -561,36 +642,34 @@ class MainWindow(ttk.Frame):
         self.hora_fin_var.set(calcular_hora_fin(hora_inicio, duracion_desde_etiqueta(self.duracion_var.get())))
 
 
-    def _create_google_calendar_event(self, titulo: str, descripcion: str, fecha: str, hora_inicio: str, hora_fin: str | None) -> dict | None:
+    def _create_google_calendar_event(
+        self,
+        titulo: str,
+        descripcion: str,
+        fecha: str,
+        hora_inicio: str,
+        hora_fin: str | None,
+        google_calendar_id: str,
+    ) -> dict | None:
         try:
-            service = self._get_calendar_service()
-            if service is None:
+            client = self._get_calendar_client()
+            if client is None:
                 return None
-            return crear_evento_google_calendar(service, titulo, descripcion, fecha, hora_inicio, hora_fin)
+            event_data = crear_evento_google_calendar(
+                client.service,
+                titulo,
+                descripcion,
+                fecha,
+                hora_inicio,
+                hora_fin,
+                calendar_id=google_calendar_id,
+            )
+            logger.info("Evento creado en calendario %s", google_calendar_id)
+            return event_data
         except Exception:  # noqa: BLE001
             logger.exception("No se pudo crear el evento en Google Calendar")
             messagebox.showwarning("Google Calendar", "No se pudo crear el evento en Google Calendar")
             return None
-
-    def _get_calendar_service(self):
-        if self.calendar_service is not None:
-            return self.calendar_service
-
-        token_path = Path(r"C:\notion-second-brain\secrets\calendar_token.json")
-        if not token_path.exists():
-            token_path = Path("secrets/calendar_token.json")
-
-        try:
-            if token_path.exists():
-                self.calendar_service = get_calendar_service(str(token_path))
-                return self.calendar_service
-        except Exception:  # noqa: BLE001
-            logger.exception("No se pudo inicializar servicio directo de Google Calendar")
-
-        client = self._get_calendar_client()
-        if client is not None:
-            self.calendar_service = client.service
-        return self.calendar_service
 
     def _get_calendar_client(self) -> GoogleCalendarClient | None:
         if self._calendar_client is not None:
@@ -802,6 +881,7 @@ class MainWindow(ttk.Frame):
             webbrowser.open(note.google_calendar_link)
             return
 
+        logger.warning("No se pudo abrir evento de Google Calendar")
         messagebox.showwarning("Atención", "La nota seleccionada no tiene evento de Google Calendar asociado.")
 
     def _open_selected_note(self) -> None:

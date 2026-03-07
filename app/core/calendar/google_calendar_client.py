@@ -41,13 +41,38 @@ class GoogleCalendarClient:
 
         return build("calendar", "v3", credentials=creds)
 
-    def list_events(self, days: int = 30) -> list[dict]:
+    def list_calendars(self) -> list[dict]:
+        calendars: list[dict] = []
+        page_token: str | None = None
+
+        while True:
+            response = self.service.calendarList().list(pageToken=page_token).execute()
+            for item in response.get("items", []):
+                calendars.append(
+                    {
+                        "google_calendar_id": item["id"],
+                        "name": item["summary"],
+                        "background_color": item.get("backgroundColor", "#9E9E9E"),
+                        "foreground_color": item.get("foregroundColor", "#000000"),
+                        "is_primary": 1 if item.get("primary") else 0,
+                        "access_role": item.get("accessRole", ""),
+                        "selected": 1 if item.get("selected", True) else 0,
+                    }
+                )
+
+            page_token = response.get("nextPageToken")
+            if not page_token:
+                break
+
+        return calendars
+
+    def list_events(self, calendar_id: str = "primary", days: int = 30) -> list[dict]:
         start = datetime.now(timezone.utc)
         end = start + timedelta(days=days)
         response = (
             self.service.events()
             .list(
-                calendarId="primary",
+                calendarId=calendar_id,
                 timeMin=start.isoformat(),
                 timeMax=end.isoformat(),
                 singleEvents=True,
@@ -57,7 +82,14 @@ class GoogleCalendarClient:
         )
         return response.get("items", [])
 
-    def create_event(self, title, description, start_datetime, end_datetime):
+    def create_event(
+        self,
+        calendar_id: str,
+        title: str,
+        description: str,
+        start_datetime: datetime,
+        end_datetime: datetime,
+    ):
         event = {
             "summary": title,
             "description": description,
@@ -72,13 +104,13 @@ class GoogleCalendarClient:
                 ],
             },
         }
-        return self.service.events().insert(calendarId="primary", body=event).execute()
+        return self.service.events().insert(calendarId=calendar_id, body=event).execute()
 
-    def update_event(self, event_id, data):
-        return self.service.events().patch(calendarId="primary", eventId=event_id, body=data).execute()
+    def update_event(self, calendar_id: str, event_id: str, data: dict):
+        return self.service.events().patch(calendarId=calendar_id, eventId=event_id, body=data).execute()
 
-    def delete_event(self, event_id):
-        self.service.events().delete(calendarId="primary", eventId=event_id).execute()
+    def delete_event(self, calendar_id: str, event_id: str):
+        self.service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
 
     @staticmethod
     def _to_iso(value: str | datetime) -> str:
@@ -94,7 +126,15 @@ def get_calendar_service(token_path: str) -> object:
     return build("calendar", "v3", credentials=creds)
 
 
-def crear_evento_google_calendar(service, titulo: str, descripcion: str, fecha: str, hora_inicio: str, hora_fin: str | None):
+def crear_evento_google_calendar(
+    service,
+    titulo: str,
+    descripcion: str,
+    fecha: str,
+    hora_inicio: str,
+    hora_fin: str | None,
+    calendar_id: str = "primary",
+):
     """Create a Google Calendar event and return full API payload."""
     start_datetime = datetime.strptime(f"{fecha} {hora_inicio}", "%Y-%m-%d %H:%M")
     if hora_fin:
@@ -118,4 +158,4 @@ def crear_evento_google_calendar(service, titulo: str, descripcion: str, fecha: 
         },
     }
 
-    return service.events().insert(calendarId="primary", body=event_body).execute()
+    return service.events().insert(calendarId=calendar_id, body=event_body).execute()

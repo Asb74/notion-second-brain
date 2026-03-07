@@ -316,8 +316,14 @@ Un saludo""",
     def get_note_by_id(self, note_id: int) -> Note | None:
         return self.note_repo.get_note(note_id)
 
-    def update_note_google_event_data(self, note_id: int, google_event_id: str, google_calendar_link: str) -> None:
-        self.note_repo.update_google_event_data(note_id, google_event_id, google_calendar_link)
+    def update_note_google_event_data(
+        self,
+        note_id: int,
+        google_event_id: str,
+        google_calendar_link: str,
+        google_calendar_id: str,
+    ) -> None:
+        self.note_repo.update_google_event_data(note_id, google_event_id, google_calendar_link, google_calendar_id)
 
     def get_note_by_source(self, source: str, source_id: str) -> Note | None:
         return self.note_repo.get_note_by_source(source, source_id)

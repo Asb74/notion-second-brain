@@ -13,6 +13,7 @@ from tkinter import messagebox, ttk
 from app.core.calendar.google_calendar_client import GoogleCalendarClient
 from app.core.models import Action, Note
 from app.core.service import NoteService
+from app.persistence.calendar_repository import CalendarRepository
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +41,13 @@ class CalendarManagerWindow(ttk.Frame):
         "EVENT": EVENT_COLOR,
     }
 
-    def __init__(self, master: tk.Misc, note_service: NoteService):
+    def __init__(self, master: tk.Misc, note_service: NoteService, calendar_repo: CalendarRepository | None = None):
         super().__init__(master, padding=10)
         self.note_service = note_service
         self.calendar_client: GoogleCalendarClient | None = None
+        self.calendar_repo = calendar_repo
+        self._calendar_filter_vars: dict[str, tk.BooleanVar] = {}
+        self._calendar_color_swatches: list[tk.Frame] = []
         self.current_date = date.today()
         self.current_month = self.current_date.replace(day=1)
         self.view_mode = "month"
@@ -67,6 +71,7 @@ class CalendarManagerWindow(ttk.Frame):
         style.configure("Time.TLabel", foreground="#4b5563")
 
         self._build_toolbar()
+        self._build_calendar_filters()
         self._build_legend()
         self._build_layout()
         self._initialize_client()
@@ -92,6 +97,57 @@ class CalendarManagerWindow(ttk.Frame):
         ttk.Button(toolbar, text="Actualizar", command=self.refresh_overview, style="Toolbar.TButton").grid(row=0, column=9, padx=4)
 
         toolbar.columnconfigure(6, weight=1)
+
+    def _build_calendar_filters(self) -> None:
+        self.calendar_filters_frame = ttk.LabelFrame(self, text="Calendarios")
+        self.calendar_filters_frame.pack(fill="x", pady=(0, 8))
+
+    def _refresh_calendar_filters(self) -> None:
+        for child in self.calendar_filters_frame.winfo_children():
+            child.destroy()
+
+        if self.calendar_repo is None:
+            ttk.Label(self.calendar_filters_frame, text="Sin repositorio de calendarios disponible.").pack(anchor="w", padx=6, pady=4)
+            return
+
+        calendars = self.calendar_repo.list_calendars()
+        if not calendars:
+            ttk.Label(self.calendar_filters_frame, text="No hay calendarios sincronizados.").pack(anchor="w", padx=6, pady=4)
+            return
+
+        for idx, calendar_row in enumerate(calendars):
+            calendar_id = str(calendar_row["google_calendar_id"])
+            var = self._calendar_filter_vars.get(calendar_id)
+            if var is None:
+                var = tk.BooleanVar(value=bool(calendar_row["selected"]))
+                self._calendar_filter_vars[calendar_id] = var
+            else:
+                var.set(bool(calendar_row["selected"]))
+
+            row = ttk.Frame(self.calendar_filters_frame)
+            row.grid(row=idx // 4, column=idx % 4, sticky="w", padx=(0, 12), pady=2)
+
+            tk.Frame(
+                row,
+                width=12,
+                height=12,
+                bg=str(calendar_row["background_color"]),
+                bd=1,
+                relief="solid",
+            ).pack(side="left", padx=(0, 4))
+
+            ttk.Checkbutton(
+                row,
+                text=str(calendar_row["name"]),
+                variable=var,
+                command=lambda cid=calendar_id, v=var: self._on_toggle_calendar_filter(cid, v),
+            ).pack(side="left")
+
+    def _on_toggle_calendar_filter(self, google_calendar_id: str, var: tk.BooleanVar) -> None:
+        if self.calendar_repo is None:
+            return
+        self.calendar_repo.set_calendar_selected(google_calendar_id, 1 if var.get() else 0)
+        self.refresh_overview()
 
     def _build_legend(self) -> None:
         legend_frame = ttk.Frame(self)
@@ -178,6 +234,7 @@ class CalendarManagerWindow(ttk.Frame):
         self.detail_type_var = tk.StringVar(value="-")
         self.detail_status_var = tk.StringVar(value="-")
         self.detail_date_var = tk.StringVar(value="-")
+        self.detail_calendar_var = tk.StringVar(value="-")
 
         self.detail_canvas = tk.Canvas(self.detail_panel, highlightthickness=0)
         detail_scroll = ttk.Scrollbar(self.detail_panel, orient="vertical", command=self.detail_canvas.yview)
@@ -200,7 +257,10 @@ class CalendarManagerWindow(ttk.Frame):
         ttk.Label(metadata, text="Estado:").grid(row=0, column=2, sticky="w", padx=(0, 6))
         ttk.Label(metadata, textvariable=self.detail_status_var).grid(row=0, column=3, sticky="w", padx=(0, 20))
         ttk.Label(metadata, text="Fecha:").grid(row=0, column=4, sticky="w", padx=(0, 6))
-        ttk.Label(metadata, textvariable=self.detail_date_var).grid(row=0, column=5, sticky="w")
+        ttk.Label(metadata, textvariable=self.detail_date_var).grid(row=0, column=5, sticky="w", padx=(0, 20))
+        ttk.Label(metadata, text="Calendario:").grid(row=0, column=6, sticky="w", padx=(0, 6))
+        self.detail_calendar_label = ttk.Label(metadata, textvariable=self.detail_calendar_var)
+        self.detail_calendar_label.grid(row=0, column=7, sticky="w")
 
         self.content_text = tk.Text(self.detail_content, height=10, wrap="word")
         self.content_text.pack(fill="both", expand=True)
@@ -224,6 +284,8 @@ class CalendarManagerWindow(ttk.Frame):
         self.calendar_frame.tkraise()
 
     def _refresh_data(self) -> None:
+        self.sync_google_calendars()
+        self._refresh_calendar_filters()
         self.calendar_events = self._load_calendar_events()
         self.notes_with_dates = self._get_notes_with_date()
         self.actions = self.note_service.list_actions(limit=3000)
@@ -258,6 +320,7 @@ class CalendarManagerWindow(ttk.Frame):
             record = {
                 "kind": record_type,
                 "id": note.id,
+                "note_id": note.id,
                 "title": note.title or "(Nota sin título)",
                 "status": note.estado or "Pendiente",
                 "date": display_date,
@@ -265,6 +328,9 @@ class CalendarManagerWindow(ttk.Frame):
                 "content": note.raw_text or "",
                 "email_link": email_link,
                 "htmlLink": note.google_calendar_link or "",
+                "google_calendar_link": note.google_calendar_link or "",
+                "google_calendar_id": note.google_calendar_id or "",
+                "google_event_id": note.google_event_id or "",
             }
             self._insert_overview_record(record)
 
@@ -284,18 +350,27 @@ class CalendarManagerWindow(ttk.Frame):
             event_date = self._event_date(event)
             record = {
                 "kind": "EVENT",
-                "id": str(event.get("id") or ""),
+                "id": str(event.get("event_id") or event.get("id") or ""),
                 "title": str(event.get("summary") or "(Sin título)"),
                 "status": "Pendiente",
                 "date": event_date.isoformat() if event_date else "",
                 "content": str(event.get("description") or ""),
                 "htmlLink": str(event.get("htmlLink") or ""),
+                "calendar_name": str(event.get("calendar_name") or ""),
+                "background_color": str(event.get("background_color") or EVENT_COLOR),
+                "foreground_color": str(event.get("foreground_color") or "#000000"),
+                "google_calendar_id": str(event.get("google_calendar_id") or "primary"),
             }
             self._insert_overview_record(record)
 
     def _insert_overview_record(self, record: dict[str, str | int]) -> None:
         iid = f"{record['kind']}_{record['id']}"
         self._overview_records[iid] = record
+        tag = self._record_tag(record)
+        if str(record.get("kind") or "") == "EVENT" and tag.endswith("PENDING"):
+            bg = str(record.get("background_color") or EVENT_COLOR)
+            fg = str(record.get("foreground_color") or "#000000")
+            self.overview_tree.tag_configure(tag, background=bg, foreground=fg)
         self.overview_tree.insert(
             "",
             "end",
@@ -306,7 +381,7 @@ class CalendarManagerWindow(ttk.Frame):
                 str(record.get("status") or ""),
                 str(record.get("date") or ""),
             ),
-            tags=(self._record_tag(record),),
+            tags=(tag,),
         )
 
     def _record_tag(self, record: dict[str, str | int]) -> str:
@@ -314,6 +389,9 @@ class CalendarManagerWindow(ttk.Frame):
         kind = str(record.get("kind") or "NOTE")
         is_done = status in {"finalizado", "completado", "hecha", "done"}
         suffix = "DONE" if is_done else "PENDING"
+        if kind == "EVENT" and not is_done:
+            calendar_id = str(record.get("google_calendar_id") or "primary").replace("@", "_").replace(".", "_")
+            return f"EVENT_{calendar_id}_{suffix}"
         return f"{kind}_{suffix}"
 
     def _on_overview_select(self, _event: tk.Event) -> None:
@@ -332,8 +410,14 @@ class CalendarManagerWindow(ttk.Frame):
         self.detail_type_var.set(self.TYPE_LABELS.get(kind, kind))
         self.detail_status_var.set(str(record.get("status") or "-"))
         self.detail_date_var.set(str(record.get("date") or "-"))
+        calendar_name = str(record.get("calendar_name") or "-") if kind == "EVENT" else "-"
+        self.detail_calendar_var.set(calendar_name)
 
         self.content_text.configure(bg=self._detail_bg(record), fg="#000000")
+        if kind == "EVENT":
+            self.detail_calendar_label.configure(foreground=str(record.get("foreground_color") or "#000000"))
+        else:
+            self.detail_calendar_label.configure(foreground="#000000")
         self.content_text.delete("1.0", "end")
         self.content_text.insert("1.0", str(record.get("content") or ""))
 
@@ -346,6 +430,8 @@ class CalendarManagerWindow(ttk.Frame):
         kind = str(record.get("kind") or "NOTE")
         if status in {"finalizado", "completado", "hecha", "done"}:
             return NOTE_DONE_COLOR
+        if kind == "EVENT":
+            return str(record.get("background_color") or EVENT_COLOR)
         return self.TYPE_COLORS.get(kind, "#ffffff")
 
     def _render_associated_actions(self, record: dict[str, str | int]) -> None:
@@ -426,7 +512,7 @@ class CalendarManagerWindow(ttk.Frame):
         elif kind == "ACTION":
             self._save_action_edits()
         elif kind == "EVENT":
-            self.abrir_evento_calendar()
+            self._save_event_edits()
 
     def completar_registro(self) -> None:
         item = self.selected_item
@@ -483,7 +569,7 @@ class CalendarManagerWindow(ttk.Frame):
         if not item:
             return
 
-        link = str(item.get("htmlLink") or "")
+        link = str(item.get("google_calendar_link") or item.get("htmlLink") or "")
 
         if link:
             try:
@@ -492,10 +578,32 @@ class CalendarManagerWindow(ttk.Frame):
                 logger.exception("No se pudo abrir el evento en Google Calendar")
                 messagebox.showwarning("Evento", "No se pudo abrir el evento en Google Calendar")
         else:
+            logger.warning("No se pudo abrir evento de Google Calendar")
             messagebox.showwarning(
                 "Evento",
                 "Este evento no tiene enlace a Google Calendar",
             )
+
+    def _save_event_edits(self) -> None:
+        if not self._selected_record or self.calendar_client is None:
+            return
+
+        event_id = str(self._selected_record.get("google_event_id") or self._selected_record.get("id") or "").strip()
+        if not event_id:
+            return
+
+        calendar_id = str(self._selected_record.get("google_calendar_id") or "").strip() or "primary"
+        data = {
+            "summary": self.detail_title_var.get().strip() or "(Sin título)",
+            "description": self.content_text.get("1.0", "end").strip(),
+        }
+        try:
+            self.calendar_client.update_event(calendar_id=calendar_id, event_id=event_id, data=data)
+            logger.info("Evento actualizado en calendario %s", calendar_id)
+            self.refresh_overview()
+        except Exception:  # noqa: BLE001
+            logger.exception("No se pudo actualizar evento en Google Calendar")
+            messagebox.showwarning("Evento", "No se pudo actualizar el evento en Google Calendar")
 
     def _save_note_edits(self) -> None:
         if not self._selected_record:
@@ -544,6 +652,35 @@ class CalendarManagerWindow(ttk.Frame):
 
     def _open_event(self) -> None:
         self.abrir_evento_calendar()
+
+    def sync_google_calendars(self) -> None:
+        if self.calendar_repo is None or self.calendar_client is None:
+            return
+
+        try:
+            calendars = self.calendar_client.list_calendars()
+            now_iso = datetime.utcnow().isoformat(timespec="seconds")
+            valid_ids: list[str] = []
+            for calendar in calendars:
+                calendar_id = str(calendar.get("google_calendar_id") or "").strip()
+                if not calendar_id:
+                    continue
+                valid_ids.append(calendar_id)
+                self.calendar_repo.upsert_calendar(
+                    google_calendar_id=calendar_id,
+                    name=str(calendar.get("name") or calendar_id),
+                    background_color=str(calendar.get("background_color") or "#9E9E9E"),
+                    foreground_color=str(calendar.get("foreground_color") or "#000000"),
+                    is_primary=int(calendar.get("is_primary") or 0),
+                    access_role=str(calendar.get("access_role") or ""),
+                    selected=int(calendar.get("selected") if calendar.get("selected") is not None else 1),
+                    updated_at=now_iso,
+                )
+            self.calendar_repo.delete_missing_calendars(valid_ids)
+            logger.info("Calendarios sincronizados: %s", len(valid_ids))
+        except Exception:  # noqa: BLE001
+            logger.exception("Error sincronizando calendarios")
+            messagebox.showwarning("Google Calendar", "No se pudieron sincronizar los calendarios")
 
     def _initialize_client(self) -> None:
         credentials_path = Path(r"C:\notion-second-brain\secrets\calendar_credentials.json")
@@ -795,11 +932,33 @@ class CalendarManagerWindow(ttk.Frame):
         if self.calendar_client is None:
             return []
 
-        try:
-            return self.calendar_client.list_events(days=60)
-        except Exception:  # noqa: BLE001
-            logger.exception("No se pudieron cargar eventos de Google Calendar")
-            return []
+        if self.calendar_repo is None:
+            try:
+                return self.calendar_client.list_events(days=60)
+            except Exception:  # noqa: BLE001
+                logger.exception("No se pudieron cargar eventos de Google Calendar")
+                return []
+
+        all_events: list[dict] = []
+        calendars = self.calendar_repo.list_selected_calendars()
+        for calendar_row in calendars:
+            calendar_id = str(calendar_row["google_calendar_id"])
+            try:
+                events = self.calendar_client.list_events(calendar_id=calendar_id, days=60)
+            except Exception:  # noqa: BLE001
+                logger.exception("No se pudieron cargar eventos del calendario %s", calendar_id)
+                continue
+
+            for event in events:
+                enriched = dict(event)
+                enriched["calendar_name"] = str(calendar_row["name"])
+                enriched["background_color"] = str(calendar_row["background_color"])
+                enriched["foreground_color"] = str(calendar_row["foreground_color"])
+                enriched["google_calendar_id"] = calendar_id
+                enriched["event_id"] = str(event.get("id") or "")
+                all_events.append(enriched)
+
+        return all_events
 
     def _group_entries_by_day(self, calendar_events: list[dict], notes_with_dates: list[Note]) -> dict[date, list[dict[str, str | int]]]:
         grouped: dict[date, list[dict[str, str | int]]] = {}
@@ -813,11 +972,16 @@ class CalendarManagerWindow(ttk.Frame):
                     "origin": "EVENT",
                     "kind": "EVENT",
                     "title": str(event.get("summary") or "(Sin título)"),
-                    "id": str(event.get("id") or ""),
+                    "id": str(event.get("event_id") or event.get("id") or ""),
                     "status": "Pendiente",
                     "date": event_date.isoformat(),
                     "time": self._event_time(event),
                     "content": str(event.get("description") or ""),
+                    "htmlLink": str(event.get("htmlLink") or ""),
+                    "calendar_name": str(event.get("calendar_name") or ""),
+                    "background_color": str(event.get("background_color") or EVENT_COLOR),
+                    "foreground_color": str(event.get("foreground_color") or "#000000"),
+                    "google_calendar_id": str(event.get("google_calendar_id") or "primary"),
                 }
             )
 
@@ -840,6 +1004,8 @@ class CalendarManagerWindow(ttk.Frame):
                     "time_end": note.hora_fin or "",
                     "content": note.raw_text or "",
                     "htmlLink": note.google_calendar_link or "",
+                    "google_calendar_id": note.google_calendar_id or "",
+                    "google_event_id": note.google_event_id or "",
                 }
             )
 
