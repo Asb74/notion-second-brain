@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 from google.auth.transport.requests import Request
@@ -9,13 +10,19 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
+from app.config.config_paths import CALENDAR_CREDENTIALS, CALENDAR_TOKEN
+
 
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
 
 class GoogleCalendarClient:
 
-    def __init__(self, credentials_path: str, token_path: str):
+    def __init__(
+        self,
+        credentials_path: str = CALENDAR_CREDENTIALS,
+        token_path: str = CALENDAR_TOKEN,
+    ):
         self.credentials_path = credentials_path
         self.token_path = token_path
         self.service = self._authenticate()
@@ -37,7 +44,7 @@ class GoogleCalendarClient:
                 )
                 creds = flow.run_local_server(port=0)
 
-            os.makedirs(os.path.dirname(self.token_path), exist_ok=True)
+            Path(self.token_path).parent.mkdir(parents=True, exist_ok=True)
             with open(self.token_path, "w") as token_file:
                 token_file.write(creds.to_json())
 
