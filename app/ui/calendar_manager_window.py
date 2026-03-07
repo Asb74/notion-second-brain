@@ -16,6 +16,12 @@ from app.core.service import NoteService
 
 logger = logging.getLogger(__name__)
 
+NOTE_PENDING_COLOR = "#4F81BD"
+NOTE_DONE_COLOR = "#D9D9D9"
+EMAIL_COLOR = "#70AD47"
+EVENT_COLOR = "#ED7D31"
+ACTION_COLOR = "#FFC000"
+
 
 class CalendarManagerWindow(ttk.Frame):
     """CRM-like agenda frame with overview on top and details below."""
@@ -28,17 +34,10 @@ class CalendarManagerWindow(ttk.Frame):
     }
 
     TYPE_COLORS = {
-        "NOTE": "#dbeafe",
-        "ACTION": "#fef9c3",
-        "EMAIL": "#dcfce7",
-        "EVENT": "#ffedd5",
-    }
-
-    PENDING_DARK = {
-        "NOTE": "#1e3a8a",
-        "ACTION": "#854d0e",
-        "EMAIL": "#14532d",
-        "EVENT": "#9a3412",
+        "NOTE": NOTE_PENDING_COLOR,
+        "ACTION": ACTION_COLOR,
+        "EMAIL": EMAIL_COLOR,
+        "EVENT": EVENT_COLOR,
     }
 
     def __init__(self, master: tk.Misc, note_service: NoteService):
@@ -68,6 +67,7 @@ class CalendarManagerWindow(ttk.Frame):
         style.configure("Time.TLabel", foreground="#4b5563")
 
         self._build_toolbar()
+        self._build_legend()
         self._build_layout()
         self._initialize_client()
         self.refresh_overview()
@@ -93,14 +93,36 @@ class CalendarManagerWindow(ttk.Frame):
 
         toolbar.columnconfigure(6, weight=1)
 
+    def _build_legend(self) -> None:
+        legend_frame = ttk.Frame(self)
+        legend_frame.pack(fill="x", pady=(0, 8))
+
+        legend_items = [
+            ("📌 Nota pendiente", NOTE_PENDING_COLOR),
+            ("✔ Acción", ACTION_COLOR),
+            ("📧 Email", EMAIL_COLOR),
+            ("📅 Evento", EVENT_COLOR),
+            ("✓ Completado", NOTE_DONE_COLOR),
+        ]
+
+        for index, (label_text, color) in enumerate(legend_items):
+            item = ttk.Frame(legend_frame)
+            item.grid(row=0, column=index, padx=(0, 10), sticky="w")
+
+            tk.Frame(item, width=14, height=14, bg=color, bd=1, relief="solid").pack(side="left", padx=(0, 5))
+            ttk.Label(item, text=label_text).pack(side="left")
+
+        legend_frame.columnconfigure(len(legend_items), weight=1)
+
     def _build_layout(self) -> None:
         self.crm_paned = ttk.PanedWindow(self, orient="vertical")
         self.crm_paned.pack(fill="both", expand=True)
 
         self.overview_panel = ttk.Frame(self.crm_paned)
         self.detail_panel = ttk.Frame(self.crm_paned, padding=8)
-        self.crm_paned.add(self.overview_panel, weight=7)
-        self.crm_paned.add(self.detail_panel, weight=3)
+        self.crm_paned.add(self.overview_panel, weight=3)
+        self.crm_paned.add(self.detail_panel, weight=2)
+        self.bind("<Configure>", self._set_initial_panel_sizes, add="+")
 
         self.overview_stack = ttk.Frame(self.overview_panel)
         self.overview_stack.pack(fill="both", expand=True)
@@ -133,14 +155,23 @@ class CalendarManagerWindow(ttk.Frame):
         self.overview_tree.pack(fill="both", expand=True)
         self.overview_tree.bind("<<TreeviewSelect>>", self._on_overview_select)
 
-        self.overview_tree.tag_configure("NOTE_PENDING", background="#1e3a8a", foreground="#ffffff")
-        self.overview_tree.tag_configure("ACTION_PENDING", background="#854d0e", foreground="#ffffff")
-        self.overview_tree.tag_configure("EMAIL_PENDING", background="#14532d", foreground="#ffffff")
-        self.overview_tree.tag_configure("EVENT_PENDING", background="#9a3412", foreground="#ffffff")
-        self.overview_tree.tag_configure("NOTE_DONE", background="#cbd5d1", foreground="#374151")
-        self.overview_tree.tag_configure("ACTION_DONE", background="#e5e7eb", foreground="#374151")
-        self.overview_tree.tag_configure("EMAIL_DONE", background="#e5e7eb", foreground="#374151")
-        self.overview_tree.tag_configure("EVENT_DONE", background="#e5e7eb", foreground="#374151")
+        self.overview_tree.tag_configure("NOTE_PENDING", background=NOTE_PENDING_COLOR, foreground="#000000")
+        self.overview_tree.tag_configure("ACTION_PENDING", background=ACTION_COLOR, foreground="#000000")
+        self.overview_tree.tag_configure("EMAIL_PENDING", background=EMAIL_COLOR, foreground="#000000")
+        self.overview_tree.tag_configure("EVENT_PENDING", background=EVENT_COLOR, foreground="#000000")
+        self.overview_tree.tag_configure("NOTE_DONE", background=NOTE_DONE_COLOR, foreground="#000000")
+        self.overview_tree.tag_configure("ACTION_DONE", background=NOTE_DONE_COLOR, foreground="#000000")
+        self.overview_tree.tag_configure("EMAIL_DONE", background=NOTE_DONE_COLOR, foreground="#000000")
+        self.overview_tree.tag_configure("EVENT_DONE", background=NOTE_DONE_COLOR, foreground="#000000")
+
+    def _set_initial_panel_sizes(self, _event: tk.Event | None = None) -> None:
+        if getattr(self, "_initial_sash_set", False):
+            return
+        total_height = self.crm_paned.winfo_height()
+        if total_height <= 1:
+            return
+        self.crm_paned.sashpos(0, int(total_height * 0.6))
+        self._initial_sash_set = True
 
     def _build_detail_panel(self) -> None:
         self.detail_title_var = tk.StringVar(value="Selecciona un registro")
@@ -148,9 +179,21 @@ class CalendarManagerWindow(ttk.Frame):
         self.detail_status_var = tk.StringVar(value="-")
         self.detail_date_var = tk.StringVar(value="-")
 
-        ttk.Label(self.detail_panel, textvariable=self.detail_title_var, style="CalendarHeader.TLabel").pack(anchor="w")
+        self.detail_canvas = tk.Canvas(self.detail_panel, highlightthickness=0)
+        detail_scroll = ttk.Scrollbar(self.detail_panel, orient="vertical", command=self.detail_canvas.yview)
+        self.detail_canvas.configure(yscrollcommand=detail_scroll.set)
 
-        metadata = ttk.Frame(self.detail_panel)
+        self.detail_canvas.pack(side="left", fill="both", expand=True)
+        detail_scroll.pack(side="right", fill="y")
+
+        self.detail_content = ttk.Frame(self.detail_canvas)
+        self.detail_canvas_window = self.detail_canvas.create_window((0, 0), window=self.detail_content, anchor="nw")
+        self.detail_content.bind("<Configure>", self._update_detail_scrollregion)
+        self.detail_canvas.bind("<Configure>", self._resize_detail_canvas_window)
+
+        ttk.Label(self.detail_content, textvariable=self.detail_title_var, style="CalendarHeader.TLabel", font=("TkDefaultFont", 13, "bold")).pack(anchor="w")
+
+        metadata = ttk.Frame(self.detail_content)
         metadata.pack(fill="x", pady=(6, 8))
         ttk.Label(metadata, text="Tipo:").grid(row=0, column=0, sticky="w", padx=(0, 6))
         ttk.Label(metadata, textvariable=self.detail_type_var).grid(row=0, column=1, sticky="w", padx=(0, 20))
@@ -159,14 +202,20 @@ class CalendarManagerWindow(ttk.Frame):
         ttk.Label(metadata, text="Fecha:").grid(row=0, column=4, sticky="w", padx=(0, 6))
         ttk.Label(metadata, textvariable=self.detail_date_var).grid(row=0, column=5, sticky="w")
 
-        self.content_text = tk.Text(self.detail_panel, height=7, wrap="word")
+        self.content_text = tk.Text(self.detail_content, height=10, wrap="word")
         self.content_text.pack(fill="both", expand=True)
 
-        self.associated_actions_frame = ttk.LabelFrame(self.detail_panel, text="Acciones asociadas")
+        self.associated_actions_frame = ttk.LabelFrame(self.detail_content, text="Acciones asociadas")
         self.associated_actions_frame.pack(fill="x", pady=(8, 6))
 
-        self.context_buttons = ttk.Frame(self.detail_panel)
+        self.context_buttons = ttk.Frame(self.detail_content)
         self.context_buttons.pack(fill="x", pady=(2, 0))
+
+    def _update_detail_scrollregion(self, _event: tk.Event | None = None) -> None:
+        self.detail_canvas.configure(scrollregion=self.detail_canvas.bbox("all"))
+
+    def _resize_detail_canvas_window(self, event: tk.Event) -> None:
+        self.detail_canvas.itemconfigure(self.detail_canvas_window, width=event.width)
 
     def _show_list_overview(self) -> None:
         self.list_frame.tkraise()
@@ -268,18 +317,19 @@ class CalendarManagerWindow(ttk.Frame):
         self.detail_status_var.set(str(record.get("status") or "-"))
         self.detail_date_var.set(str(record.get("date") or "-"))
 
-        self.content_text.configure(bg=self._detail_bg(record), fg="#111827")
+        self.content_text.configure(bg=self._detail_bg(record), fg="#000000")
         self.content_text.delete("1.0", "end")
         self.content_text.insert("1.0", str(record.get("content") or ""))
 
         self._render_associated_actions(record)
         self._render_context_actions(record)
+        self._update_detail_scrollregion()
 
     def _detail_bg(self, record: dict[str, str | int]) -> str:
         status = str(record.get("status") or "").lower()
         kind = str(record.get("kind") or "NOTE")
         if status in {"finalizado", "completado", "hecha", "done"}:
-            return "#cbd5d1" if kind == "NOTE" else "#e5e7eb"
+            return NOTE_DONE_COLOR
         return self.TYPE_COLORS.get(kind, "#ffffff")
 
     def _render_associated_actions(self, record: dict[str, str | int]) -> None:
@@ -502,7 +552,7 @@ class CalendarManagerWindow(ttk.Frame):
             day_entries = self._events_by_day.get(day_value, [])
             for entry in day_entries[:3]:
                 text = self._entry_label_text(entry)
-                label = tk.Label(events_frame, text=text, anchor="w", justify="left", cursor="hand2", wraplength=170, bg=self._detail_bg(entry))
+                label = tk.Label(events_frame, text=text, anchor="w", justify="left", cursor="hand2", wraplength=170, bg=self._detail_bg(entry), fg="#000000")
                 label.pack(anchor="w", fill="x", pady=1)
                 label.bind("<Button-1>", self._on_entry_click)
                 self._label_metadata[str(label)] = entry
@@ -562,7 +612,7 @@ class CalendarManagerWindow(ttk.Frame):
             day_entries = self._events_by_day.get(day_value, [])
             for entry in day_entries:
                 text = self._entry_label_text(entry)
-                label = tk.Label(column, text=text, anchor="w", justify="left", cursor="hand2", wraplength=165, bg=self._detail_bg(entry))
+                label = tk.Label(column, text=text, anchor="w", justify="left", cursor="hand2", wraplength=165, bg=self._detail_bg(entry), fg="#000000")
                 label.pack(anchor="w", fill="x", pady=1)
                 label.bind("<Button-1>", self._on_entry_click)
                 self._label_metadata[str(label)] = entry
@@ -594,7 +644,7 @@ class CalendarManagerWindow(ttk.Frame):
 
             for entry in entries_by_slot.get(slot, []):
                 text = self._entry_label_text(entry, include_time=False)
-                label = tk.Label(slot_frame, text=text, anchor="w", justify="left", cursor="hand2", wraplength=500, bg=self._detail_bg(entry))
+                label = tk.Label(slot_frame, text=text, anchor="w", justify="left", cursor="hand2", wraplength=500, bg=self._detail_bg(entry), fg="#000000")
                 label.pack(anchor="w", fill="x", pady=1)
                 label.bind("<Button-1>", self._on_entry_click)
                 self._label_metadata[str(label)] = entry
