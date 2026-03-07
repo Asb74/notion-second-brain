@@ -54,7 +54,9 @@ class Database:
                     last_error TEXT,
                     attempts INTEGER NOT NULL DEFAULT 0,
                     next_retry_at TEXT,
-                    email_replied INTEGER NOT NULL DEFAULT 0
+                    email_replied INTEGER NOT NULL DEFAULT 0,
+                    google_event_id TEXT NOT NULL DEFAULT '',
+                    google_calendar_link TEXT NOT NULL DEFAULT ''
                 )
                 """
             )
@@ -63,6 +65,8 @@ class Database:
             self._ensure_column(conn, "notes_local", "hora_inicio", "TEXT")
             self._ensure_column(conn, "notes_local", "hora_fin", "TEXT")
             self._ensure_column(conn, "notes_local", "email_replied", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "notes_local", "google_event_id", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "notes_local", "google_calendar_link", "TEXT NOT NULL DEFAULT ''")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS settings (

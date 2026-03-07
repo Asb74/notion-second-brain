@@ -15,7 +15,11 @@ from tkinter import messagebox, ttk
 
 from tkcalendar import DateEntry
 
-from app.core.calendar.google_calendar_client import GoogleCalendarClient
+from app.core.calendar.google_calendar_client import (
+    GoogleCalendarClient,
+    crear_evento_google_calendar,
+    get_calendar_service,
+)
 from app.core.models import AppSettings, NoteCreateRequest
 from app.core.service import NoteService
 from app.ui.excel_filter import ExcelTreeFilter
@@ -50,6 +54,7 @@ class MainWindow(ttk.Frame):
         self._calendar_toplevel: tk.Toplevel | None = None
         self._calendar_window: CalendarManagerWindow | None = None
         self._calendar_client: GoogleCalendarClient | None = None
+        self.calendar_service = None
         self.msg_queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self.status_var = tk.StringVar(value="Listo")
         self.pack(fill="both", expand=True)
@@ -269,6 +274,7 @@ class MainWindow(ttk.Frame):
             ("Enviar", self._sync),
             ("Reintentar", self._sync),
             ("Abrir en Notion", self._open_notion),
+            ("Abrir evento", self._open_selected_note_google_event),
             ("Agenda", self._open_calendar_manager),
         ]
         for idx, (label, command) in enumerate(action_buttons):
@@ -453,13 +459,19 @@ class MainWindow(ttk.Frame):
             messagebox.showinfo("Duplicado", msg)
         else:
             if tipo.lower() == "evento" and hora_inicio:
-                self._create_google_calendar_event(
+                event_data = self._create_google_calendar_event(
                     titulo=req.title or raw_text.split("\n", 1)[0][:120] or "Sin título",
                     descripcion=raw_text,
                     fecha=req.fecha,
                     hora_inicio=hora_inicio,
                     hora_fin=hora_fin,
                 )
+                if event_data:
+                    self.service.update_note_google_event_data(
+                        note_id,
+                        str(event_data.get("id") or ""),
+                        str(event_data.get("htmlLink") or ""),
+                    )
             messagebox.showinfo("OK", msg)
             self.text_widget.delete("1.0", "end")
             self.title_var.set("")
@@ -486,30 +498,36 @@ class MainWindow(ttk.Frame):
             return False
         return True
 
-    def _create_google_calendar_event(self, titulo: str, descripcion: str, fecha: str, hora_inicio: str, hora_fin: str | None) -> None:
+    def _create_google_calendar_event(self, titulo: str, descripcion: str, fecha: str, hora_inicio: str, hora_fin: str | None) -> dict | None:
         try:
-            start_datetime = datetime.combine(datetime.fromisoformat(fecha).date(), datetime.strptime(hora_inicio, "%H:%M").time())
-            if hora_fin:
-                end_datetime = datetime.combine(datetime.fromisoformat(fecha).date(), datetime.strptime(hora_fin, "%H:%M").time())
-            else:
-                end_datetime = start_datetime + timedelta(hours=1)
-
-            if end_datetime <= start_datetime:
-                end_datetime = start_datetime + timedelta(hours=1)
-
-            client = self._get_calendar_client()
-            if client is None:
-                return
-
-            client.create_event(
-                title=titulo,
-                description=descripcion,
-                start_datetime=start_datetime,
-                end_datetime=end_datetime,
-            )
+            service = self._get_calendar_service()
+            if service is None:
+                return None
+            return crear_evento_google_calendar(service, titulo, descripcion, fecha, hora_inicio, hora_fin)
         except Exception:  # noqa: BLE001
             logger.exception("No se pudo crear el evento en Google Calendar")
-            messagebox.showwarning("Google Calendar", "No se pudo crear el evento en Google Calendar.")
+            messagebox.showwarning("Google Calendar", "No se pudo crear el evento en Google Calendar")
+            return None
+
+    def _get_calendar_service(self):
+        if self.calendar_service is not None:
+            return self.calendar_service
+
+        token_path = Path(r"C:\notion-second-brain\secrets\calendar_token.json")
+        if not token_path.exists():
+            token_path = Path("secrets/calendar_token.json")
+
+        try:
+            if token_path.exists():
+                self.calendar_service = get_calendar_service(str(token_path))
+                return self.calendar_service
+        except Exception:  # noqa: BLE001
+            logger.exception("No se pudo inicializar servicio directo de Google Calendar")
+
+        client = self._get_calendar_client()
+        if client is not None:
+            self.calendar_service = client.service
+        return self.calendar_service
 
     def _get_calendar_client(self) -> GoogleCalendarClient | None:
         if self._calendar_client is not None:
@@ -707,6 +725,21 @@ class MainWindow(ttk.Frame):
 
         url = f"https://www.notion.so/{notion_page_id.replace('-', '')}"
         webbrowser.open(url)
+
+    def _open_selected_note_google_event(self) -> None:
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showwarning("Atención", "Selecciona una nota.")
+            return
+
+        values = self.tree.item(selection[0], "values")
+        note_id = int(values[0])
+        note = self.service.get_note_by_id(note_id)
+        if note and note.google_calendar_link:
+            webbrowser.open(note.google_calendar_link)
+            return
+
+        messagebox.showwarning("Atención", "La nota seleccionada no tiene evento de Google Calendar asociado.")
 
     def _open_selected_note(self) -> None:
         selection = self.tree.selection()
