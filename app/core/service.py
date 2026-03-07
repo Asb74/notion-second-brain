@@ -140,6 +140,18 @@ class NoteService:
             return str(getattr(settings, key))
         return key
 
+    def list_actions(self, limit: int = 2000) -> list[Action]:
+        return self.actions_repo.list_actions(limit)
+
+    def list_actions_by_note(self, note_id: int) -> list[Action]:
+        return self.actions_repo.get_actions_by_note(note_id)
+
+    def update_note_content(self, note_id: int, title: str, raw_text: str) -> None:
+        self.note_repo.update_note_content(note_id, title, raw_text)
+
+    def update_action_description(self, action_id: int, description: str) -> None:
+        self.actions_repo.update_action_description(action_id, description)
+
     def list_pending_actions(self, area: str | None = None) -> list[Action]:
         if area:
             return [a for a in self.actions_repo.get_actions_by_area(area) if a.status == "pendiente"]
