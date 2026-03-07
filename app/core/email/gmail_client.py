@@ -1,6 +1,9 @@
 import base64
+from pathlib import Path
 import os
 from typing import List
+
+from app.config.config_paths import GMAIL_CREDENTIALS, GMAIL_TOKEN
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -13,7 +16,11 @@ SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 
 class GmailClient:
 
-    def __init__(self, credentials_path: str, token_path: str):
+    def __init__(
+        self,
+        credentials_path: str = GMAIL_CREDENTIALS,
+        token_path: str = GMAIL_TOKEN,
+    ):
         self.credentials_path = credentials_path
         self.token_path = token_path
         self.service = self._authenticate()
@@ -37,6 +44,7 @@ class GmailClient:
                 )
                 creds = flow.run_local_server(port=0)
 
+            Path(self.token_path).parent.mkdir(parents=True, exist_ok=True)
             with open(self.token_path, "w") as token:
                 token.write(creds.to_json())
 
