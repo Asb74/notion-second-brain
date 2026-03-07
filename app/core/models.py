@@ -36,6 +36,7 @@ class NoteCreateRequest:
     email_id: str = ""
     google_event_id: str = ""
     google_calendar_link: str = ""
+    google_calendar_id: str = ""
 
 
 @dataclass(slots=True)
@@ -66,6 +67,7 @@ class Note:
     email_replied: int = 0
     google_event_id: str = ""
     google_calendar_link: str = ""
+    google_calendar_id: str = ""
 
 
 @dataclass(slots=True)

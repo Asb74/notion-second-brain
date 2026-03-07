@@ -20,8 +20,8 @@ class NoteRepository:
         cursor = self.conn.execute(
             """
             INSERT INTO notes_local (
-                created_at, source, source_id, title, raw_text, area, tipo, estado, prioridad, fecha, hora_inicio, duracion, hora_fin, resumen, acciones, status, google_event_id, google_calendar_link
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                created_at, source, source_id, title, raw_text, area, tipo, estado, prioridad, fecha, hora_inicio, duracion, hora_fin, resumen, acciones, status, google_event_id, google_calendar_link, google_calendar_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 created_at,
@@ -42,6 +42,7 @@ class NoteRepository:
                 status.value,
                 req.google_event_id,
                 req.google_calendar_link,
+                req.google_calendar_id,
             ),
         )
         self.conn.commit()
@@ -106,10 +107,16 @@ class NoteRepository:
         )
         self.conn.commit()
 
-    def update_google_event_data(self, note_id: int, google_event_id: str, google_calendar_link: str) -> None:
+    def update_google_event_data(
+        self,
+        note_id: int,
+        google_event_id: str,
+        google_calendar_link: str,
+        google_calendar_id: str,
+    ) -> None:
         self.conn.execute(
-            "UPDATE notes_local SET google_event_id = ?, google_calendar_link = ? WHERE id = ?",
-            (google_event_id, google_calendar_link, note_id),
+            "UPDATE notes_local SET google_event_id = ?, google_calendar_link = ?, google_calendar_id = ? WHERE id = ?",
+            (google_event_id, google_calendar_link, google_calendar_id, note_id),
         )
         self.conn.commit()
 
