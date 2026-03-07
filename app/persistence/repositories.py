@@ -87,6 +87,13 @@ class NoteRepository:
         )
         self.conn.commit()
 
+    def update_note_content(self, note_id: int, title: str, raw_text: str) -> None:
+        self.conn.execute(
+            "UPDATE notes_local SET title = ?, raw_text = ? WHERE id = ?",
+            (title, raw_text, note_id),
+        )
+        self.conn.commit()
+
     def set_email_replied(self, note_id: int) -> None:
         self.conn.execute(
             "UPDATE notes_local SET email_replied = 1 WHERE id = ?",
@@ -191,6 +198,18 @@ class ActionsRepository:
         ).fetchall()
         return [self._to_action(r) for r in rows]
 
+    def list_actions(self, limit: int = 2000) -> list[Action]:
+        rows = self.conn.execute(
+            """
+            SELECT a.*
+            FROM actions a
+            ORDER BY a.id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [self._to_action(r) for r in rows]
+
     def get_actions_by_area(self, area: str) -> list[Action]:
         rows = self.conn.execute(
             """
@@ -222,6 +241,13 @@ class ActionsRepository:
             WHERE id = ?
             """,
             (datetime.utcnow().isoformat(timespec="seconds"), action_id),
+        )
+        self.conn.commit()
+
+    def update_action_description(self, action_id: int, description: str) -> None:
+        self.conn.execute(
+            "UPDATE actions SET description = ? WHERE id = ?",
+            (description, action_id),
         )
         self.conn.commit()
 

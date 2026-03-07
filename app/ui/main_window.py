@@ -147,11 +147,12 @@ class MainWindow(ttk.Frame):
             self._calendar_toplevel.deiconify()
             self._calendar_toplevel.lift()
             self._calendar_toplevel.focus_force()
+            self._calendar_window.refresh_overview()
             return self._calendar_window
 
         toplevel = tk.Toplevel(self.master)
         toplevel.title("Agenda")
-        toplevel.geometry("980x620")
+        toplevel.geometry("1120x760")
         toplevel.minsize(820, 480)
         calendar_window = CalendarManagerWindow(toplevel, self.service)
         calendar_window.pack(fill="both", expand=True)
