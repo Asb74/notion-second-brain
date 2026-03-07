@@ -280,7 +280,13 @@ Un saludo""",
 
             self.actions_repo.mark_action_done(action_id)
             completed_note_ids.add(action.note_id)
-            self._sync_action_done_with_notion(action)
+            try:
+                self._sync_action_done_with_notion(action)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Error sincronizando acción con Notion id=%s",
+                    action_id,
+                )
 
         for note_id in completed_note_ids:
             completion = self.check_note_completion(note_id)
