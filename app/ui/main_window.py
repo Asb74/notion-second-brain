@@ -143,7 +143,6 @@ class MainWindow(ttk.Frame):
 
         gmail_id = str(completion.get("gmail_id", "")).strip()
         body = str(completion.get("body", "")).strip()
-        note_id = completion.get("note_id")
 
         if not gmail_id:
             return
@@ -163,7 +162,7 @@ class MainWindow(ttk.Frame):
         if not found:
             return
 
-        email_window.set_reply_body(body, int(note_id) if isinstance(note_id, int) else None)
+        email_window.set_reply_body(body)
         email_window.focus_force()
 
     def _build_form(self) -> None:
@@ -550,9 +549,10 @@ class MainWindow(ttk.Frame):
         action_ids = [int(self.actions_tree.item(iid, "values")[0]) for iid in selection]
 
         try:
-            completions = self.service.mark_actions_done(action_ids)
-            for completion in completions:
-                self._process_completion_event(completion)
+            events = self.service.mark_actions_done(action_ids)
+            if events:
+                for event in events:
+                    self._process_completion_event(event)
             self.status_var.set(f"Acciones finalizadas: {len(action_ids)}")
             self.refresh_actions()
         except Exception:  # noqa: BLE001
