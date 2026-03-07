@@ -18,6 +18,7 @@ from app.core.service import NoteService
 from app.ui.excel_filter import ExcelTreeFilter
 from app.ui.masters_dialog import MastersDialog
 from app.ui.email_manager_window import EmailManagerWindow
+from app.ui.calendar_manager_window import CalendarManagerWindow
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.user_profile_window import UserProfileWindow
 
@@ -43,6 +44,8 @@ class MainWindow(ttk.Frame):
         self.gmail_token_path = gmail_token_path
         self._email_window: EmailManagerWindow | None = None
         self._profile_window: UserProfileWindow | None = None
+        self._calendar_toplevel: tk.Toplevel | None = None
+        self._calendar_window: CalendarManagerWindow | None = None
         self.msg_queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self.status_var = tk.StringVar(value="Listo")
         self.pack(fill="both", expand=True)
@@ -93,6 +96,7 @@ class MainWindow(ttk.Frame):
         herramientas = tk.Menu(menubar, tearoff=0)
         herramientas.add_command(label="Configuración", command=self._open_settings)
         herramientas.add_command(label="Gestión de Emails", command=self._open_email_manager)
+        herramientas.add_command(label="Agenda", command=self._open_calendar_manager)
         menubar.add_cascade(label="Herramientas", menu=herramientas)
 
         maestros = tk.Menu(menubar, tearoff=0)
@@ -136,6 +140,31 @@ class MainWindow(ttk.Frame):
 
     def _open_email_manager(self) -> None:
         self._ensure_email_manager_window()
+
+
+    def _ensure_calendar_window(self) -> CalendarManagerWindow:
+        if self._calendar_toplevel is not None and self._calendar_toplevel.winfo_exists() and self._calendar_window is not None:
+            self._calendar_toplevel.deiconify()
+            self._calendar_toplevel.lift()
+            self._calendar_toplevel.focus_force()
+            return self._calendar_window
+
+        toplevel = tk.Toplevel(self.master)
+        toplevel.title("Agenda")
+        toplevel.geometry("980x620")
+        toplevel.minsize(820, 480)
+        calendar_window = CalendarManagerWindow(toplevel, self.service)
+        calendar_window.pack(fill="both", expand=True)
+        self._calendar_toplevel = toplevel
+        self._calendar_window = calendar_window
+        return calendar_window
+
+    def _open_calendar_manager(self) -> None:
+        try:
+            self._ensure_calendar_window()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("No se pudo abrir la agenda")
+            messagebox.showerror("Error", f"No se pudo abrir la agenda.\n\n{exc}")
 
     def _process_completion_event(self, completion: dict[str, str | int] | None) -> None:
         if not completion:
@@ -221,6 +250,7 @@ class MainWindow(ttk.Frame):
             ("Enviar", self._sync),
             ("Reintentar", self._sync),
             ("Abrir en Notion", self._open_notion),
+            ("Agenda", self._open_calendar_manager),
         ]
         for idx, (label, command) in enumerate(action_buttons):
             ttk.Button(actions, text=label, command=command, style="Toolbar.TButton").grid(
