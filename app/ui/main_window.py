@@ -284,7 +284,7 @@ class MainWindow(ttk.Frame):
         )
         self.hora_inicio_combo.grid(row=0, column=1, padx=6, pady=2, sticky="w")
 
-        self.hora_selector = tk.Listbox(self.event_time_frame, height=8, exportselection=False)
+        self.hora_selector = tk.Listbox(self.event_time_frame, height=12, exportselection=False)
         for hora in generar_intervalos_15():
             self.hora_selector.insert(tk.END, hora)
         self.hora_selector.grid(row=1, column=0, columnspan=2, padx=6, pady=2, sticky="ew")
@@ -426,12 +426,18 @@ class MainWindow(ttk.Frame):
 
     def _load_master_values(self) -> None:
         area_values = self.service.get_master_values("Area")
-        tipo_values = self.service.get_master_values("Tipo")
+        tipo_values = (
+            "Nota",
+            "Evento",
+            "Decisión",
+            "Incidencia",
+            "Tarea",
+        )
         estado_values = self.service.get_master_values("Estado")
         prioridad_values = self.service.get_master_values("Prioridad")
 
         self.area_combo.configure(values=area_values)
-        self.tipo_combo.configure(values=tipo_values)
+        self.tipo_combo["values"] = tipo_values
         self.estado_combo.configure(values=estado_values)
         self.prioridad_combo.configure(values=prioridad_values)
         if area_values:
@@ -528,7 +534,7 @@ class MainWindow(ttk.Frame):
         self._toggle_event_time_fields()
 
     def _toggle_event_time_fields(self) -> None:
-        tipo = self.tipo_var.get().strip().lower()
+        tipo = self.tipo_var.get().lower()
         if tipo == "evento":
             self.event_time_frame.grid()
         else:
