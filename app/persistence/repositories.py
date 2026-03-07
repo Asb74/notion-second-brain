@@ -20,8 +20,8 @@ class NoteRepository:
         cursor = self.conn.execute(
             """
             INSERT INTO notes_local (
-                created_at, source, source_id, title, raw_text, area, tipo, estado, prioridad, fecha, hora_inicio, hora_fin, resumen, acciones, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                created_at, source, source_id, title, raw_text, area, tipo, estado, prioridad, fecha, hora_inicio, hora_fin, resumen, acciones, status, google_event_id, google_calendar_link
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 created_at,
@@ -39,6 +39,8 @@ class NoteRepository:
                 req.resumen,
                 req.acciones,
                 status.value,
+                req.google_event_id,
+                req.google_calendar_link,
             ),
         )
         self.conn.commit()
@@ -100,6 +102,13 @@ class NoteRepository:
         self.conn.execute(
             "UPDATE notes_local SET email_replied = 1 WHERE id = ?",
             (note_id,),
+        )
+        self.conn.commit()
+
+    def update_google_event_data(self, note_id: int, google_event_id: str, google_calendar_link: str) -> None:
+        self.conn.execute(
+            "UPDATE notes_local SET google_event_id = ?, google_calendar_link = ? WHERE id = ?",
+            (google_event_id, google_calendar_link, note_id),
         )
         self.conn.commit()
 

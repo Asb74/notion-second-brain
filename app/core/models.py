@@ -33,6 +33,8 @@ class NoteCreateRequest:
     resumen: str = ""
     acciones: str = ""
     email_id: str = ""
+    google_event_id: str = ""
+    google_calendar_link: str = ""
 
 
 @dataclass(slots=True)
@@ -60,6 +62,8 @@ class Note:
     attempts: int
     next_retry_at: Optional[str]
     email_replied: int = 0
+    google_event_id: str = ""
+    google_calendar_link: str = ""
 
 
 @dataclass(slots=True)

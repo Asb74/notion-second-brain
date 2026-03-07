@@ -253,6 +253,8 @@ class CalendarManagerWindow(ttk.Frame):
             display_date = note.fecha or ""
             if note.hora_inicio:
                 display_date = f"{display_date} {note.hora_inicio}".strip()
+            if (note.tipo or "").strip().lower() == "evento":
+                record_type = "EVENT"
             record = {
                 "kind": record_type,
                 "id": note.id,
@@ -262,6 +264,7 @@ class CalendarManagerWindow(ttk.Frame):
                 "time": note.hora_inicio or "",
                 "content": note.raw_text or "",
                 "email_link": email_link,
+                "htmlLink": note.google_calendar_link or "",
             }
             self._insert_overview_record(record)
 
@@ -836,6 +839,7 @@ class CalendarManagerWindow(ttk.Frame):
                     "time": note.hora_inicio or "",
                     "time_end": note.hora_fin or "",
                     "content": note.raw_text or "",
+                    "htmlLink": note.google_calendar_link or "",
                 }
             )
 
