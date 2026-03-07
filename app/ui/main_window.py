@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import logging
 import queue
+import re
 import sqlite3
 import threading
 import tkinter as tk
 import webbrowser
+from datetime import datetime, timedelta
 from pathlib import Path
 from tkinter import messagebox, ttk
 
 from tkcalendar import DateEntry
 
+from app.core.calendar.google_calendar_client import GoogleCalendarClient
 from app.core.models import AppSettings, NoteCreateRequest
 from app.core.service import NoteService
 from app.ui.excel_filter import ExcelTreeFilter
@@ -46,6 +49,7 @@ class MainWindow(ttk.Frame):
         self._profile_window: UserProfileWindow | None = None
         self._calendar_toplevel: tk.Toplevel | None = None
         self._calendar_window: CalendarManagerWindow | None = None
+        self._calendar_client: GoogleCalendarClient | None = None
         self.msg_queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self.status_var = tk.StringVar(value="Listo")
         self.pack(fill="both", expand=True)
@@ -226,6 +230,7 @@ class MainWindow(ttk.Frame):
         ttk.Label(form, text="Tipo").grid(row=2, column=2, padx=6, pady=6, sticky="e")
         self.tipo_combo = ttk.Combobox(form, textvariable=self.tipo_var, state="readonly", width=15)
         self.tipo_combo.grid(row=2, column=3, padx=6, pady=6)
+        self.tipo_combo.bind("<<ComboboxSelected>>", self._on_tipo_changed)
 
         ttk.Label(form, text="Estado").grid(row=2, column=4, padx=6, pady=6, sticky="e")
         self.estado_combo = ttk.Combobox(form, textvariable=self.estado_var, state="readonly", width=15)
@@ -239,11 +244,24 @@ class MainWindow(ttk.Frame):
         self.date_entry = DateEntry(form, width=15, date_pattern="yyyy-mm-dd")
         self.date_entry.grid(row=2, column=9, padx=6, pady=6)
 
+        self.event_time_frame = ttk.Frame(form)
+        self.event_time_frame.grid(row=3, column=0, columnspan=10, sticky="ew", padx=6, pady=(0, 6))
+        ttk.Label(self.event_time_frame, text="Hora inicio").grid(row=0, column=0, padx=6, pady=2, sticky="e")
+        self.hora_inicio_var = tk.StringVar()
+        self.hora_inicio_entry = ttk.Entry(self.event_time_frame, textvariable=self.hora_inicio_var, width=10)
+        self.hora_inicio_entry.grid(row=0, column=1, padx=6, pady=2, sticky="w")
+
+        ttk.Label(self.event_time_frame, text="Hora fin").grid(row=0, column=2, padx=6, pady=2, sticky="e")
+        self.hora_fin_var = tk.StringVar()
+        self.hora_fin_entry = ttk.Entry(self.event_time_frame, textvariable=self.hora_fin_var, width=10)
+        self.hora_fin_entry.grid(row=0, column=3, padx=6, pady=2, sticky="w")
+        self.event_time_frame.columnconfigure(5, weight=1)
+
         for column in (1, 3):
             form.columnconfigure(column, weight=1)
 
         actions = ttk.Frame(form)
-        actions.grid(row=3, column=0, columnspan=10, sticky="ew", pady=(4, 8), padx=6)
+        actions.grid(row=4, column=0, columnspan=10, sticky="ew", pady=(4, 8), padx=6)
         action_buttons = [
             ("⚙ Perfil usuario", self._open_user_profile),
             ("Configuración", self._open_settings),
@@ -267,6 +285,7 @@ class MainWindow(ttk.Frame):
         create_idx = len(action_buttons) * 2
         self.create_db_button.grid(row=0, column=create_idx, sticky="ew")
         actions.columnconfigure(create_idx, weight=1, uniform="main-actions")
+        self._toggle_event_time_fields()
 
     def _open_user_profile(self) -> None:
         if self.db_connection is None:
@@ -368,6 +387,7 @@ class MainWindow(ttk.Frame):
             self.area_var.set(area_values[0])
         if tipo_values:
             self.tipo_var.set(tipo_values[0])
+        self._toggle_event_time_fields()
         if "Pendiente" in estado_values:
             self.estado_var.set("Pendiente")
         elif estado_values:
@@ -396,6 +416,7 @@ class MainWindow(ttk.Frame):
             self.estado_var.set(settings.default_estado)
         if settings.default_prioridad:
             self.prioridad_var.set(settings.default_prioridad)
+        self._toggle_event_time_fields()
 
     def _save_note(self) -> None:
         raw_text = self.text_widget.get("1.0", "end").strip()
@@ -403,25 +424,111 @@ class MainWindow(ttk.Frame):
             messagebox.showwarning("Validación", "El texto de la nota es obligatorio.")
             return
 
+        tipo = self.tipo_var.get().strip() or "Nota"
+        hora_inicio = self.hora_inicio_var.get().strip() or None
+        hora_fin = self.hora_fin_var.get().strip() or None
+
+        if tipo.lower() == "evento":
+            if hora_inicio is None or not self._is_valid_time(hora_inicio):
+                messagebox.showwarning("Validación", "La hora de inicio del evento debe tener formato HH:MM.")
+                return
+            if hora_fin is not None and not self._is_valid_time(hora_fin):
+                messagebox.showwarning("Validación", "La hora de fin debe tener formato HH:MM.")
+                return
+
         req = NoteCreateRequest(
             title=self.title_var.get().strip(),
             raw_text=raw_text,
             source=self.source_var.get(),
             area=self.area_var.get().strip() or "General",
-            tipo=self.tipo_var.get().strip() or "Nota",
+            tipo=tipo,
             estado=self.estado_var.get().strip() or "Pendiente",
             prioridad=self.prioridad_var.get().strip() or "Media",
             fecha=self.date_entry.get_date().isoformat(),
+            hora_inicio=hora_inicio,
+            hora_fin=hora_fin,
         )
         note_id, msg = self.service.create_note(req)
         if note_id is None:
             messagebox.showinfo("Duplicado", msg)
         else:
+            if tipo.lower() == "evento" and hora_inicio:
+                self._create_google_calendar_event(
+                    titulo=req.title or raw_text.split("\n", 1)[0][:120] or "Sin título",
+                    descripcion=raw_text,
+                    fecha=req.fecha,
+                    hora_inicio=hora_inicio,
+                    hora_fin=hora_fin,
+                )
             messagebox.showinfo("OK", msg)
             self.text_widget.delete("1.0", "end")
             self.title_var.set("")
+            self.hora_inicio_var.set("")
+            self.hora_fin_var.set("")
         self.refresh_notes()
         self.refresh_actions()
+
+    def _on_tipo_changed(self, _event: tk.Event | None = None) -> None:
+        self._toggle_event_time_fields()
+
+    def _toggle_event_time_fields(self) -> None:
+        tipo = self.tipo_var.get().strip().lower()
+        if tipo == "evento":
+            self.event_time_frame.grid()
+        else:
+            self.event_time_frame.grid_remove()
+            self.hora_inicio_var.set("")
+            self.hora_fin_var.set("")
+
+    @staticmethod
+    def _is_valid_time(value: str) -> bool:
+        if not re.fullmatch(r"([01]\d|2[0-3]):([0-5]\d)", value):
+            return False
+        return True
+
+    def _create_google_calendar_event(self, titulo: str, descripcion: str, fecha: str, hora_inicio: str, hora_fin: str | None) -> None:
+        try:
+            start_datetime = datetime.combine(datetime.fromisoformat(fecha).date(), datetime.strptime(hora_inicio, "%H:%M").time())
+            if hora_fin:
+                end_datetime = datetime.combine(datetime.fromisoformat(fecha).date(), datetime.strptime(hora_fin, "%H:%M").time())
+            else:
+                end_datetime = start_datetime + timedelta(hours=1)
+
+            if end_datetime <= start_datetime:
+                end_datetime = start_datetime + timedelta(hours=1)
+
+            client = self._get_calendar_client()
+            if client is None:
+                return
+
+            client.create_event(
+                title=titulo,
+                description=descripcion,
+                start_datetime=start_datetime,
+                end_datetime=end_datetime,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("No se pudo crear el evento en Google Calendar")
+            messagebox.showwarning("Google Calendar", "No se pudo crear el evento en Google Calendar.")
+
+    def _get_calendar_client(self) -> GoogleCalendarClient | None:
+        if self._calendar_client is not None:
+            return self._calendar_client
+
+        credentials_path = Path(r"C:\notion-second-brain\secrets\calendar_credentials.json")
+        token_path = Path(r"C:\notion-second-brain\secrets\calendar_token.json")
+
+        if not credentials_path.exists():
+            credentials_path = Path("secrets/calendar_credentials.json")
+        if not token_path.parent.exists():
+            token_path = Path("secrets/calendar_token.json")
+
+        try:
+            self._calendar_client = GoogleCalendarClient(str(credentials_path), str(token_path))
+        except Exception:  # noqa: BLE001
+            logger.exception("No se pudo inicializar Google Calendar")
+            self._calendar_client = None
+        return self._calendar_client
 
     def _sync(self) -> None:
         threading.Thread(target=self._sync_worker, daemon=True).start()

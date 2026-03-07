@@ -45,6 +45,8 @@ class Database:
                     estado TEXT NOT NULL,
                     prioridad TEXT NOT NULL,
                     fecha TEXT NOT NULL,
+                    hora_inicio TEXT,
+                    hora_fin TEXT,
                     resumen TEXT NOT NULL DEFAULT '',
                     acciones TEXT NOT NULL DEFAULT '',
                     status TEXT NOT NULL,
@@ -58,6 +60,8 @@ class Database:
             )
             self._ensure_column(conn, "notes_local", "resumen", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "notes_local", "acciones", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "notes_local", "hora_inicio", "TEXT")
+            self._ensure_column(conn, "notes_local", "hora_fin", "TEXT")
             self._ensure_column(conn, "notes_local", "email_replied", "INTEGER NOT NULL DEFAULT 0")
             conn.execute(
                 """

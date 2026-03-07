@@ -250,12 +250,16 @@ class CalendarManagerWindow(ttk.Frame):
                     email_link = source_id
                 elif source_id:
                     email_link = f"https://mail.google.com/mail/u/0/#all/{source_id}"
+            display_date = note.fecha or ""
+            if note.hora_inicio:
+                display_date = f"{display_date} {note.hora_inicio}".strip()
             record = {
                 "kind": record_type,
                 "id": note.id,
                 "title": note.title or "(Nota sin título)",
                 "status": note.estado or "Pendiente",
-                "date": note.fecha or "",
+                "date": display_date,
+                "time": note.hora_inicio or "",
                 "content": note.raw_text or "",
                 "email_link": email_link,
             }
@@ -819,6 +823,8 @@ class CalendarManagerWindow(ttk.Frame):
             if note_date is None:
                 continue
             kind = "EMAIL" if note.source == "email_pasted" else "NOTE"
+            if (note.tipo or "").strip().lower() == "evento":
+                kind = "EVENT"
             grouped.setdefault(note_date, []).append(
                 {
                     "origin": kind,
@@ -827,7 +833,8 @@ class CalendarManagerWindow(ttk.Frame):
                     "id": note.id,
                     "status": note.estado or "Pendiente",
                     "date": note.fecha or "",
-                    "time": "",
+                    "time": note.hora_inicio or "",
+                    "time_end": note.hora_fin or "",
                     "content": note.raw_text or "",
                 }
             )
@@ -891,7 +898,8 @@ class CalendarManagerWindow(ttk.Frame):
 
     @staticmethod
     def _entry_label_text(entry: dict[str, str | int], include_time: bool = True) -> str:
-        time_prefix = f"{entry.get('time')} " if include_time and entry.get("time") else ""
-        kind = str(entry.get("kind") or "NOTE")
-        icon = CalendarManagerWindow.TYPE_LABELS.get(kind, kind).split()[0]
-        return f"{time_prefix}{icon} {entry.get('title', '(Sin título)')}"
+        title = str(entry.get("title") or "(Sin título)")
+        time_value = str(entry.get("time") or "")
+        if include_time and time_value:
+            return f"{time_value} {title}"
+        return title
