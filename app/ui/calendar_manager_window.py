@@ -8,7 +8,7 @@ import webbrowser
 from datetime import date, datetime, timedelta
 from pathlib import Path
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, ttk
 
 from app.core.calendar.google_calendar_client import GoogleCalendarClient
 from app.core.models import Action, Note
@@ -243,6 +243,13 @@ class CalendarManagerWindow(ttk.Frame):
 
         for note in self.note_service.list_notes(limit=2000):
             record_type = "EMAIL" if note.source == "email_pasted" else "NOTE"
+            email_link = ""
+            if record_type == "EMAIL":
+                source_id = (note.source_id or "").strip()
+                if source_id.startswith("http://") or source_id.startswith("https://"):
+                    email_link = source_id
+                elif source_id:
+                    email_link = f"https://mail.google.com/mail/u/0/#all/{source_id}"
             record = {
                 "kind": record_type,
                 "id": note.id,
@@ -250,6 +257,7 @@ class CalendarManagerWindow(ttk.Frame):
                 "status": note.estado or "Pendiente",
                 "date": note.fecha or "",
                 "content": note.raw_text or "",
+                "email_link": email_link,
             }
             self._insert_overview_record(record)
 
@@ -274,6 +282,7 @@ class CalendarManagerWindow(ttk.Frame):
                 "status": "Pendiente",
                 "date": event_date.isoformat() if event_date else "",
                 "content": str(event.get("description") or ""),
+                "htmlLink": str(event.get("htmlLink") or ""),
             }
             self._insert_overview_record(record)
 
@@ -376,19 +385,110 @@ class CalendarManagerWindow(ttk.Frame):
 
         kind = str(record.get("kind") or "NOTE")
         if kind == "NOTE":
-            ttk.Button(self.context_buttons, text="Editar", command=self._save_note_edits).pack(side="left", padx=4)
-            ttk.Button(self.context_buttons, text="Completar", command=self._complete_current_note).pack(side="left", padx=4)
-            ttk.Button(self.context_buttons, text="Crear acción", command=self._create_action_for_current_note).pack(side="left", padx=4)
+            ttk.Button(self.context_buttons, text="Editar", command=self.editar_registro).pack(side="left", padx=4)
+            ttk.Button(self.context_buttons, text="Completar", command=self.completar_registro).pack(side="left", padx=4)
+            ttk.Button(self.context_buttons, text="Crear acción", command=self.crear_accion).pack(side="left", padx=4)
         elif kind == "ACTION":
-            ttk.Button(self.context_buttons, text="Marcar completada", command=self._complete_current_action).pack(side="left", padx=4)
-            ttk.Button(self.context_buttons, text="Editar", command=self._save_action_edits).pack(side="left", padx=4)
+            ttk.Button(self.context_buttons, text="Marcar completada", command=self.completar_registro).pack(side="left", padx=4)
+            ttk.Button(self.context_buttons, text="Editar", command=self.editar_registro).pack(side="left", padx=4)
         elif kind == "EMAIL":
-            ttk.Button(self.context_buttons, text="Responder", command=lambda: logger.info("Responder email")).pack(side="left", padx=4)
-            ttk.Button(self.context_buttons, text="Reenviar", command=lambda: logger.info("Reenviar email")).pack(side="left", padx=4)
-            ttk.Button(self.context_buttons, text="Abrir email", command=lambda: logger.info("Abrir email")).pack(side="left", padx=4)
+            ttk.Button(self.context_buttons, text="Responder", command=self.responder_email).pack(side="left", padx=4)
+            ttk.Button(self.context_buttons, text="Reenviar", command=self.reenviar_email).pack(side="left", padx=4)
+            ttk.Button(self.context_buttons, text="Abrir email", command=self.abrir_email).pack(side="left", padx=4)
         elif kind == "EVENT":
-            ttk.Button(self.context_buttons, text="Editar evento", command=self._edit_event).pack(side="left", padx=4)
-            ttk.Button(self.context_buttons, text="Abrir en Google Calendar", command=self._open_event).pack(side="left", padx=4)
+            ttk.Button(self.context_buttons, text="Editar evento", command=self.editar_registro).pack(side="left", padx=4)
+            ttk.Button(self.context_buttons, text="Abrir en Google Calendar", command=self.abrir_evento_calendar).pack(side="left", padx=4)
+
+    @property
+    def selected_item(self) -> dict[str, str | int] | None:
+        return self._selected_record
+
+    def actualizar_ui(self) -> None:
+        self.refresh_overview()
+
+    def recargar_agenda(self) -> None:
+        self.refresh_overview()
+
+    def editar_registro(self) -> None:
+        item = self.selected_item
+        if not item:
+            return
+        kind = str(item.get("kind") or "")
+        if kind in {"NOTE", "EMAIL"}:
+            self._save_note_edits()
+        elif kind == "ACTION":
+            self._save_action_edits()
+        elif kind == "EVENT":
+            self.abrir_evento_calendar()
+
+    def completar_registro(self) -> None:
+        item = self.selected_item
+        if not item:
+            return
+
+        item["estado"] = "Completado"
+
+        kind = str(item.get("kind") or "")
+        if kind in {"NOTE", "EMAIL"}:
+            self._complete_current_note()
+        elif kind == "ACTION":
+            self._complete_current_action()
+        else:
+            self.actualizar_ui()
+
+    def crear_accion(self) -> None:
+        item = self.selected_item
+        if not item:
+            return
+
+        if str(item.get("kind") or "") not in {"NOTE", "EMAIL"}:
+            return
+
+        self._create_action_for_current_note()
+        self.recargar_agenda()
+
+    def abrir_email(self) -> None:
+        item = self.selected_item
+        if not item:
+            return
+
+        link = str(item.get("email_link") or "")
+        if link:
+            try:
+                webbrowser.open(link)
+            except Exception:  # noqa: BLE001
+                logger.exception("No se pudo abrir email")
+
+    def responder_email(self) -> None:
+        item = self.selected_item
+        if not item:
+            return
+        logger.info("Responder email: %s", item.get("id"))
+
+    def reenviar_email(self) -> None:
+        item = self.selected_item
+        if not item:
+            return
+        logger.info("Reenviar email: %s", item.get("id"))
+
+    def abrir_evento_calendar(self) -> None:
+        item = self.selected_item
+        if not item:
+            return
+
+        link = str(item.get("htmlLink") or "")
+
+        if link:
+            try:
+                webbrowser.open(link)
+            except Exception:  # noqa: BLE001
+                logger.exception("No se pudo abrir el evento en Google Calendar")
+                messagebox.showwarning("Evento", "No se pudo abrir el evento en Google Calendar")
+        else:
+            messagebox.showwarning(
+                "Evento",
+                "Este evento no tiene enlace a Google Calendar",
+            )
 
     def _save_note_edits(self) -> None:
         if not self._selected_record:
@@ -433,14 +533,10 @@ class CalendarManagerWindow(ttk.Frame):
         self.refresh_overview()
 
     def _edit_event(self) -> None:
-        self._open_event()
+        self.abrir_evento_calendar()
 
     def _open_event(self) -> None:
-        if not self._selected_record:
-            return
-        event_id = str(self._selected_record.get("id") or "")
-        if event_id:
-            webbrowser.open(f"https://calendar.google.com/calendar/r/eventedit/{event_id}")
+        self.abrir_evento_calendar()
 
     def _initialize_client(self) -> None:
         credentials_path = Path(r"C:\notion-second-brain\secrets\calendar_credentials.json")
