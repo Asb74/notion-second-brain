@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from app.persistence.user_profile_repository import UserProfileRepository
+from app.ui.app_icons import apply_app_icon
 
 
 class UserProfileWindow(tk.Toplevel):
@@ -17,6 +18,7 @@ class UserProfileWindow(tk.Toplevel):
         self.repo = UserProfileRepository(db_connection)
 
         self.title("Perfil de usuario")
+        apply_app_icon(self)
         self.geometry("520x340")
         self.resizable(False, False)
 
