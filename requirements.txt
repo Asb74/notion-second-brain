@@ -9,3 +9,4 @@ tkhtmlview
 google-api-python-client
 google-auth-oauthlib
 google-auth-httplib2
+sounddevice>=0.4.7
