@@ -6,6 +6,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from app.core.models import AppSettings
+from app.ui.app_icons import apply_app_icon
 
 
 class SettingsDialog(tk.Toplevel):
@@ -14,6 +15,7 @@ class SettingsDialog(tk.Toplevel):
     def __init__(self, parent: tk.Misc, current: AppSettings, on_save: callable):
         super().__init__(parent)
         self.title("Configuración")
+        apply_app_icon(self)
         self.resizable(False, False)
         self.transient(parent)
         self.grab_set()

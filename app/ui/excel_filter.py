@@ -8,6 +8,8 @@ from typing import Any, Callable, Optional, Sequence
 
 from tkcalendar import DateEntry
 
+from app.ui.app_icons import apply_app_icon
+
 EMPTY_LABEL = "(Vacías)"
 _TYPE_PRIORITY = {"bool": 4, "date": 3, "number": 2, "text": 1}
 
@@ -77,6 +79,7 @@ class ExcelTreeFilter:
         self._close_popup()
 
         popup = tk.Toplevel(self.master)
+        apply_app_icon(popup)
         popup.title(f"Filtro - {self.column_titles.get(col, col)}")
         popup.transient(self.master.winfo_toplevel())
         popup.resizable(False, False)
@@ -127,6 +130,7 @@ class ExcelTreeFilter:
 
         def show_date_picker(target_var: tk.StringVar) -> None:
             picker = tk.Toplevel(popup)
+            apply_app_icon(picker)
             picker.title("Seleccionar fecha")
             picker.transient(popup)
             picker.resizable(False, False)

@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from app.core.service import NoteService
+from app.ui.app_icons import apply_app_icon
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,7 @@ class MastersDialog(tk.Toplevel):
         self.category = category
         self.on_change = on_change
         self.title(f"Gestionar {category}")
+        apply_app_icon(self)
         self.geometry("540x420")
         self.transient(parent)
         self.grab_set()

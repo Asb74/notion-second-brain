@@ -14,6 +14,7 @@ from app.core.calendar.google_calendar_client import GoogleCalendarClient
 from app.core.models import Action, Note
 from app.core.service import NoteService
 from app.persistence.calendar_repository import CalendarRepository
+from app.ui.app_icons import apply_app_icon
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,7 @@ class CalendarManagerWindow(ttk.Frame):
     def __init__(self, master: tk.Misc, note_service: NoteService, calendar_repo: CalendarRepository | None = None):
         super().__init__(master, padding=10)
         self.note_service = note_service
+        apply_app_icon(self.winfo_toplevel())
         self.calendar_client: GoogleCalendarClient | None = None
         self.calendar_repo = calendar_repo
         self._calendar_filter_vars: dict[str, tk.BooleanVar] = {}

@@ -30,6 +30,7 @@ from app.persistence.email_repository import EmailRepository
 from app.persistence.training_repository import TrainingRepository
 from app.persistence.user_profile_repository import UserProfileRepository
 from app.services.email_entity_extractor import EmailEntityExtractor
+from app.ui.app_icons import apply_app_icon
 from app.ui.excel_filter import ExcelTreeFilter
 from app.utils.openai_client import MODEL_NAME, build_openai_client
 
@@ -148,6 +149,7 @@ class EmailManagerWindow(tk.Toplevel):
         self.my_email = self._resolve_my_email()
 
         self.title("Gestión de Emails")
+        apply_app_icon(self)
         self.geometry("1220x760")
         self.minsize(1080, 620)
 
@@ -1049,6 +1051,7 @@ class EmailManagerWindow(tk.Toplevel):
     def _expand_html_view(self) -> None:
         if self._expanded_html_window is None or not self._expanded_html_window.winfo_exists():
             self._expanded_html_window = tk.Toplevel(self)
+            apply_app_icon(self._expanded_html_window)
             self._expanded_html_window.title("Vista HTML expandida")
             self._expanded_html_window.geometry("1100x700")
             self._expanded_html_frame = ScrolledText(self._expanded_html_window, wrap="word", state="disabled")
@@ -1362,6 +1365,7 @@ class EmailManagerWindow(tk.Toplevel):
 
     def _select_original_attachment_paths(self, attachments: list[dict[str, str]]) -> list[str]:
         selection_dialog = tk.Toplevel(self)
+        apply_app_icon(selection_dialog)
         selection_dialog.title("Seleccionar adjuntos")
         selection_dialog.transient(self)
         selection_dialog.grab_set()

@@ -27,6 +27,7 @@ from app.ui.email_manager_window import EmailManagerWindow
 from app.ui.calendar_manager_window import CalendarManagerWindow
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.user_profile_window import UserProfileWindow
+from app.ui.app_icons import apply_app_icon
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,7 @@ class MainWindow(ttk.Frame):
     ):
         super().__init__(master, padding=10)
         self.master = master
+        apply_app_icon(self.master)
         self.service = service
         self.db_connection = db_connection
         self.gmail_credentials_path = gmail_credentials_path
@@ -185,6 +187,7 @@ class MainWindow(ttk.Frame):
             return self._calendar_window
 
         toplevel = tk.Toplevel(self.master)
+        apply_app_icon(toplevel)
         toplevel.title("Agenda")
         toplevel.geometry("1120x760")
         toplevel.minsize(820, 480)
