@@ -63,6 +63,7 @@ class CalendarManagerWindow(ttk.Frame):
         self._overview_records: dict[str, dict[str, str | int]] = {}
         self._action_vars: dict[int, tk.BooleanVar] = {}
         self._selected_record: dict[str, str | int] | None = None
+        self._calendar_mousewheel_bound = False
         self.dictation_service = DictationService()
 
         style = ttk.Style(self)
@@ -189,15 +190,30 @@ class CalendarManagerWindow(ttk.Frame):
         self.overview_stack.pack(fill="both", expand=True)
 
         self.list_frame = ttk.Frame(self.overview_stack)
-        self.calendar_frame = ttk.Frame(self.overview_stack)
-        for frame in (self.list_frame, self.calendar_frame):
+        self.calendar_overview_frame = ttk.Frame(self.overview_stack)
+        for frame in (self.list_frame, self.calendar_overview_frame):
             frame.grid(row=0, column=0, sticky="nsew")
         self.overview_stack.rowconfigure(0, weight=1)
         self.overview_stack.columnconfigure(0, weight=1)
 
         self._build_overview_list()
-        self.calendar_body = ttk.Frame(self.calendar_frame)
-        self.calendar_body.pack(fill="both", expand=True)
+
+        self.calendar_scroll_container = ttk.Frame(self.calendar_overview_frame)
+        self.calendar_scroll_container.pack(fill="both", expand=True)
+
+        self.calendar_canvas = tk.Canvas(self.calendar_scroll_container, highlightthickness=0)
+        self.calendar_scrollbar = ttk.Scrollbar(self.calendar_scroll_container, orient="vertical", command=self.calendar_canvas.yview)
+        self.calendar_canvas.configure(yscrollcommand=self.calendar_scrollbar.set)
+
+        self.calendar_scrollbar.pack(side="right", fill="y")
+        self.calendar_canvas.pack(side="left", fill="both", expand=True)
+
+        self.calendar_frame = ttk.Frame(self.calendar_canvas)
+        self.calendar_canvas_window = self.calendar_canvas.create_window((0, 0), window=self.calendar_frame, anchor="nw")
+        self.calendar_frame.bind("<Configure>", self._on_calendar_configure)
+        self.calendar_canvas.bind("<Configure>", self._on_calendar_canvas_configure)
+        self.calendar_canvas.bind("<Enter>", self._bind_calendar_mousewheel)
+        self.calendar_canvas.bind("<Leave>", self._unbind_calendar_mousewheel)
 
         self._build_detail_panel()
         self._show_calendar_overview()
@@ -288,7 +304,28 @@ class CalendarManagerWindow(ttk.Frame):
         self.list_frame.tkraise()
 
     def _show_calendar_overview(self) -> None:
-        self.calendar_frame.tkraise()
+        self.calendar_overview_frame.tkraise()
+
+    def _on_calendar_configure(self, _event: tk.Event | None = None) -> None:
+        self.calendar_canvas.configure(scrollregion=self.calendar_canvas.bbox("all"))
+
+    def _on_calendar_canvas_configure(self, event: tk.Event) -> None:
+        self.calendar_canvas.itemconfigure(self.calendar_canvas_window, width=event.width)
+
+    def _bind_calendar_mousewheel(self, _event: tk.Event | None = None) -> None:
+        if self._calendar_mousewheel_bound:
+            return
+        self.bind_all("<MouseWheel>", self._on_calendar_mousewheel)
+        self._calendar_mousewheel_bound = True
+
+    def _unbind_calendar_mousewheel(self, _event: tk.Event | None = None) -> None:
+        if not self._calendar_mousewheel_bound:
+            return
+        self.unbind_all("<MouseWheel>")
+        self._calendar_mousewheel_bound = False
+
+    def _on_calendar_mousewheel(self, event: tk.Event) -> None:
+        self.calendar_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
     def _refresh_data(self) -> None:
         self.sync_google_calendars()
@@ -756,7 +793,7 @@ class CalendarManagerWindow(ttk.Frame):
         self.render_calendar()
 
     def _clear_calendar_body(self) -> None:
-        for child in self.calendar_body.winfo_children():
+        for child in self.calendar_frame.winfo_children():
             child.destroy()
 
     def render_calendar(self) -> None:
@@ -805,7 +842,7 @@ class CalendarManagerWindow(ttk.Frame):
                 self._label_metadata[str(label)] = entry
 
     def _build_month_grid(self) -> None:
-        container = ttk.Frame(self.calendar_body)
+        container = ttk.Frame(self.calendar_frame)
         container.pack(fill="both", expand=True)
 
         weekday_names = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
@@ -839,7 +876,7 @@ class CalendarManagerWindow(ttk.Frame):
         self._clear_calendar_body()
         self._label_metadata.clear()
 
-        container = ttk.Frame(self.calendar_body)
+        container = ttk.Frame(self.calendar_frame)
         container.pack(fill="both", expand=True)
 
         week_start = self.current_date - timedelta(days=self.current_date.weekday())
@@ -869,7 +906,7 @@ class CalendarManagerWindow(ttk.Frame):
         self._label_metadata.clear()
         self.month_label.configure(text=self.current_date.strftime("%A %d %B %Y").capitalize())
 
-        container = ttk.Frame(self.calendar_body)
+        container = ttk.Frame(self.calendar_frame)
         container.pack(fill="both", expand=True)
         container.columnconfigure(1, weight=1)
 
