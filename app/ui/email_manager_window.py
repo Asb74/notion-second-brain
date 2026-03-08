@@ -32,6 +32,8 @@ from app.persistence.user_profile_repository import UserProfileRepository
 from app.services.email_entity_extractor import EmailEntityExtractor
 from app.ui.app_icons import apply_app_icon
 from app.ui.excel_filter import ExcelTreeFilter
+from app.ui.dictation_widgets import attach_dictation
+from app.services.dictation_service import DictationService
 from app.utils.openai_client import MODEL_NAME, build_openai_client
 
 logger = logging.getLogger(__name__)
@@ -189,6 +191,7 @@ class EmailManagerWindow(tk.Toplevel):
         self.detected_persona_var = tk.StringVar(value="")
         self.detected_accion_var = tk.StringVar(value="")
         self._pending_note_id_by_gmail_id: dict[str, int] = {}
+        self.dictation_service = DictationService()
 
         self._build_layout()
         self.refresh_emails()
@@ -363,6 +366,8 @@ class EmailManagerWindow(tk.Toplevel):
         response_scroll = ttk.Scrollbar(response_frame, orient="vertical", command=self.response_text.yview)
         self.response_text.configure(yscrollcommand=response_scroll.set)
         self.response_text.pack(side="top", fill="both", expand=True, padx=4, pady=4)
+        self.response_dictation_controls = attach_dictation(self.response_text, response_frame, self.dictation_service)
+        self.response_dictation_controls.pack(anchor="w", padx=4, pady=(0, 4))
         response_scroll.pack(side="right", fill="y")
 
         response_actions = ttk.Frame(response_frame)

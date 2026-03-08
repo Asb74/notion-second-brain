@@ -15,6 +15,8 @@ from app.core.models import Action, Note
 from app.core.service import NoteService
 from app.persistence.calendar_repository import CalendarRepository
 from app.ui.app_icons import apply_app_icon
+from app.ui.dictation_widgets import attach_dictation
+from app.services.dictation_service import DictationService
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +63,7 @@ class CalendarManagerWindow(ttk.Frame):
         self._overview_records: dict[str, dict[str, str | int]] = {}
         self._action_vars: dict[int, tk.BooleanVar] = {}
         self._selected_record: dict[str, str | int] | None = None
+        self.dictation_service = DictationService()
 
         style = ttk.Style(self)
         style.theme_use("clam")
@@ -266,6 +269,8 @@ class CalendarManagerWindow(ttk.Frame):
 
         self.content_text = tk.Text(self.detail_content, height=10, wrap="word")
         self.content_text.pack(fill="both", expand=True)
+        self.content_dictation_controls = attach_dictation(self.content_text, self.detail_content, self.dictation_service)
+        self.content_dictation_controls.pack(anchor="w", pady=(4, 0))
 
         self.associated_actions_frame = ttk.LabelFrame(self.detail_content, text="Acciones asociadas")
         self.associated_actions_frame.pack(fill="x", pady=(8, 6))
