@@ -8,7 +8,7 @@ import webbrowser
 from datetime import date, datetime, timedelta
 from pathlib import Path
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import messagebox, simpledialog, ttk
 from typing import Any, Callable
 
 from app.core.calendar.google_calendar_client import GoogleCalendarClient
@@ -94,6 +94,35 @@ class CalendarManagerWindow(ttk.Frame):
         self._build_layout()
         self._initialize_client()
         self.refresh_overview()
+
+    def _is_email_backed_record(self, record: dict[str, str | int]) -> bool:
+        if str(record.get("kind") or "") == "EMAIL":
+            return True
+        return bool(str(record.get("gmail_id") or "").strip() or str(record.get("source_id") or "").strip())
+
+    def _note_id_for_record(self, record: dict[str, str | int]) -> int:
+        return int(record.get("note_id") or record.get("id") or 0)
+
+    def _enrich_with_email_fields(self, record: dict[str, str | int], note: Note) -> None:
+        if note.source != "email_pasted":
+            return
+
+        gmail_id = (note.source_id or "").strip()
+        record["tipo"] = "email"
+        record["gmail_id"] = gmail_id
+        record["source_id"] = gmail_id
+        record["thread_id"] = ""
+        record["remitente"] = ""
+        record["asunto"] = note.title or ""
+        record["adjuntos"] = []
+
+        email_window = self._open_email_manager()
+        if email_window is not None and gmail_id:
+            metadata = getattr(email_window, "get_email_metadata", lambda _gmail_id: {})(gmail_id)
+            record["thread_id"] = str(metadata.get("thread_id") or "")
+            record["remitente"] = str(metadata.get("sender") or "")
+            record["asunto"] = str(metadata.get("subject") or note.title or "")
+            record["adjuntos"] = getattr(email_window, "get_email_attachments", lambda _gmail_id: [])(gmail_id)
 
     def _build_toolbar(self) -> None:
         toolbar = ttk.Frame(self)
@@ -396,6 +425,7 @@ class CalendarManagerWindow(ttk.Frame):
                 "google_calendar_id": note.google_calendar_id or "",
                 "google_event_id": note.google_event_id or "",
             }
+            self._enrich_with_email_fields(record, note)
             self._insert_overview_record(record)
 
         for action in self.actions:
@@ -508,11 +538,11 @@ class CalendarManagerWindow(ttk.Frame):
             child.destroy()
         self._action_vars.clear()
 
-        if str(record.get("kind")) not in {"NOTE", "EMAIL"}:
+        note_id = self._note_id_for_record(record)
+        if note_id <= 0:
             ttk.Label(self.associated_actions_frame, text="No aplica para este registro.").pack(anchor="w", padx=6, pady=4)
             return
 
-        note_id = int(record.get("id") or 0)
         note_actions = self.note_service.list_actions_by_note(note_id)
         if not note_actions:
             ttk.Label(self.associated_actions_frame, text="Sin acciones asociadas.").pack(anchor="w", padx=6, pady=4)
@@ -543,19 +573,17 @@ class CalendarManagerWindow(ttk.Frame):
             child.destroy()
 
         kind = str(record.get("kind") or "NOTE")
-        is_email = kind == "EMAIL"
+        is_email = self._is_email_backed_record(record)
         email_buttons_state = "normal" if is_email else "disabled"
+        has_note = self._note_id_for_record(record) > 0
 
-        if kind == "NOTE":
+        if has_note and kind in {"NOTE", "EMAIL", "EVENT"}:
             ttk.Button(self.context_buttons, text="Editar", command=self.editar_registro).pack(side="left", padx=4)
             ttk.Button(self.context_buttons, text="Completar", command=self.completar_registro).pack(side="left", padx=4)
-            ttk.Button(self.context_buttons, text="Crear acción", command=self.crear_accion).pack(side="left", padx=4)
+            ttk.Button(self.context_buttons, text="+ Nueva acción", command=self.crear_accion).pack(side="left", padx=4)
         elif kind == "ACTION":
             ttk.Button(self.context_buttons, text="Marcar completada", command=self.completar_registro).pack(side="left", padx=4)
             ttk.Button(self.context_buttons, text="Editar", command=self.editar_registro).pack(side="left", padx=4)
-        elif kind == "EMAIL":
-            ttk.Button(self.context_buttons, text="Editar", command=self.editar_registro).pack(side="left", padx=4)
-            ttk.Button(self.context_buttons, text="Completar", command=self.completar_registro).pack(side="left", padx=4)
         elif kind == "EVENT":
             ttk.Button(self.context_buttons, text="Editar evento", command=self.editar_registro).pack(side="left", padx=4)
             ttk.Button(self.context_buttons, text="Abrir en Google Calendar", command=self.abrir_evento_calendar).pack(side="left", padx=4)
@@ -565,6 +593,9 @@ class CalendarManagerWindow(ttk.Frame):
         ttk.Button(self.context_buttons, text="Abrir email", command=self.abrir_email, state=email_buttons_state).pack(side="left", padx=4)
 
     def _resolve_gmail_id(self, item: dict[str, str | int]) -> str:
+        gmail_id = str(item.get("gmail_id") or "").strip()
+        if gmail_id:
+            return gmail_id
         source_id = str(item.get("source_id") or "").strip()
         if source_id:
             return source_id
@@ -582,14 +613,22 @@ class CalendarManagerWindow(ttk.Frame):
         self._attachments_by_name.clear()
         self.attachments_list.delete(0, "end")
 
-        if str(record.get("kind") or "") != "EMAIL":
+        if not self._is_email_backed_record(record):
             self.attachments_list.insert("end", "(solo disponible para emails)")
             return
 
         email_window = self._open_email_manager()
         gmail_id = self._resolve_gmail_id(record)
         if email_window is None or not gmail_id:
-            self.attachments_list.insert("end", "(sin adjuntos)")
+            for idx, attachment in enumerate(record.get("adjuntos") or [], start=1):
+                if not isinstance(attachment, dict):
+                    continue
+                name = str(attachment.get("filename") or f"adjunto_{idx}")
+                display_name = f"📄 {name}"
+                self._attachments_by_name[display_name] = attachment
+                self.attachments_list.insert("end", display_name)
+            if not self._attachments_by_name:
+                self.attachments_list.insert("end", "(sin adjuntos)")
             return
 
         attachments = email_window.get_email_attachments(gmail_id)
@@ -605,7 +644,7 @@ class CalendarManagerWindow(ttk.Frame):
 
     def _on_attachment_open(self, _event: tk.Event | None = None) -> None:
         item = self.selected_item
-        if not item or str(item.get("kind") or "") != "EMAIL":
+        if not item or not self._is_email_backed_record(item):
             return
         selection = self.attachments_list.curselection()
         if not selection:
@@ -635,7 +674,7 @@ class CalendarManagerWindow(ttk.Frame):
         if not item:
             return
         kind = str(item.get("kind") or "")
-        if kind in {"NOTE", "EMAIL"}:
+        if self._note_id_for_record(item) > 0 and kind in {"NOTE", "EMAIL", "EVENT"}:
             self._save_note_edits()
         elif kind == "ACTION":
             self._save_action_edits()
@@ -650,9 +689,9 @@ class CalendarManagerWindow(ttk.Frame):
         item["status"] = "Completado"
 
         kind = str(item.get("kind") or "")
-        if kind in {"NOTE", "EMAIL"}:
+        if self._note_id_for_record(item) > 0 and kind in {"NOTE", "EMAIL", "EVENT"}:
             self._complete_current_note()
-            if kind == "EMAIL":
+            if self._is_email_backed_record(item):
                 self._prompt_email_response(item)
         elif kind == "ACTION":
             self._complete_current_action()
@@ -662,9 +701,13 @@ class CalendarManagerWindow(ttk.Frame):
     def _prompt_email_response(self, item: dict[str, str | int]) -> None:
         gmail_id = self._resolve_gmail_id(item)
         if not gmail_id:
+            messagebox.showwarning("Email", "No se encontró el Gmail ID para responder automáticamente.")
             return
         completion_event: dict[str, str | int] = {
             "gmail_id": gmail_id,
+            "thread_id": str(item.get("thread_id") or ""),
+            "to": str(item.get("remitente") or ""),
+            "subject": f"Re: {str(item.get('asunto') or item.get('title') or '').strip()}",
             "body": str(item.get("content") or ""),
         }
         if self.email_completion_callback is not None:
@@ -679,7 +722,7 @@ class CalendarManagerWindow(ttk.Frame):
         if not item:
             return
 
-        if str(item.get("kind") or "") not in {"NOTE", "EMAIL"}:
+        if self._note_id_for_record(item) <= 0:
             return
 
         self._create_action_for_current_note()
@@ -687,7 +730,7 @@ class CalendarManagerWindow(ttk.Frame):
 
     def abrir_email(self) -> None:
         item = self.selected_item
-        if not item or str(item.get("kind") or "") != "EMAIL":
+        if not item or not self._is_email_backed_record(item):
             return
 
         gmail_id = self._resolve_gmail_id(item)
@@ -699,17 +742,28 @@ class CalendarManagerWindow(ttk.Frame):
                 logger.exception("No se pudo abrir email")
             return
 
-        email_window = self._open_email_manager()
-        if email_window is None:
-            return
-        if gmail_id:
-            email_window.select_email_by_gmail_id(gmail_id)
-        else:
-            email_window.focus_force()
+        messagebox.showwarning("Email", "No se encontró Gmail ID para abrir el correo original.")
+
+    def _edit_actions_for_note(self, note_id: int) -> None:
+        actions = self.note_service.list_actions_by_note(note_id)
+        for action in actions:
+            new_value = simpledialog.askstring(
+                "Editar acción",
+                "Descripción de la acción (vacío para eliminar):",
+                initialvalue=action.description,
+                parent=self,
+            )
+            if new_value is None:
+                continue
+            cleaned = new_value.strip()
+            if cleaned:
+                self.note_service.update_action_description(action.id, cleaned)
+            else:
+                self.note_service.delete_action(action.id)
 
     def responder_email(self) -> None:
         item = self.selected_item
-        if not item or str(item.get("kind") or "") != "EMAIL":
+        if not item or not self._is_email_backed_record(item):
             return
         email_window = self._open_email_manager()
         if email_window is None:
@@ -721,7 +775,7 @@ class CalendarManagerWindow(ttk.Frame):
         if not email_window.select_email_by_gmail_id(gmail_id):
             return
 
-        subject = str(item.get("title") or "").strip() or "(Sin asunto)"
+        subject = str(item.get("asunto") or item.get("title") or "").strip() or "(Sin asunto)"
         body = str(item.get("content") or "").strip()
         quoted = f"\n\n--- Mensaje original ---\n{body}" if body else ""
         email_window.set_response_draft(f"Re: {subject}{quoted}")
@@ -730,7 +784,7 @@ class CalendarManagerWindow(ttk.Frame):
 
     def reenviar_email(self) -> None:
         item = self.selected_item
-        if not item or str(item.get("kind") or "") != "EMAIL":
+        if not item or not self._is_email_backed_record(item):
             return
         email_window = self._open_email_manager()
         if email_window is None:
@@ -741,7 +795,7 @@ class CalendarManagerWindow(ttk.Frame):
             return
         if not email_window.select_email_by_gmail_id(gmail_id):
             return
-        subject = str(item.get("title") or "").strip() or "(Sin asunto)"
+        subject = str(item.get("asunto") or item.get("title") or "").strip() or "(Sin asunto)"
         body = str(item.get("content") or "").strip()
         forward_text = (
             f"Fwd: {subject}\n\n"
@@ -796,10 +850,26 @@ class CalendarManagerWindow(ttk.Frame):
     def _save_note_edits(self) -> None:
         if not self._selected_record:
             return
-        note_id = int(self._selected_record.get("id") or 0)
-        title = self.detail_title_var.get().strip()
+        note_id = self._note_id_for_record(self._selected_record)
+        if note_id <= 0:
+            return
+
+        title = simpledialog.askstring("Editar", "Título:", initialvalue=self.detail_title_var.get().strip(), parent=self)
+        if title is None:
+            return
+        date_value = simpledialog.askstring(
+            "Editar",
+            "Fecha (YYYY-MM-DD):",
+            initialvalue=str(self._selected_record.get("date") or "").split(" ")[0],
+            parent=self,
+        )
+        if date_value is None:
+            return
         content = self.content_text.get("1.0", "end").strip()
         self.note_service.update_note_title(note_id, title, content)
+        if date_value.strip():
+            self.note_service.update_note_date(note_id, date_value.strip())
+        self._edit_actions_for_note(note_id)
         self.refresh_overview()
 
     def _save_action_edits(self) -> None:
@@ -824,7 +894,11 @@ class CalendarManagerWindow(ttk.Frame):
     def _complete_current_note(self) -> None:
         if not self._selected_record:
             return
-        note_id = int(self._selected_record.get("id") or 0)
+        note_id = self._note_id_for_record(self._selected_record)
+        if note_id <= 0:
+            return
+        action_ids = [action.id for action in self.note_service.list_actions_by_note(note_id) if action.status != "hecha"]
+        self.note_service.mark_actions_done(action_ids)
         self.note_service.note_repo.update_estado(note_id, "Finalizado")
         self.refresh_overview()
 
@@ -1180,22 +1254,23 @@ class CalendarManagerWindow(ttk.Frame):
             kind = "EMAIL" if note.source == "email_pasted" else "NOTE"
             if (note.tipo or "").strip().lower() == "evento":
                 kind = "EVENT"
-            grouped.setdefault(note_date, []).append(
-                {
-                    "origin": kind,
-                    "kind": kind,
-                    "title": note.title or "(Nota sin título)",
-                    "id": note.id,
-                    "status": note.estado or "Pendiente",
-                    "date": note.fecha or "",
-                    "time": note.hora_inicio or "",
-                    "time_end": note.hora_fin or "",
-                    "content": note.raw_text or "",
-                    "htmlLink": note.google_calendar_link or "",
-                    "google_calendar_id": note.google_calendar_id or "",
-                    "google_event_id": note.google_event_id or "",
-                }
-            )
+            record = {
+                "origin": kind,
+                "kind": kind,
+                "title": note.title or "(Nota sin título)",
+                "id": note.id,
+                "note_id": note.id,
+                "status": note.estado or "Pendiente",
+                "date": note.fecha or "",
+                "time": note.hora_inicio or "",
+                "time_end": note.hora_fin or "",
+                "content": note.raw_text or "",
+                "htmlLink": note.google_calendar_link or "",
+                "google_calendar_id": note.google_calendar_id or "",
+                "google_event_id": note.google_event_id or "",
+            }
+            self._enrich_with_email_fields(record, note)
+            grouped.setdefault(note_date, []).append(record)
 
         for day_items in grouped.values():
             day_items.sort(key=lambda item: (str(item.get("time") or "99:99"), str(item.get("title", "")).lower()))
