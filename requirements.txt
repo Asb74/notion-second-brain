@@ -11,3 +11,4 @@ google-auth-oauthlib
 google-auth-httplib2
 sounddevice>=0.4.7
 soundfile>=0.12.1
+numpy>=1.26.0
