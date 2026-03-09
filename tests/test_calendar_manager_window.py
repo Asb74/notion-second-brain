@@ -48,6 +48,8 @@ class _EmailWindowStub:
         self.selected = None
         self.reply = None
         self.focused = False
+        self.reply_called = False
+        self.forward_called = False
 
     def get_email_attachments(self, _gmail_id: str):
         return [{"filename": "factura.pdf"}, {"filename": "albaran.pdf"}]
@@ -61,6 +63,12 @@ class _EmailWindowStub:
 
     def focus_force(self):
         self.focused = True
+
+    def _create_outlook_draft(self):
+        self.reply_called = True
+
+    def _forward_email(self):
+        self.forward_called = True
 
 
 def test_resolve_gmail_id_prefers_source_id() -> None:
@@ -92,7 +100,7 @@ def test_prompt_email_response_uses_completion_callback() -> None:
     assert calls == [{"gmail_id": "gid-2", "thread_id": "", "to": "", "subject": "Re: ", "body": "texto"}]
 
 
-def test_responder_email_prefills_reply_text() -> None:
+def test_responder_email_uses_email_manager_reply_action() -> None:
     window = CalendarManagerWindow.__new__(CalendarManagerWindow)
     email_window = _EmailWindowStub()
     window.open_email_manager_callback = lambda: email_window
@@ -101,11 +109,10 @@ def test_responder_email_prefills_reply_text() -> None:
     window.responder_email()
 
     assert email_window.selected == "gid-7"
-    assert email_window.reply.startswith("Re: Asunto")
-    assert "Mensaje original" in email_window.reply
+    assert email_window.reply_called is True
 
 
-def test_reenviar_email_prefills_forward_text() -> None:
+def test_reenviar_email_uses_email_manager_forward_action() -> None:
     window = CalendarManagerWindow.__new__(CalendarManagerWindow)
     email_window = _EmailWindowStub()
     window.open_email_manager_callback = lambda: email_window
@@ -114,12 +121,43 @@ def test_reenviar_email_prefills_forward_text() -> None:
     window.reenviar_email()
 
     assert email_window.selected == "gid-8"
-    assert email_window.reply.startswith("Fwd: Asunto")
+    assert email_window.forward_called is True
 
 
-def test_abrir_email_uses_gmail_url_when_id_exists() -> None:
+def test_abrir_email_selects_email_in_manager() -> None:
     window = CalendarManagerWindow.__new__(CalendarManagerWindow)
+    email_window = _EmailWindowStub()
+    window.open_email_manager_callback = lambda: email_window
     window._selected_record = {"kind": "EMAIL", "source_id": "gid-9"}
-    with patch("app.ui.calendar_manager_window.webbrowser.open") as opener:
-        window.abrir_email()
-    opener.assert_called_once_with("https://mail.google.com/mail/u/0/#inbox/gid-9")
+
+    window.abrir_email()
+
+    assert email_window.selected == "gid-9"
+
+
+def test_create_action_uses_note_id_when_id_is_missing() -> None:
+    window = CalendarManagerWindow.__new__(CalendarManagerWindow)
+    created_for_note_ids: list[int] = []
+
+    class _ActionsRepo:
+        def create_action(self, note_id: int, _description: str, _area: str):
+            created_for_note_ids.append(note_id)
+
+    class _NoteService:
+        actions_repo = _ActionsRepo()
+
+        @staticmethod
+        def get_note_by_id(note_id: int):
+            class _Note:
+                area = "general"
+
+            return _Note() if note_id == 42 else None
+
+    window.note_service = _NoteService()
+    window.content_text = type("TextStub", (), {"get": lambda *_args: "Nueva acción"})()
+    window.refresh_overview = lambda: None
+    window._selected_record = {"kind": "EVENT", "note_id": 42}
+
+    window._create_action_for_current_note()
+
+    assert created_for_note_ids == [42]

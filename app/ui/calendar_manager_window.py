@@ -531,7 +531,34 @@ class CalendarManagerWindow(ttk.Frame):
 
 
     def _on_overview_double_click(self, _event: tk.Event | None = None) -> None:
+        item = self.selected_item
+        if item and self._is_email_backed_record(item):
+            # FIX: doble click en un email debe abrir gestor, seleccionar y mostrar el mensaje.
+            self.abrir_email()
+            return
         self.editar_registro()
+
+    def _select_email_in_manager(self, item: dict[str, str | int], *, action_name: str) -> Any | None:
+        """Open EmailManagerWindow and select the target email.
+
+        Centralizes the integration flow Calendar -> EmailManager -> select gmail_id.
+        """
+        email_window = self._open_email_manager()
+        if email_window is None:
+            return None
+
+        gmail_id = self._resolve_gmail_id(item)
+        if not gmail_id:
+            messagebox.showwarning("Email", "No se encontró el Gmail ID del correo.")
+            return None
+
+        if not email_window.select_email_by_gmail_id(gmail_id):
+            # FIX: comportamiento seguro cuando el correo no está disponible.
+            messagebox.showwarning("Email", f"No se encontró el correo para {action_name}.")
+            return None
+
+        email_window.focus_force()
+        return email_window
 
     def _render_associated_actions(self, record: dict[str, str | int]) -> None:
         for child in self.associated_actions_frame.winfo_children():
@@ -633,6 +660,9 @@ class CalendarManagerWindow(ttk.Frame):
 
         attachments = email_window.get_email_attachments(gmail_id)
         if not attachments:
+            # FIX: fallback a record["adjuntos"] cuando el caché del EmailManager no trae datos.
+            attachments = [att for att in (record.get("adjuntos") or []) if isinstance(att, dict)]
+        if not attachments:
             self.attachments_list.insert("end", "(sin adjuntos)")
             return
 
@@ -733,16 +763,8 @@ class CalendarManagerWindow(ttk.Frame):
         if not item or not self._is_email_backed_record(item):
             return
 
-        gmail_id = self._resolve_gmail_id(item)
-        if gmail_id:
-            link = f"https://mail.google.com/mail/u/0/#inbox/{gmail_id}"
-            try:
-                webbrowser.open(link)
-            except Exception:  # noqa: BLE001
-                logger.exception("No se pudo abrir email")
-            return
-
-        messagebox.showwarning("Email", "No se encontró Gmail ID para abrir el correo original.")
+        # FIX: Abrir email desde calendario usa el mismo flujo de selección del gestor de emails.
+        self._select_email_in_manager(item, action_name="abrir")
 
     def _edit_actions_for_note(self, note_id: int) -> None:
         actions = self.note_service.list_actions_by_note(note_id)
@@ -765,45 +787,28 @@ class CalendarManagerWindow(ttk.Frame):
         item = self.selected_item
         if not item or not self._is_email_backed_record(item):
             return
-        email_window = self._open_email_manager()
+        email_window = self._select_email_in_manager(item, action_name="responder")
         if email_window is None:
             return
-        gmail_id = self._resolve_gmail_id(item)
-        if not gmail_id:
-            messagebox.showwarning("Email", "No se encontró el Gmail ID del correo.")
-            return
-        if not email_window.select_email_by_gmail_id(gmail_id):
-            return
 
-        subject = str(item.get("asunto") or item.get("title") or "").strip() or "(Sin asunto)"
-        body = str(item.get("content") or "").strip()
-        quoted = f"\n\n--- Mensaje original ---\n{body}" if body else ""
-        email_window.set_response_draft(f"Re: {subject}{quoted}")
-        email_window.focus_force()
+        # FIX: reutiliza la misma acción del botón "Responder" del EmailManagerWindow.
+        create_reply = getattr(email_window, "_create_outlook_draft", None)
+        if callable(create_reply):
+            create_reply()
         logger.info("Responder email: %s", item.get("id"))
 
     def reenviar_email(self) -> None:
         item = self.selected_item
         if not item or not self._is_email_backed_record(item):
             return
-        email_window = self._open_email_manager()
+        email_window = self._select_email_in_manager(item, action_name="reenviar")
         if email_window is None:
             return
-        gmail_id = self._resolve_gmail_id(item)
-        if not gmail_id:
-            messagebox.showwarning("Email", "No se encontró el Gmail ID del correo.")
-            return
-        if not email_window.select_email_by_gmail_id(gmail_id):
-            return
-        subject = str(item.get("asunto") or item.get("title") or "").strip() or "(Sin asunto)"
-        body = str(item.get("content") or "").strip()
-        forward_text = (
-            f"Fwd: {subject}\n\n"
-            "---- Mensaje reenviado ----\n"
-            f"{body}"
-        )
-        email_window.set_response_draft(forward_text)
-        email_window.focus_force()
+
+        # FIX: reutiliza la misma acción del botón "Reenviar" del EmailManagerWindow.
+        forward = getattr(email_window, "_forward_email", None)
+        if callable(forward):
+            forward()
         logger.info("Reenviar email: %s", item.get("id"))
 
     def abrir_evento_calendar(self) -> None:
@@ -869,6 +874,12 @@ class CalendarManagerWindow(ttk.Frame):
         self.note_service.update_note_title(note_id, title, content)
         if date_value.strip():
             self.note_service.update_note_date(note_id, date_value.strip())
+
+        # FIX: actualizar variables de UI inmediatamente tras editar.
+        self.detail_title_var.set(title.strip() or "(Sin título)")
+        self._selected_record["title"] = title.strip() or "(Sin título)"
+        self._selected_record["date"] = date_value.strip() or self._selected_record.get("date") or ""
+
         self._edit_actions_for_note(note_id)
         self.refresh_overview()
 
@@ -883,7 +894,8 @@ class CalendarManagerWindow(ttk.Frame):
     def _create_action_for_current_note(self) -> None:
         if not self._selected_record:
             return
-        note_id = int(self._selected_record.get("id") or 0)
+        # FIX: usar helper para resolver note_id/id de forma consistente.
+        note_id = self._note_id_for_record(self._selected_record)
         note = self.note_service.get_note_by_id(note_id)
         if not note:
             return
