@@ -202,6 +202,11 @@ class EmailManagerWindow(tk.Toplevel):
         style = ttk.Style(self)
         style.theme_use("clam")
         style.configure("Toolbar.TButton", padding=(8, 6))
+        style.map(
+            "Treeview",
+            background=[("selected", "#2E6BD1")],
+            foreground=[("selected", "white")],
+        )
 
         toolbar_container = ttk.Frame(self, padding=(10, 10, 10, 6))
         toolbar_container.pack(fill="x")
@@ -294,6 +299,10 @@ class EmailManagerWindow(tk.Toplevel):
         table_frame.pack(fill="both", expand=True)
 
         self.tree = ttk.Treeview(table_frame, columns=self.columns, show="headings", height=12, selectmode="extended")
+        self.tree.tag_configure("email_new", background="#E8F4FF", font=("Segoe UI", 9, "bold"))
+        self.tree.tag_configure("email_ignored", foreground="#999999")
+        self.tree.tag_configure("email_converted", background="#E8FFE8")
+        self.tree.tag_configure("email_forwarded", background="#FFF3E0")
         for col in self.columns:
             self.tree.heading(col, text=self.column_titles.get(col, col))
 
@@ -633,16 +642,33 @@ class EmailManagerWindow(tk.Toplevel):
             self.tree.delete(row_id)
 
         for row in rows:
+            status = row["status"]
+            subject = row["subject"]
+            tags: tuple[str, ...] = ()
+
+            if status == "new":
+                subject = f"● {subject}"
+                tags = ("email_new",)
+            elif status == "ignored":
+                subject = f"× {subject}"
+                tags = ("email_ignored",)
+            elif status == "converted_to_note":
+                subject = f"✓ {subject}"
+                tags = ("email_converted",)
+            elif status == "forwarded":
+                subject = f"→ {subject}"
+                tags = ("email_forwarded",)
+
             values = (
                 row["gmail_id"],
-                row["subject"],
+                subject,
                 row["real_sender"],
                 row["type"],
                 row["received_at_display"],
-                row["status"],
+                status,
             )
             iid = str(row["gmail_id"])
-            self.tree.insert("", "end", iid=iid, values=values)
+            self.tree.insert("", "end", iid=iid, values=values, tags=tags)
             if iid in selected_ids:
                 self.tree.selection_add(iid)
 
