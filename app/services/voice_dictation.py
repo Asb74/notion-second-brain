@@ -7,6 +7,7 @@ import tempfile
 import threading
 import tkinter as tk
 from collections.abc import Callable
+from pathlib import Path
 from tkinter.scrolledtext import ScrolledText
 
 import numpy as np
@@ -15,6 +16,14 @@ import soundfile as sf
 from openai import OpenAI
 
 logger = logging.getLogger(__name__)
+
+
+def _load_api_key() -> str:
+    """Carga la API key de OpenAI desde el archivo de configuración local."""
+    key_path = Path.home() / "AppData" / "Roaming" / "NotionSecondBrain" / "KeySecret.txt"
+    if not key_path.exists():
+        raise RuntimeError(f"No se encontró el archivo de API key en: {key_path}")
+    return key_path.read_text(encoding="utf-8").strip()
 
 
 class VoiceDictationError(RuntimeError):
@@ -45,7 +54,7 @@ class VoiceDictationService:
         self._status_callback = status_callback
         self._button_state_callback = button_state_callback
         self._error_callback = error_callback
-        self._client = openai_client or OpenAI()
+        self._client = openai_client or OpenAI(api_key=_load_api_key())
         self._audio_path: str | None = None
         self._lock = threading.Lock()
 
