@@ -1,12 +1,17 @@
-"""Servicio centralizado para dictado por voz con OpenAI Speech-to-Text."""
+"""Servicio reutilizable de dictado por voz para widgets de Tkinter."""
 
 from __future__ import annotations
 
 import logging
-import os
 import tempfile
-from pathlib import Path
+import threading
+import tkinter as tk
+from collections.abc import Callable
+from tkinter.scrolledtext import ScrolledText
 
+import numpy as np
+import sounddevice as sd
+import soundfile as sf
 from openai import OpenAI
 
 logger = logging.getLogger(__name__)
@@ -17,114 +22,159 @@ class VoiceDictationError(RuntimeError):
 
 
 class VoiceDictationService:
-    """Gestiona grabación continua y transcripción para toda la aplicación."""
+    """Gestiona grabación, transcripción e inserción de texto para Tkinter."""
 
     SAMPLE_RATE = 16_000
     CHANNELS = 1
     MODEL = "gpt-4o-mini-transcribe"
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        root: tk.Misc,
+        *,
+        status_callback: Callable[[str], None] | None = None,
+        button_state_callback: Callable[[bool], None] | None = None,
+        error_callback: Callable[[str], None] | None = None,
+        openai_client: OpenAI | None = None,
+    ) -> None:
+        self.root = root
         self.recording = False
-        self._recording_stream = None
-        self._audio_chunks: list[object] = []
-        self._client: OpenAI | None = None
+        self._stream: sd.InputStream | None = None
+        self._audio_chunks: list[np.ndarray] = []
+        self._recording_widget: tk.Widget | None = None
+        self._status_callback = status_callback
+        self._button_state_callback = button_state_callback
+        self._error_callback = error_callback
+        self._client = openai_client or OpenAI()
+        self._audio_path: str | None = None
+        self._lock = threading.Lock()
+
+    def toggle_recording(self) -> None:
+        """Alterna estado del botón micrófono (iniciar/detener)."""
+        if not self.recording:
+            self.start_recording()
+            return
+        self.stop_recording()
 
     def start_recording(self) -> None:
-        """Inicia stream de audio continuo."""
-        if self.recording:
+        """Inicia captura de audio continua desde micrófono."""
+        with self._lock:
+            if self.recording:
+                return
+
+            self._recording_widget = self.root.focus_get()
+            self._audio_chunks = []
+
+            def _audio_callback(indata, _frames, _time, status) -> None:
+                if status:
+                    logger.warning("Estado del stream de dictado: %s", status)
+                self._audio_chunks.append(indata.copy())
+
+            try:
+                self._stream = sd.InputStream(
+                    samplerate=self.SAMPLE_RATE,
+                    channels=self.CHANNELS,
+                    dtype="float32",
+                    callback=_audio_callback,
+                )
+                self._stream.start()
+                self.recording = True
+            except Exception as exc:  # noqa: BLE001
+                self.recording = False
+                self._stream = None
+                logger.exception("No se pudo iniciar grabación")
+                raise VoiceDictationError("No se pudo acceder al micrófono") from exc
+
+        self._set_status("🎤 Escuchando...")
+        self._set_button_recording_state(True)
+
+    def stop_recording(self) -> None:
+        """Detiene la grabación y lanza la transcripción en un hilo."""
+        with self._lock:
+            if not self.recording:
+                return
+
+            try:
+                if self._stream is not None:
+                    self._stream.stop()
+                    self._stream.close()
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("No se pudo detener grabación")
+                raise VoiceDictationError("No se pudo detener la grabación") from exc
+            finally:
+                self._stream = None
+                self.recording = False
+
+            if not self._audio_chunks:
+                self._set_status("Listo")
+                self._set_button_recording_state(False)
+                return
+
+            audio_data = np.concatenate(self._audio_chunks, axis=0)
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+                self._audio_path = temp_file.name
+
+            sf.write(self._audio_path, audio_data, self.SAMPLE_RATE)
+
+        self._set_status("⏳ Transcribiendo...")
+        self._set_button_recording_state(False)
+        threading.Thread(target=self._transcribe_audio, daemon=True).start()
+
+    def _transcribe_audio(self) -> None:
+        """Envía audio WAV a OpenAI y actualiza la UI en el hilo principal."""
+        audio_path = self._audio_path
+        if not audio_path:
+            self.root.after(0, lambda: self._set_status("Listo"))
             return
 
         try:
-            import sounddevice as sd
-        except Exception as exc:  # noqa: BLE001
-            raise VoiceDictationError("No se encontró soporte de micrófono (sounddevice).") from exc
-
-        self._audio_chunks = []
-
-        def _callback(indata, _frames, _time, status) -> None:
-            if status:
-                logger.warning("Estado del stream de dictado: %s", status)
-            self._audio_chunks.append(indata.copy())
-
-        try:
-            self._recording_stream = sd.InputStream(
-                samplerate=self.SAMPLE_RATE,
-                channels=self.CHANNELS,
-                dtype="float32",
-                callback=_callback,
-            )
-            self._recording_stream.start()
-            self.recording = True
-            logger.info("Dictado iniciado")
-        except Exception as exc:  # noqa: BLE001
-            self._recording_stream = None
-            self.recording = False
-            raise VoiceDictationError("No se pudo acceder al micrófono.") from exc
-
-    def stop_recording(self) -> str:
-        """Detiene el stream, transcribe y devuelve texto."""
-        if not self.recording:
-            return ""
-
-        try:
-            if self._recording_stream is not None:
-                self._recording_stream.stop()
-                self._recording_stream.close()
-        except Exception as exc:  # noqa: BLE001
-            raise VoiceDictationError("No se pudo detener la grabación.") from exc
-        finally:
-            self._recording_stream = None
-            self.recording = False
-
-        if not self._audio_chunks:
-            return ""
-
-        try:
-            import numpy as np
-            import soundfile as sf
-        except Exception as exc:  # noqa: BLE001
-            raise VoiceDictationError("No se encontró soporte de audio (numpy/soundfile).") from exc
-
-        audio_data = np.concatenate(self._audio_chunks, axis=0)
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
-            wav_path = Path(temp_file.name)
-
-        try:
-            sf.write(str(wav_path), audio_data, self.SAMPLE_RATE, subtype="PCM_16")
-            return self.transcribe_audio(wav_path)
-        finally:
-            try:
-                wav_path.unlink(missing_ok=True)
-            except OSError:
-                logger.debug("No se pudo eliminar archivo temporal de dictado: %s", wav_path)
-
-    def transcribe_audio(self, wav_path: Path) -> str:
-        """Envía archivo WAV a OpenAI y devuelve el texto."""
-        client = self._client_or_raise()
-        try:
-            with wav_path.open("rb") as audio_file:
-                response = client.audio.transcriptions.create(
+            with open(audio_path, "rb") as audio_file:
+                transcription = self._client.audio.transcriptions.create(
                     model=self.MODEL,
                     file=audio_file,
                 )
-        except Exception as exc:  # noqa: BLE001
-            raise VoiceDictationError("No se pudo transcribir el audio") from exc
+            text = (getattr(transcription, "text", "") or "").strip()
+            self.root.after(0, lambda: self._on_transcription_success(text))
+        except Exception:  # noqa: BLE001
+            logger.exception("No se pudo transcribir el audio")
+            self.root.after(0, self._on_transcription_error)
+        finally:
+            try:
+                import os
 
-        text = getattr(response, "text", "") if response is not None else ""
-        if not text and isinstance(response, dict):
-            text = str(response.get("text") or "")
-        return text.strip()
+                os.unlink(audio_path)
+            except OSError:
+                logger.debug("No se pudo eliminar temporal de dictado: %s", audio_path)
+            self._audio_path = None
 
-    def _client_or_raise(self) -> OpenAI:
-        if self._client is not None:
-            return self._client
+    def _on_transcription_success(self, text: str) -> None:
+        if text:
+            self._insert_text(text)
+        self._set_status("Listo")
 
-        api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
-        if not api_key:
-            raise VoiceDictationError("No se encontró API key de OpenAI para dictado.")
+    def _on_transcription_error(self) -> None:
+        self._set_status("No se pudo transcribir el audio")
+        if self._error_callback:
+            self._error_callback("No se pudo transcribir el audio")
 
-        self._client = OpenAI(api_key=api_key)
-        return self._client
+    def _insert_text(self, text: str) -> None:
+        widget = self._recording_widget
+        if widget is None or not self._is_text_widget(widget):
+            return
 
+        try:
+            widget.insert("insert", text)
+        except Exception:  # noqa: BLE001
+            logger.exception("No se pudo insertar texto transcrito")
 
-voice_dictation_service = VoiceDictationService()
+    @staticmethod
+    def _is_text_widget(widget: tk.Widget | object) -> bool:
+        return isinstance(widget, (tk.Entry, tk.Text, ScrolledText)) or hasattr(widget, "insert")
+
+    def _set_status(self, text: str) -> None:
+        if self._status_callback:
+            self._status_callback(text)
+
+    def _set_button_recording_state(self, active: bool) -> None:
+        if self._button_state_callback:
+            self._button_state_callback(active)
