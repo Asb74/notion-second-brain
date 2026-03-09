@@ -8,7 +8,6 @@ from tkinter import messagebox, ttk
 from app.core.models import AppSettings
 from app.ui.app_icons import apply_app_icon
 from app.ui.dictation_widgets import attach_dictation
-from app.services.dictation_service import DictationService
 
 
 class SettingsDialog(tk.Toplevel):
@@ -26,7 +25,6 @@ class SettingsDialog(tk.Toplevel):
         self._on_save = on_save
 
         self.entries: dict[str, ttk.Entry] = {}
-        self.dictation_service = DictationService()
         fields = [
             ("notion_token", "Notion Token"),
             ("notion_database_id", "Notion Database ID"),
@@ -49,7 +47,7 @@ class SettingsDialog(tk.Toplevel):
             entry.insert(0, str(getattr(current, key, "") or ""))
             entry.grid(row=idx, column=1, sticky="ew", padx=6, pady=4)
             self.entries[key] = entry
-            controls = attach_dictation(entry, self, self.dictation_service)
+            controls = attach_dictation(entry, self)
             controls.grid(row=idx, column=2, sticky="w", padx=(0, 6), pady=4)
 
         self.columnconfigure(1, weight=1)

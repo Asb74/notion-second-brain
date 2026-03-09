@@ -29,7 +29,6 @@ from app.ui.settings_dialog import SettingsDialog
 from app.ui.user_profile_window import UserProfileWindow
 from app.ui.app_icons import apply_app_icon
 from app.ui.dictation_widgets import attach_dictation
-from app.services.dictation_service import DictationService
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +92,6 @@ class MainWindow(ttk.Frame):
         self.calendar_repo = CalendarRepository(db_connection) if db_connection is not None else None
         self.calendar_name_to_id: dict[str, str] = {}
         self.msg_queue: queue.Queue[tuple[str, str]] = queue.Queue()
-        self.dictation_service = DictationService()
         self.status_var = tk.StringVar(value="Listo")
         self.pack(fill="both", expand=True)
         self.notes_data: list[tuple[int, str, str, str, str]] = []
@@ -263,7 +261,7 @@ class MainWindow(ttk.Frame):
         ttk.Label(form, text="Título").grid(row=0, column=0, padx=6, pady=6, sticky="e")
         self.title_entry = ttk.Entry(form, textvariable=self.title_var, width=40)
         self.title_entry.grid(row=0, column=1, padx=6, pady=6, sticky="ew")
-        self.title_dictation_controls = attach_dictation(self.title_entry, form, self.dictation_service)
+        self.title_dictation_controls = attach_dictation(self.title_entry, form)
         self.title_dictation_controls.grid(row=0, column=2, padx=(0, 6), pady=6, sticky="w")
 
         ttk.Label(form, text="Fuente").grid(row=0, column=3, padx=6, pady=6, sticky="e")
@@ -271,7 +269,7 @@ class MainWindow(ttk.Frame):
 
         self.text_widget = tk.Text(form, height=10, width=100)
         self.text_widget.grid(row=1, column=0, columnspan=9, sticky="ew", padx=6, pady=6)
-        self.text_dictation_controls = attach_dictation(self.text_widget, form, self.dictation_service)
+        self.text_dictation_controls = attach_dictation(self.text_widget, form)
         self.text_dictation_controls.grid(row=1, column=9, sticky="ne", padx=6, pady=6)
 
         ttk.Label(form, text="Área").grid(row=2, column=0, padx=6, pady=6, sticky="e")
