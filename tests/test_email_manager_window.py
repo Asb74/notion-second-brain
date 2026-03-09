@@ -250,3 +250,12 @@ def test_build_note_request_uses_custom_title_when_provided() -> None:
 
     assert request.title == "Título editable"
     assert request.raw_text.startswith("Título editable|")
+
+
+def test_get_email_attachments_parses_attachments_json() -> None:
+    window = EmailManagerWindow.__new__(EmailManagerWindow)
+    window.email_repo = type("Repo", (), {"get_email_content": lambda *_args: {"attachments_json": '[{"filename":"factura.pdf"}]'}})()
+
+    attachments = EmailManagerWindow.get_email_attachments(window, "id-1")
+
+    assert attachments == [{"filename": "factura.pdf"}]
