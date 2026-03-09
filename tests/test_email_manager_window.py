@@ -213,3 +213,40 @@ def test_set_reply_body_delegates_to_set_response_draft() -> None:
     EmailManagerWindow.set_reply_body(window, "texto de prueba", note_id=21)
 
     assert called == {"body": "texto de prueba", "note_id": 21}
+
+
+def test_build_note_request_uses_custom_title_when_provided() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        CREATE TABLE emails (
+            gmail_id TEXT PRIMARY KEY,
+            subject TEXT,
+            sender TEXT,
+            real_sender TEXT,
+            original_from TEXT,
+            received_at TEXT,
+            body_text TEXT,
+            body_html TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO emails (gmail_id, subject, sender, real_sender, original_from, received_at, body_text, body_html)
+        VALUES ('id-2', 'Asunto original', 'sender@example.com', 'real@example.com', '', '2024-01-01T00:00:00+00:00', 'hola', '')
+        """
+    )
+    row = conn.execute("SELECT * FROM emails WHERE gmail_id = 'id-2'").fetchone()
+    assert row is not None
+
+    window = EmailManagerWindow.__new__(EmailManagerWindow)
+    window._compose_note_text = lambda subject, sender, body_text, body_html: f"{subject}|{sender}|{body_text}|{body_html}"
+    window._resolve_default_value = lambda *_args: "valor"
+    window._resolve_note_date = lambda _value: "2024-01-01"
+
+    request = EmailManagerWindow._build_note_request_from_row(window, row, "Título editable")
+
+    assert request.title == "Título editable"
+    assert request.raw_text.startswith("Título editable|")
