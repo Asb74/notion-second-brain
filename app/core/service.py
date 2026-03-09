@@ -167,6 +167,12 @@ class NoteService:
         except Exception:  # noqa: BLE001
             logger.exception("No se pudo sincronizar título en Notion para note_id=%s", note_id)
 
+    def update_note_date(self, note_id: int, fecha: str) -> None:
+        self.note_repo.update_note_date(note_id, fecha)
+
+    def delete_action(self, action_id: int) -> None:
+        self.actions_repo.delete_action(action_id)
+
     def toggle_action_status(self, action_id: int) -> dict[str, str | int] | None:
         action = self.actions_repo.get_action(action_id)
         if not action:

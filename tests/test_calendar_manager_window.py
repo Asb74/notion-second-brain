@@ -89,7 +89,7 @@ def test_prompt_email_response_uses_completion_callback() -> None:
 
     window._prompt_email_response({"source_id": "gid-2", "content": "texto"})
 
-    assert calls == [{"gmail_id": "gid-2", "body": "texto"}]
+    assert calls == [{"gmail_id": "gid-2", "thread_id": "", "to": "", "subject": "Re: ", "body": "texto"}]
 
 
 def test_responder_email_prefills_reply_text() -> None:

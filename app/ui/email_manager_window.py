@@ -714,6 +714,17 @@ class EmailManagerWindow(tk.Toplevel):
             return []
         return [item for item in data if isinstance(item, dict)]
 
+    def get_email_metadata(self, gmail_id: str) -> dict[str, str]:
+        row = self.email_repo.get_email_content(str(gmail_id or "").strip())
+        if row is None:
+            return {}
+        return {
+            "gmail_id": str(row["gmail_id"] or "").strip(),
+            "thread_id": str(row["thread_id"] or "").strip(),
+            "sender": str(row["original_from"] or row["real_sender"] or row["sender"] or "").strip(),
+            "subject": str(row["subject"] or "").strip(),
+        }
+
     def open_attachment(self, gmail_id: str, attachment: dict[str, str]) -> bool:
         try:
             local_path = self.attachment_cache.ensure_downloaded(str(gmail_id), attachment)

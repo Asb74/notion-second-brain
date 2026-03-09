@@ -100,6 +100,13 @@ class NoteRepository:
         )
         self.conn.commit()
 
+    def update_note_date(self, note_id: int, fecha: str) -> None:
+        self.conn.execute(
+            "UPDATE notes_local SET fecha = ? WHERE id = ?",
+            (fecha, note_id),
+        )
+        self.conn.commit()
+
     def set_email_replied(self, note_id: int) -> None:
         self.conn.execute(
             "UPDATE notes_local SET email_replied = 1 WHERE id = ?",
@@ -273,6 +280,10 @@ class ActionsRepository:
             "UPDATE actions SET description = ? WHERE id = ?",
             (description, action_id),
         )
+        self.conn.commit()
+
+    def delete_action(self, action_id: int) -> None:
+        self.conn.execute("DELETE FROM actions WHERE id = ?", (action_id,))
         self.conn.commit()
 
 
