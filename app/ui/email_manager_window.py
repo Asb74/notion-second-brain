@@ -701,6 +701,32 @@ class EmailManagerWindow(tk.Toplevel):
     def set_reply_body(self, body: str, note_id: int | None = None) -> None:
         self.set_response_draft(body, note_id)
 
+    def get_email_attachments(self, gmail_id: str) -> list[dict[str, str]]:
+        row = self.email_repo.get_email_content(str(gmail_id or "").strip())
+        if row is None:
+            return []
+        raw = row["attachments_json"] or "[]"
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError):
+            return []
+        if not isinstance(data, list):
+            return []
+        return [item for item in data if isinstance(item, dict)]
+
+    def open_attachment(self, gmail_id: str, attachment: dict[str, str]) -> bool:
+        try:
+            local_path = self.attachment_cache.ensure_downloaded(str(gmail_id), attachment)
+            if os.name != "nt" or not hasattr(os, "startfile"):
+                raise RuntimeError("Abrir adjuntos solo está soportado en Windows (os.startfile).")
+            os.startfile(local_path)  # type: ignore[attr-defined]
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("No se pudo abrir adjunto")
+            self.log(f"No se pudo abrir adjunto: {exc}", level="ERROR")
+            messagebox.showerror("Adjunto", f"No se pudo abrir el adjunto.\n\n{exc}")
+            return False
+
     def set_response_draft(self, body: str, note_id: int | None = None) -> None:
         self.response_text.delete("1.0", "end")
         self.response_text.insert("1.0", body or "")

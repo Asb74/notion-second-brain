@@ -9,6 +9,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, ttk
+from typing import Any, Callable
 
 from app.core.calendar.google_calendar_client import GoogleCalendarClient
 from app.core.models import Action, Note
@@ -73,6 +74,9 @@ class CalendarManagerWindow(ttk.Frame):
         self._action_vars: dict[int, tk.BooleanVar] = {}
         self._selected_record: dict[str, str | int] | None = None
         self._calendar_mousewheel_bound = False
+        self.open_email_manager_callback: Callable[[], Any] | None = None
+        self.email_completion_callback: Callable[[dict[str, str | int] | None], None] | None = None
+        self._attachments_by_name: dict[str, dict[str, Any]] = {}
 
         style = ttk.Style(self)
         style.theme_use("clam")
@@ -300,6 +304,12 @@ class CalendarManagerWindow(ttk.Frame):
         self.associated_actions_frame = ttk.LabelFrame(self.detail_content, text="Acciones asociadas")
         self.associated_actions_frame.pack(fill="x", pady=(8, 6))
 
+        self.attachments_frame = ttk.LabelFrame(self.detail_content, text="Archivos adjuntos")
+        self.attachments_frame.pack(fill="x", pady=(4, 6))
+        self.attachments_list = tk.Listbox(self.attachments_frame, height=5)
+        self.attachments_list.pack(fill="x", padx=6, pady=6)
+        self.attachments_list.bind("<Double-Button-1>", self._on_attachment_open)
+
         self.context_buttons = ttk.Frame(self.detail_content)
         self.context_buttons.pack(fill="x", pady=(2, 0))
 
@@ -379,6 +389,7 @@ class CalendarManagerWindow(ttk.Frame):
                 "date": display_date,
                 "time": note.hora_inicio or "",
                 "content": note.raw_text or "",
+                "source_id": note.source_id or "",
                 "email_link": email_link,
                 "htmlLink": note.google_calendar_link or "",
                 "google_calendar_link": note.google_calendar_link or "",
@@ -475,6 +486,7 @@ class CalendarManagerWindow(ttk.Frame):
         self.content_text.insert("1.0", str(record.get("content") or ""))
 
         self._render_associated_actions(record)
+        self._render_email_attachments(record)
         self._render_context_actions(record)
         self._update_detail_scrollregion()
 
@@ -531,6 +543,9 @@ class CalendarManagerWindow(ttk.Frame):
             child.destroy()
 
         kind = str(record.get("kind") or "NOTE")
+        is_email = kind == "EMAIL"
+        email_buttons_state = "normal" if is_email else "disabled"
+
         if kind == "NOTE":
             ttk.Button(self.context_buttons, text="Editar", command=self.editar_registro).pack(side="left", padx=4)
             ttk.Button(self.context_buttons, text="Completar", command=self.completar_registro).pack(side="left", padx=4)
@@ -540,12 +555,70 @@ class CalendarManagerWindow(ttk.Frame):
             ttk.Button(self.context_buttons, text="Editar", command=self.editar_registro).pack(side="left", padx=4)
         elif kind == "EMAIL":
             ttk.Button(self.context_buttons, text="Editar", command=self.editar_registro).pack(side="left", padx=4)
-            ttk.Button(self.context_buttons, text="Responder", command=self.responder_email).pack(side="left", padx=4)
-            ttk.Button(self.context_buttons, text="Reenviar", command=self.reenviar_email).pack(side="left", padx=4)
-            ttk.Button(self.context_buttons, text="Abrir email", command=self.abrir_email).pack(side="left", padx=4)
+            ttk.Button(self.context_buttons, text="Completar", command=self.completar_registro).pack(side="left", padx=4)
         elif kind == "EVENT":
             ttk.Button(self.context_buttons, text="Editar evento", command=self.editar_registro).pack(side="left", padx=4)
             ttk.Button(self.context_buttons, text="Abrir en Google Calendar", command=self.abrir_evento_calendar).pack(side="left", padx=4)
+
+        ttk.Button(self.context_buttons, text="Responder", command=self.responder_email, state=email_buttons_state).pack(side="left", padx=4)
+        ttk.Button(self.context_buttons, text="Reenviar", command=self.reenviar_email, state=email_buttons_state).pack(side="left", padx=4)
+        ttk.Button(self.context_buttons, text="Abrir email", command=self.abrir_email, state=email_buttons_state).pack(side="left", padx=4)
+
+    def _resolve_gmail_id(self, item: dict[str, str | int]) -> str:
+        source_id = str(item.get("source_id") or "").strip()
+        if source_id:
+            return source_id
+        email_link = str(item.get("email_link") or "")
+        if "#" in email_link:
+            return email_link.rsplit("/", 1)[-1].strip()
+        return ""
+
+    def _open_email_manager(self):
+        if self.open_email_manager_callback is None:
+            return None
+        return self.open_email_manager_callback()
+
+    def _render_email_attachments(self, record: dict[str, str | int]) -> None:
+        self._attachments_by_name.clear()
+        self.attachments_list.delete(0, "end")
+
+        if str(record.get("kind") or "") != "EMAIL":
+            self.attachments_list.insert("end", "(solo disponible para emails)")
+            return
+
+        email_window = self._open_email_manager()
+        gmail_id = self._resolve_gmail_id(record)
+        if email_window is None or not gmail_id:
+            self.attachments_list.insert("end", "(sin adjuntos)")
+            return
+
+        attachments = email_window.get_email_attachments(gmail_id)
+        if not attachments:
+            self.attachments_list.insert("end", "(sin adjuntos)")
+            return
+
+        for idx, attachment in enumerate(attachments, start=1):
+            name = str(attachment.get("filename") or f"adjunto_{idx}")
+            display_name = f"📄 {name}"
+            self._attachments_by_name[display_name] = attachment
+            self.attachments_list.insert("end", display_name)
+
+    def _on_attachment_open(self, _event: tk.Event | None = None) -> None:
+        item = self.selected_item
+        if not item or str(item.get("kind") or "") != "EMAIL":
+            return
+        selection = self.attachments_list.curselection()
+        if not selection:
+            return
+        display_name = self.attachments_list.get(selection[0])
+        attachment = self._attachments_by_name.get(display_name)
+        if not attachment:
+            return
+        email_window = self._open_email_manager()
+        gmail_id = self._resolve_gmail_id(item)
+        if email_window is None or not gmail_id:
+            return
+        email_window.open_attachment(gmail_id, attachment)
 
     @property
     def selected_item(self) -> dict[str, str | int] | None:
@@ -579,10 +652,27 @@ class CalendarManagerWindow(ttk.Frame):
         kind = str(item.get("kind") or "")
         if kind in {"NOTE", "EMAIL"}:
             self._complete_current_note()
+            if kind == "EMAIL":
+                self._prompt_email_response(item)
         elif kind == "ACTION":
             self._complete_current_action()
         else:
             self.actualizar_ui()
+
+    def _prompt_email_response(self, item: dict[str, str | int]) -> None:
+        gmail_id = self._resolve_gmail_id(item)
+        if not gmail_id:
+            return
+        completion_event: dict[str, str | int] = {
+            "gmail_id": gmail_id,
+            "body": str(item.get("content") or ""),
+        }
+        if self.email_completion_callback is not None:
+            self.email_completion_callback(completion_event)
+            return
+        if not messagebox.askyesno("Email", "Responder al email ahora."):
+            return
+        self.responder_email()
 
     def crear_accion(self) -> None:
         item = self.selected_item
@@ -597,26 +687,69 @@ class CalendarManagerWindow(ttk.Frame):
 
     def abrir_email(self) -> None:
         item = self.selected_item
-        if not item:
+        if not item or str(item.get("kind") or "") != "EMAIL":
             return
 
-        link = str(item.get("email_link") or "")
-        if link:
+        gmail_id = self._resolve_gmail_id(item)
+        if gmail_id:
+            link = f"https://mail.google.com/mail/u/0/#inbox/{gmail_id}"
             try:
                 webbrowser.open(link)
             except Exception:  # noqa: BLE001
                 logger.exception("No se pudo abrir email")
+            return
+
+        email_window = self._open_email_manager()
+        if email_window is None:
+            return
+        if gmail_id:
+            email_window.select_email_by_gmail_id(gmail_id)
+        else:
+            email_window.focus_force()
 
     def responder_email(self) -> None:
         item = self.selected_item
-        if not item:
+        if not item or str(item.get("kind") or "") != "EMAIL":
             return
+        email_window = self._open_email_manager()
+        if email_window is None:
+            return
+        gmail_id = self._resolve_gmail_id(item)
+        if not gmail_id:
+            messagebox.showwarning("Email", "No se encontró el Gmail ID del correo.")
+            return
+        if not email_window.select_email_by_gmail_id(gmail_id):
+            return
+
+        subject = str(item.get("title") or "").strip() or "(Sin asunto)"
+        body = str(item.get("content") or "").strip()
+        quoted = f"\n\n--- Mensaje original ---\n{body}" if body else ""
+        email_window.set_response_draft(f"Re: {subject}{quoted}")
+        email_window.focus_force()
         logger.info("Responder email: %s", item.get("id"))
 
     def reenviar_email(self) -> None:
         item = self.selected_item
-        if not item:
+        if not item or str(item.get("kind") or "") != "EMAIL":
             return
+        email_window = self._open_email_manager()
+        if email_window is None:
+            return
+        gmail_id = self._resolve_gmail_id(item)
+        if not gmail_id:
+            messagebox.showwarning("Email", "No se encontró el Gmail ID del correo.")
+            return
+        if not email_window.select_email_by_gmail_id(gmail_id):
+            return
+        subject = str(item.get("title") or "").strip() or "(Sin asunto)"
+        body = str(item.get("content") or "").strip()
+        forward_text = (
+            f"Fwd: {subject}\n\n"
+            "---- Mensaje reenviado ----\n"
+            f"{body}"
+        )
+        email_window.set_response_draft(forward_text)
+        email_window.focus_force()
         logger.info("Reenviar email: %s", item.get("id"))
 
     def abrir_evento_calendar(self) -> None:

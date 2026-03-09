@@ -203,6 +203,8 @@ class MainWindow(ttk.Frame):
         toplevel.geometry("1120x760")
         toplevel.minsize(820, 480)
         calendar_window = CalendarManagerWindow(toplevel, self.service, self.calendar_repo)
+        calendar_window.open_email_manager_callback = self._ensure_email_manager_window
+        calendar_window.email_completion_callback = self._process_completion_event
         calendar_window.pack(fill="both", expand=True)
         self._calendar_toplevel = toplevel
         self._calendar_window = calendar_window
