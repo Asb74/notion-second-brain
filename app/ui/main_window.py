@@ -33,6 +33,16 @@ from app.services.dictation_service import DictationService
 
 logger = logging.getLogger(__name__)
 
+
+def _sanitize_tk_color(color: str | None, fallback: str = "#000000") -> str:
+    """Return a Tkinter-safe color value for known invalid system color aliases."""
+    value = str(color or "").strip()
+    if not value:
+        return fallback
+    if value.lower() == "windowtext":
+        return fallback
+    return value
+
 def generar_intervalos_15() -> list[str]:
     """Genera intervalos de 15 minutos para un día completo."""
     horas: list[str] = []
@@ -383,7 +393,7 @@ class MainWindow(ttk.Frame):
                     google_calendar_id=google_calendar_id,
                     name=str(calendar.get("name") or google_calendar_id),
                     background_color=str(calendar.get("background_color") or "#9E9E9E"),
-                    foreground_color=str(calendar.get("foreground_color") or "#000000"),
+                    foreground_color=_sanitize_tk_color(str(calendar.get("foreground_color") or "#000000")),
                     is_primary=int(calendar.get("is_primary") or 0),
                     access_role=str(calendar.get("access_role") or ""),
                     selected=int(calendar.get("selected") if calendar.get("selected") is not None else 1),
