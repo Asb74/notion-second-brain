@@ -192,6 +192,31 @@ class NotionClient:
             raise NotionError(f"Error actualizando estado de página en Notion: {resp.text}")
 
 
+
+    def update_page_title(self, page_id: str, title: str, title_property: str = "Actividad") -> None:
+        import requests
+
+        payload = {
+            "properties": {
+                title_property: {
+                    "title": [{"type": "text", "text": {"content": (title or "Sin título")[:200]}}]
+                }
+            }
+        }
+
+        try:
+            resp = requests.patch(
+                f"https://api.notion.com/v1/pages/{page_id}",
+                headers=self._headers,
+                json=payload,
+                timeout=20,
+            )
+        except requests.RequestException as exc:
+            raise NotionError(f"Error de red actualizando título de página en Notion: {exc}") from None
+
+        if resp.status_code >= 400:
+            raise NotionError(f"Error actualizando título de página en Notion: {resp.text}")
+
     def count_open_tasks_by_fuente_id(
         self,
         database_id: str,

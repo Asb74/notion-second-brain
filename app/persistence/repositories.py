@@ -253,13 +253,18 @@ class ActionsRepository:
         return self._to_action(row) if row else None
 
     def mark_action_done(self, action_id: int) -> None:
+        self.set_action_status(action_id, "hecha")
+
+    def set_action_status(self, action_id: int, status: str) -> None:
+        normalized = "hecha" if (status or "").strip().lower() == "hecha" else "pendiente"
+        completed_at = datetime.utcnow().isoformat(timespec="seconds") if normalized == "hecha" else None
         self.conn.execute(
             """
             UPDATE actions
-            SET status = 'hecha', completed_at = ?
+            SET status = ?, completed_at = ?
             WHERE id = ?
             """,
-            (datetime.utcnow().isoformat(timespec="seconds"), action_id),
+            (normalized, completed_at, action_id),
         )
         self.conn.commit()
 

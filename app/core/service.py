@@ -149,6 +149,38 @@ class NoteService:
     def update_note_content(self, note_id: int, title: str, raw_text: str) -> None:
         self.note_repo.update_note_content(note_id, title, raw_text)
 
+    def update_note_title(self, note_id: int, title: str, raw_text: str | None = None) -> None:
+        note = self.note_repo.get_note(note_id)
+        if not note:
+            return
+
+        new_title = (title or "").strip() or "Sin título"
+        self.note_repo.update_note_content(note_id, new_title, note.raw_text if raw_text is None else raw_text)
+
+        settings = self.get_settings()
+        if not settings.notion_token.strip() or not note.notion_page_id:
+            return
+
+        try:
+            client = NotionClient(settings.notion_token)
+            client.update_page_title(note.notion_page_id, new_title, settings.prop_title)
+        except Exception:  # noqa: BLE001
+            logger.exception("No se pudo sincronizar título en Notion para note_id=%s", note_id)
+
+    def toggle_action_status(self, action_id: int) -> dict[str, str | int] | None:
+        action = self.actions_repo.get_action(action_id)
+        if not action:
+            return None
+
+        if action.status == "hecha":
+            self.actions_repo.set_action_status(action_id, "pendiente")
+            note = self.note_repo.get_note(action.note_id)
+            if note and note.estado.lower() in {"finalizado", "completado", "hecha", "done"}:
+                self.note_repo.update_estado(note.id, "Pendiente")
+            return None
+
+        return self.mark_action_done(action_id)
+
     def update_action_description(self, action_id: int, description: str) -> None:
         self.actions_repo.update_action_description(action_id, description)
 

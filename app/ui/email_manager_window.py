@@ -755,7 +755,12 @@ class EmailManagerWindow(tk.Toplevel):
                 continue
 
             try:
-                req = self._build_note_request_from_row(row)
+                title = self._prompt_note_title(subject)
+                if title is None:
+                    skipped_count += 1
+                    continue
+
+                req = self._build_note_request_from_row(row, title)
                 self.system_log(f"Analizando nota para email {gmail_id}")
                 note_id, _message = self.note_service.create_note(req)
                 if note_id is None:
@@ -778,12 +783,29 @@ class EmailManagerWindow(tk.Toplevel):
         self.system_log(f"Creación de notas finalizada. Notas: {created_count}, omitidos: {skipped_count}")
         messagebox.showinfo("Resultado", f"Notas creadas: {created_count}\nOmitidos: {skipped_count}")
 
-    def _build_note_request_from_row(self, row: sqlite3.Row) -> NoteCreateRequest:
+    def _prompt_note_title(self, default_title: str) -> str | None:
+        title = simpledialog.askstring(
+            "Crear nota",
+            "Título de la nota:",
+            initialvalue=default_title,
+            parent=self,
+        )
+        if title is None:
+            return None
+
+        cleaned = title.strip()
+        if not cleaned:
+            messagebox.showwarning("Crear nota", "El título no puede estar vacío.")
+            return None
+        return cleaned
+
+    def _build_note_request_from_row(self, row: sqlite3.Row, title: str | None = None) -> NoteCreateRequest:
         sender_for_note = row["original_from"] or row["real_sender"] or row["sender"] or ""
+        note_title = (title if title is not None else (row["subject"] or "")).strip()
         return NoteCreateRequest(
-            title=(row["subject"] or "").strip(),
+            title=note_title,
             raw_text=self._compose_note_text(
-                (row["subject"] or "").strip(),
+                note_title,
                 sender_for_note,
                 (row["body_text"] or "").strip(),
                 (row["body_html"] or "").strip(),

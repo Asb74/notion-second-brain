@@ -527,6 +527,65 @@ class DedupTests(unittest.TestCase):
         note = self.service.note_repo.get_note(note_id)
         self.assertEqual(note.email_replied, 0)
 
+    @patch("app.core.service.process_text")
+    def test_toggle_action_status_reopens_done_action(self, mock_process_text):
+        mock_process_text.return_value = ProcessedNote(
+            resumen="Resumen AI",
+            acciones=["Tarea única"],
+            tipo_sugerido="Nota",
+            prioridad_sugerida="Media",
+        )
+        req = NoteCreateRequest(
+            title="",
+            raw_text="Texto con una tarea",
+            source="manual",
+            area="Ventas",
+            tipo="",
+            estado="Pendiente",
+            prioridad="",
+            fecha=datetime.now().date().isoformat(),
+        )
+        note_id, _ = self.service.create_note(req)
+        action = self.service.actions_repo.get_actions_by_note(note_id)[0]
+
+        self.service.toggle_action_status(action.id)
+        self.service.toggle_action_status(action.id)
+
+        updated = self.service.actions_repo.get_actions_by_note(note_id)[0]
+        self.assertEqual(updated.status, "pendiente")
+        self.assertIsNone(updated.completed_at)
+        note = self.service.note_repo.get_note(note_id)
+        self.assertEqual(note.estado, "Pendiente")
+
+
+    @patch("app.core.service.NotionClient")
+    def test_update_note_title_syncs_notion_when_available(self, mock_notion_client):
+        req = NoteCreateRequest(
+            title="Inicial",
+            raw_text="Texto",
+            source="manual",
+            area="A",
+            tipo="Nota",
+            estado="Pendiente",
+            prioridad="Media",
+            fecha=datetime.now().date().isoformat(),
+        )
+        note_id, _ = self.service.create_note(req)
+        self.service.settings_repo.set_setting("notion_token", "token")
+        self.service.settings_repo.set_setting("prop_title", "Actividad")
+        self.service.note_repo.mark_sent(note_id, "notion-page-xyz")
+
+        self.service.update_note_title(note_id, "Nuevo título")
+
+        updated = self.service.note_repo.get_note(note_id)
+        self.assertEqual(updated.title, "Nuevo título")
+        mock_notion_client.return_value.update_page_title.assert_called_once_with(
+            "notion-page-xyz",
+            "Nuevo título",
+            "Actividad",
+        )
+
+
 class DatabasePathHelper:
     @staticmethod
     def path():

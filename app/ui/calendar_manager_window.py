@@ -239,6 +239,7 @@ class CalendarManagerWindow(ttk.Frame):
         self.overview_tree.column("date", width=120, anchor="center")
         self.overview_tree.pack(fill="both", expand=True)
         self.overview_tree.bind("<<TreeviewSelect>>", self._on_overview_select)
+        self.overview_tree.bind("<Double-1>", self._on_overview_double_click)
 
         self.overview_tree.tag_configure("NOTE_PENDING", background=NOTE_PENDING_COLOR, foreground="#000000")
         self.overview_tree.tag_configure("ACTION_PENDING", background=ACTION_COLOR, foreground="#000000")
@@ -486,6 +487,10 @@ class CalendarManagerWindow(ttk.Frame):
             return str(record.get("background_color") or EVENT_COLOR)
         return self.TYPE_COLORS.get(kind, "#ffffff")
 
+
+    def _on_overview_double_click(self, _event: tk.Event | None = None) -> None:
+        self.editar_registro()
+
     def _render_associated_actions(self, record: dict[str, str | int]) -> None:
         for child in self.associated_actions_frame.winfo_children():
             child.destroy()
@@ -513,10 +518,7 @@ class CalendarManagerWindow(ttk.Frame):
             cb.pack(anchor="w", padx=6, pady=2)
 
     def _toggle_action_from_detail(self, action_id: int) -> None:
-        var = self._action_vars.get(action_id)
-        if var is None or not var.get():
-            return
-        self.note_service.mark_action_done(action_id)
+        self.note_service.toggle_action_status(action_id)
         if self._selected_record and str(self._selected_record.get("kind")) in {"NOTE", "EMAIL"}:
             note_id = int(self._selected_record.get("id") or 0)
             note = self.note_service.get_note_by_id(note_id)
@@ -537,6 +539,7 @@ class CalendarManagerWindow(ttk.Frame):
             ttk.Button(self.context_buttons, text="Marcar completada", command=self.completar_registro).pack(side="left", padx=4)
             ttk.Button(self.context_buttons, text="Editar", command=self.editar_registro).pack(side="left", padx=4)
         elif kind == "EMAIL":
+            ttk.Button(self.context_buttons, text="Editar", command=self.editar_registro).pack(side="left", padx=4)
             ttk.Button(self.context_buttons, text="Responder", command=self.responder_email).pack(side="left", padx=4)
             ttk.Button(self.context_buttons, text="Reenviar", command=self.reenviar_email).pack(side="left", padx=4)
             ttk.Button(self.context_buttons, text="Abrir email", command=self.abrir_email).pack(side="left", padx=4)
@@ -571,7 +574,7 @@ class CalendarManagerWindow(ttk.Frame):
         if not item:
             return
 
-        item["estado"] = "Completado"
+        item["status"] = "Completado"
 
         kind = str(item.get("kind") or "")
         if kind in {"NOTE", "EMAIL"}:
@@ -663,7 +666,7 @@ class CalendarManagerWindow(ttk.Frame):
         note_id = int(self._selected_record.get("id") or 0)
         title = self.detail_title_var.get().strip()
         content = self.content_text.get("1.0", "end").strip()
-        self.note_service.update_note_content(note_id, title, content)
+        self.note_service.update_note_title(note_id, title, content)
         self.refresh_overview()
 
     def _save_action_edits(self) -> None:
@@ -696,7 +699,7 @@ class CalendarManagerWindow(ttk.Frame):
         if not self._selected_record:
             return
         action_id = int(self._selected_record.get("id") or 0)
-        self.note_service.mark_action_done(action_id)
+        self.note_service.toggle_action_status(action_id)
         self.refresh_overview()
 
     def _edit_event(self) -> None:
