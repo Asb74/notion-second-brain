@@ -27,6 +27,16 @@ EVENT_COLOR = "#ED7D31"
 ACTION_COLOR = "#FFC000"
 
 
+def _sanitize_tk_color(color: str | None, fallback: str = "#000000") -> str:
+    """Return a Tkinter-safe color value for known invalid system color aliases."""
+    value = str(color or "").strip()
+    if not value:
+        return fallback
+    if value.lower() == "windowtext":
+        return fallback
+    return value
+
+
 class CalendarManagerWindow(ttk.Frame):
     """CRM-like agenda frame with overview on top and details below."""
 
@@ -402,7 +412,7 @@ class CalendarManagerWindow(ttk.Frame):
                 "htmlLink": str(event.get("htmlLink") or ""),
                 "calendar_name": str(event.get("calendar_name") or ""),
                 "background_color": str(event.get("background_color") or EVENT_COLOR),
-                "foreground_color": str(event.get("foreground_color") or "#000000"),
+                "foreground_color": _sanitize_tk_color(str(event.get("foreground_color") or "#000000")),
                 "google_calendar_id": str(event.get("google_calendar_id") or "primary"),
             }
             self._insert_overview_record(record)
@@ -413,7 +423,7 @@ class CalendarManagerWindow(ttk.Frame):
         tag = self._record_tag(record)
         if str(record.get("kind") or "") == "EVENT" and tag.endswith("PENDING"):
             bg = str(record.get("background_color") or EVENT_COLOR)
-            fg = str(record.get("foreground_color") or "#000000")
+            fg = _sanitize_tk_color(str(record.get("foreground_color") or "#000000"))
             self.overview_tree.tag_configure(tag, background=bg, foreground=fg)
         self.overview_tree.insert(
             "",
@@ -459,7 +469,7 @@ class CalendarManagerWindow(ttk.Frame):
 
         self.content_text.configure(bg=self._detail_bg(record), fg="#000000")
         if kind == "EVENT":
-            self.detail_calendar_label.configure(foreground=str(record.get("foreground_color") or "#000000"))
+            self.detail_calendar_label.configure(foreground=_sanitize_tk_color(str(record.get("foreground_color") or "#000000")))
         else:
             self.detail_calendar_label.configure(foreground="#000000")
         self.content_text.delete("1.0", "end")
@@ -714,7 +724,7 @@ class CalendarManagerWindow(ttk.Frame):
                     google_calendar_id=calendar_id,
                     name=str(calendar.get("name") or calendar_id),
                     background_color=str(calendar.get("background_color") or "#9E9E9E"),
-                    foreground_color=str(calendar.get("foreground_color") or "#000000"),
+                    foreground_color=_sanitize_tk_color(str(calendar.get("foreground_color") or "#000000")),
                     is_primary=int(calendar.get("is_primary") or 0),
                     access_role=str(calendar.get("access_role") or ""),
                     selected=int(calendar.get("selected") if calendar.get("selected") is not None else 1),
@@ -1024,7 +1034,7 @@ class CalendarManagerWindow(ttk.Frame):
                     "htmlLink": str(event.get("htmlLink") or ""),
                     "calendar_name": str(event.get("calendar_name") or ""),
                     "background_color": str(event.get("background_color") or EVENT_COLOR),
-                    "foreground_color": str(event.get("foreground_color") or "#000000"),
+                    "foreground_color": _sanitize_tk_color(str(event.get("foreground_color") or "#000000")),
                     "google_calendar_id": str(event.get("google_calendar_id") or "primary"),
                 }
             )
