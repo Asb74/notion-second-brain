@@ -1446,15 +1446,26 @@ class EmailManagerWindow(tk.Toplevel):
             messagebox.showwarning("Atención", "El correo seleccionado no tiene contenido para resumir.")
             return
 
+        # Nuevo prompt orientado a lectura ultrarrápida en viñetas, evitando formato de email formal.
         prompt = (
-            "Resume el siguiente email de forma breve y formal en 2 o 3 frases.\n\n"
+            "Analiza el siguiente email y extrae únicamente las ideas principales.\n\n"
+            "Devuelve un resumen visual para lectura rápida.\n\n"
+            "Reglas:\n"
+            "- máximo 6 líneas\n"
+            "- cada línea una idea independiente\n"
+            "- usar viñetas (•)\n"
+            "- frases muy cortas\n"
+            "- no incluir saludos ni despedidas\n"
+            "- no copiar frases completas del email\n"
+            "- lenguaje claro y directo\n\n"
+            "El objetivo es que el contenido del email se entienda en menos de 5 segundos.\n\n"
             f"Email:\n{preview_body}"
         )
         try:
             self.log("Generando resumen...")
             client = build_openai_client()
             response = client.responses.create(
-                model=MODEL_NAME,
+                model="gpt-4.1-mini",
                 input=prompt,
             )
             summary = str(response.output_text or "").strip()
@@ -1462,8 +1473,9 @@ class EmailManagerWindow(tk.Toplevel):
                 messagebox.showwarning("Atención", "No se pudo generar el resumen del email.")
                 return
 
+            # Insertamos siempre arriba y con el nuevo encabezado "Resumen rápido".
             existing_text = self.response_text.get("1.0", "end").strip()
-            summary_block = f"Resumen:\n\n{summary}\n\n"
+            summary_block = f"Resumen rápido:\n\n{summary}\n\n"
             combined_text = f"{summary_block}{existing_text}" if existing_text else summary_block
             self.response_text.delete("1.0", "end")
             self.response_text.insert("1.0", combined_text)
