@@ -292,3 +292,48 @@ def test_start_inline_title_edit_requires_selected_note() -> None:
     result = window._start_inline_title_edit()
 
     assert result == "break"
+
+
+def test_partition_day_entries_keeps_unslotted_in_top_and_maps_arbitrary_time() -> None:
+    window = CalendarManagerWindow.__new__(CalendarManagerWindow)
+    entries = [
+        {"title": "Nota sin hora", "time": "", "created_at": "2024-01-10T09:00:00"},
+        {"title": "Evento exacto", "time": "08:00"},
+        {"title": "Cita médica", "time": "19:22"},
+    ]
+    slots = ["08:00", "08:30", "19:00", "19:30"]
+
+    timed_map, top_entries = window._partition_day_entries(entries, slots)
+
+    assert [entry["title"] for entry in top_entries] == ["Nota sin hora"]
+    assert [entry["title"] for entry in timed_map["08:00"]] == ["Evento exacto"]
+    assert [entry["title"] for entry in timed_map["19:30"]] == ["Cita médica"]
+
+
+def test_actions_for_day_returns_only_matching_actions() -> None:
+    window = CalendarManagerWindow.__new__(CalendarManagerWindow)
+    window.actions = [
+        types.SimpleNamespace(
+            id=1,
+            note_id=99,
+            description="Seguimiento cliente",
+            status="pendiente",
+            created_at="2024-02-20T10:15:00",
+            completed_at=None,
+        ),
+        types.SimpleNamespace(
+            id=2,
+            note_id=100,
+            description="Acción fuera de día",
+            status="pendiente",
+            created_at="2024-02-21T10:15:00",
+            completed_at=None,
+        ),
+    ]
+
+    rows = window._actions_for_day(window._safe_parse_date("2024-02-20") )
+
+    assert len(rows) == 1
+    assert rows[0]["kind"] == "ACTION"
+    assert rows[0]["title"] == "Seguimiento cliente"
+    assert rows[0]["time"] == ""

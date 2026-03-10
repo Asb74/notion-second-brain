@@ -1269,30 +1269,127 @@ class CalendarManagerWindow(ttk.Frame):
 
         container = ttk.Frame(self.calendar_frame)
         container.pack(fill="both", expand=True)
+        container.columnconfigure(0, weight=1)
         container.columnconfigure(1, weight=1)
 
-        entries = self._events_by_day.get(self.current_date, [])
+        entries = list(self._events_by_day.get(self.current_date, []))
+        entries.extend(self._actions_for_day(self.current_date))
         slots = self._time_slots(entries)
+        timed_slot_map, top_section_entries = self._partition_day_entries(entries, slots)
 
-        entries_by_slot: dict[str, list[dict[str, str | int]]] = {}
-        for entry in entries:
-            entry_time = str(entry.get("time") or "")
-            if entry_time:
-                entries_by_slot.setdefault(entry_time, []).append(entry)
+        top_label = ttk.Label(container, text="Eventos del día (sin hora fija)", style="CalendarHeader.TLabel")
+        top_label.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
 
-        for row, slot in enumerate(slots):
+        top_frame = tk.Frame(container, bg="#ffffff", highlightbackground="#d1d5db", highlightthickness=1, bd=0, padx=8, pady=6)
+        top_frame.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(0, 10))
+        container.rowconfigure(1, weight=0)
+
+        if not top_section_entries:
+            ttk.Label(top_frame, text="Sin elementos sin hora fija.").pack(anchor="w")
+        else:
+            for entry in top_section_entries:
+                text = self._entry_label_text(entry, include_time=True)
+                label = tk.Label(top_frame, text=text, anchor="w", justify="left", cursor="hand2", wraplength=600, bg=self._detail_bg(entry), fg="#000000")
+                label.pack(anchor="w", fill="x", pady=1)
+                label.bind("<Button-1>", self._on_entry_click)
+                self._label_metadata[str(label)] = entry
+
+        timeline_label = ttk.Label(container, text="Timeline por horas", style="CalendarHeader.TLabel")
+        timeline_label.grid(row=2, column=0, columnspan=2, sticky="w", pady=(0, 4))
+
+        for row, slot in enumerate(slots, start=3):
             time_label = ttk.Label(container, text=slot, style="Time.TLabel")
             time_label.grid(row=row, column=0, sticky="nw", padx=(0, 8), pady=1)
 
             slot_frame = tk.Frame(container, bg="#ffffff", highlightbackground="#d1d5db", highlightthickness=1, bd=0, padx=6, pady=4)
             slot_frame.grid(row=row, column=1, sticky="nsew", pady=1)
 
-            for entry in entries_by_slot.get(slot, []):
-                text = self._entry_label_text(entry, include_time=False)
+            for entry in timed_slot_map.get(slot, []):
+                include_entry_time = str(entry.get("time") or "") != slot
+                text = self._entry_label_text(entry, include_time=include_entry_time)
                 label = tk.Label(slot_frame, text=text, anchor="w", justify="left", cursor="hand2", wraplength=500, bg=self._detail_bg(entry), fg="#000000")
                 label.pack(anchor="w", fill="x", pady=1)
                 label.bind("<Button-1>", self._on_entry_click)
                 self._label_metadata[str(label)] = entry
+
+        self.log("Vista diaria reconstruida con eventos sin hora y timeline")
+
+    def _partition_day_entries(
+        self, entries: list[dict[str, str | int]], slots: list[str]
+    ) -> tuple[dict[str, list[dict[str, str | int]]], list[dict[str, str | int]]]:
+        timed_slot_map: dict[str, list[dict[str, str | int]]] = {}
+        top_section: list[tuple[int | float, int, dict[str, str | int]]] = []
+        slot_lookup = set(slots)
+
+        for index, entry in enumerate(entries):
+            entry_time = str(entry.get("time") or "")
+            if not entry_time:
+                top_section.append((float("inf"), index, entry))
+                continue
+
+            if entry_time in slot_lookup:
+                timed_slot_map.setdefault(entry_time, []).append(entry)
+                continue
+
+            nearest_slot = self._nearest_slot(entry_time, slots)
+            if nearest_slot:
+                timed_slot_map.setdefault(nearest_slot, []).append(entry)
+                continue
+
+            minutes = self._to_minutes(entry_time)
+            top_section.append((minutes if minutes is not None else float("inf"), index, entry))
+
+        top_section.sort(key=lambda item: self._top_entry_sort_key(item[2], item[1]))
+        return timed_slot_map, [entry for _, _, entry in top_section]
+
+
+    def _top_entry_sort_key(self, entry: dict[str, str | int], index: int) -> tuple[int | float, str, int]:
+        entry_time = str(entry.get("time") or "")
+        entry_date = str(entry.get("date") or "")
+        if entry_time:
+            minutes = self._to_minutes(entry_time)
+            return (minutes if minutes is not None else float("inf"), "", index)
+
+        created_value = str(entry.get("created_at") or "")
+        if created_value:
+            return (float("inf"), created_value, index)
+
+        if entry_date:
+            return (float("inf"), entry_date, index)
+
+        return (float("inf"), "", index)
+
+    def _actions_for_day(self, day_value: date) -> list[dict[str, str | int]]:
+        day_actions: list[dict[str, str | int]] = []
+        for action in self.actions:
+            action_date = self._safe_parse_date(action.completed_at or action.created_at)
+            if action_date != day_value:
+                continue
+            day_actions.append(
+                {
+                    "origin": "ACTION",
+                    "kind": "ACTION",
+                    "title": action.description or "(Acción sin descripción)",
+                    "id": action.id,
+                    "note_id": action.note_id,
+                    "status": action.status or "pendiente",
+                    "date": (action.completed_at or action.created_at or "").split("T", maxsplit=1)[0],
+                    "time": "",
+                    "content": action.description or "",
+                    "created_at": action.created_at,
+                }
+            )
+        return day_actions
+
+    def _nearest_slot(self, entry_time: str, slots: list[str]) -> str | None:
+        entry_minutes = self._to_minutes(entry_time)
+        if entry_minutes is None:
+            return None
+        valid_slots = [(slot, self._to_minutes(slot)) for slot in slots]
+        valid_slots = [(slot, minutes) for slot, minutes in valid_slots if minutes is not None]
+        if not valid_slots:
+            return None
+        return min(valid_slots, key=lambda item: abs(item[1] - entry_minutes))[0]
 
     def _on_entry_click(self, event: tk.Event) -> None:
         widget = event.widget
@@ -1411,6 +1508,7 @@ class CalendarManagerWindow(ttk.Frame):
                 "htmlLink": note.google_calendar_link or "",
                 "google_calendar_id": note.google_calendar_id or "",
                 "google_event_id": note.google_event_id or "",
+                "created_at": note.created_at,
             }
             self._enrich_with_email_fields(record, note)
             grouped.setdefault(note_date, []).append(record)
