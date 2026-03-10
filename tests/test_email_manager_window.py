@@ -150,6 +150,9 @@ class _TextStub:
     def insert(self, _index: str, text: str) -> None:
         self.value = text
 
+    def get(self, *_args) -> str:
+        return self.value
+
 
 def test_select_email_by_gmail_id_selects_row_and_refreshes_preview() -> None:
     window = EmailManagerWindow.__new__(EmailManagerWindow)
@@ -259,3 +262,98 @@ def test_get_email_attachments_parses_attachments_json() -> None:
     attachments = EmailManagerWindow.get_email_attachments(window, "id-1")
 
     assert attachments == [{"filename": "factura.pdf"}]
+
+
+def test_create_outlook_draft_updates_email_status_to_responded() -> None:
+    window = EmailManagerWindow.__new__(EmailManagerWindow)
+    tree = _TreeStub()
+    tree.selection_set(("id-1",))
+    window.tree = tree
+    window._rows_by_id = {
+        "id-1": {
+            "gmail_id": "id-1",
+            "subject": "Consulta",
+            "real_sender": "cliente@example.com",
+            "sender": "cliente@example.com",
+            "original_to": "",
+            "original_cc": "",
+            "reply_to": "",
+            "category": "other",
+        }
+    }
+    window.response_text = _TextStub()
+    window.response_text.insert("1.0", "Respuesta")
+    window._normalize_recipients = lambda **_kwargs: ("cliente@example.com", "")
+    window._build_email_attachments = lambda *_args: []
+    window._resolve_reply_attachment_paths = lambda *_args: []
+    window.my_email = "yo@example.com"
+    window.log = lambda *_args, **_kwargs: None
+    window.note_service = type("NoteService", (), {"get_note_by_source": lambda *_args: None, "note_repo": type("Repo", (), {"update_estado": lambda *_args: None, "set_email_replied": lambda *_args: None})()})()
+    window._pending_note_id_by_gmail_id = {}
+    window._is_trainable_response = lambda *_args: False
+    refreshed = {"called": False}
+    window.refresh_emails = lambda: refreshed.update(called=True)
+    window.outlook_service = type("Outlook", (), {"create_draft": lambda *_args, **_kwargs: ("cliente@example.com", [])})()
+
+    updates: list[tuple[str, str]] = []
+    window.email_repo = type("Repo", (), {"update_status": lambda _self, gmail_id, status: updates.append((gmail_id, status))})()
+
+    with patch("app.ui.email_manager_window.messagebox.askyesno", return_value=False):
+        EmailManagerWindow._create_outlook_draft(window)
+
+    assert updates == [("id-1", "responded")]
+    assert refreshed["called"] is True
+
+
+def test_forward_email_updates_status_to_responded() -> None:
+    window = EmailManagerWindow.__new__(EmailManagerWindow)
+    tree = _TreeStub()
+    tree.selection_set(("id-9",))
+    window.tree = tree
+    window._rows_by_id = {
+        "id-9": {
+            "gmail_id": "id-9",
+            "subject": "Asunto",
+            "real_sender": "sender@example.com",
+            "sender": "sender@example.com",
+            "received_at": "2024-01-01T00:00:00+00:00",
+            "original_to": "dest@example.com",
+            "body_text": "contenido",
+        }
+    }
+    window._build_email_attachments = lambda *_args: []
+    window._resolve_reply_attachment_paths = lambda *_args: []
+    window._format_datetime = lambda *_args: "2024-01-01"
+    window.log = lambda *_args, **_kwargs: None
+    window.note_service = type("NoteService", (), {"get_note_by_source": lambda *_args: None, "note_repo": type("Repo", (), {"update_estado": lambda *_args: None, "set_email_replied": lambda *_args: None})()})()
+    window._pending_note_id_by_gmail_id = {}
+    window.outlook_service = type("Outlook", (), {"create_forward_draft": lambda *_args, **_kwargs: None})()
+    window.refresh_emails = lambda: None
+
+    updates: list[tuple[str, str]] = []
+    window.email_repo = type("Repo", (), {"update_status": lambda _self, gmail_id, status: updates.append((gmail_id, status))})()
+
+    EmailManagerWindow._forward_email(window)
+
+    assert updates == [("id-9", "responded")]
+
+
+def test_summarize_email_prepends_summary_in_response_editor() -> None:
+    window = EmailManagerWindow.__new__(EmailManagerWindow)
+    tree = _TreeStub()
+    tree.selection_set(("id-5",))
+    window.tree = tree
+    window._rows_by_id = {"id-5": {"gmail_id": "id-5", "body_text": "Texto del correo"}}
+    window._current_html_content = ""
+    window.response_text = _TextStub()
+    window.response_text.insert("1.0", "Texto previo")
+    window.log = lambda *_args, **_kwargs: None
+
+    fake_response = type("Response", (), {"output_text": "Resumen generado."})()
+    fake_client = type("Client", (), {"responses": type("Responses", (), {"create": lambda *_args, **_kwargs: fake_response})()})()
+
+    with patch("app.ui.email_manager_window.build_openai_client", return_value=fake_client):
+        EmailManagerWindow._summarize_email(window)
+
+    assert window.response_text.value.startswith("Resumen:\n\nResumen generado.")
+    assert "Texto previo" in window.response_text.value
