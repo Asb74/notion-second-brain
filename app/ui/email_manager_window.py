@@ -8,10 +8,13 @@ import logging
 import os
 import re
 import base64
+import csv
 import shutil
 import sqlite3
 import tempfile
 import tkinter as tk
+import zipfile
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from email.utils import getaddresses, parseaddr
 from pathlib import Path
@@ -383,6 +386,7 @@ class EmailManagerWindow(tk.Toplevel):
         ttk.Button(response_actions, text="Responder", command=self._create_outlook_draft).pack(side="left")
         ttk.Button(response_actions, text="Reenviar", command=self._forward_email).pack(side="left", padx=(6, 0))
         ttk.Button(response_actions, text="Resumir", command=self._summarize_email).pack(side="left", padx=(6, 0))
+        ttk.Button(response_actions, text="Resumir adjuntos", command=self._summarize_attachments).pack(side="left", padx=(6, 0))
 
         lower_panel.add(preview_frame, weight=1)
         lower_panel.add(response_frame, weight=1)
@@ -1473,17 +1477,200 @@ class EmailManagerWindow(tk.Toplevel):
                 messagebox.showwarning("Atención", "No se pudo generar el resumen del email.")
                 return
 
-            # Insertamos siempre arriba y con el nuevo encabezado "Resumen rápido".
-            existing_text = self.response_text.get("1.0", "end").strip()
-            summary_block = f"Resumen rápido:\n\n{summary}\n\n"
-            combined_text = f"{summary_block}{existing_text}" if existing_text else summary_block
             self.response_text.delete("1.0", "end")
-            self.response_text.insert("1.0", combined_text)
+            self.response_text.insert("1.0", f"Resumen rápido:\n\n{summary}\n")
             self.log("Resumen insertado en el editor de respuesta")
         except Exception as exc:  # noqa: BLE001
             logger.exception("No se pudo generar el resumen")
             self.log(f"Error generando resumen: {exc}", level="ERROR")
             messagebox.showerror("OpenAI", f"No se pudo generar el resumen.\n\n{exc}")
+
+    def _summarize_attachments(self) -> None:
+        selection = self.tree.selection()
+        if len(selection) != 1:
+            messagebox.showwarning("Atención", "Selecciona un solo correo para resumir adjuntos.")
+            return
+
+        row = self._rows_by_id.get(str(selection[0]))
+        if not row:
+            return
+
+        gmail_id = str(row.get("gmail_id", "")).strip()
+        if not gmail_id:
+            return
+
+        attachments = self._build_email_attachments(gmail_id)
+        useful_attachments = [item for item in attachments if self._is_summarizable_attachment(item)]
+
+        self.response_text.delete("1.0", "end")
+
+        if not useful_attachments:
+            self.response_text.insert("1.0", "No hay adjuntos con contenido resumible.\n")
+            self.log("No hay adjuntos útiles para resumir")
+            return
+
+        summaries: list[tuple[str, str]] = []
+        for attachment in useful_attachments:
+            filename = str(attachment.get("filename") or "adjunto")
+            try:
+                local_path = self.attachment_cache.ensure_downloaded(gmail_id, attachment)
+                attachment["local_path"] = local_path
+                content = self._extract_attachment_text(local_path, filename)
+            except Exception as exc:  # noqa: BLE001
+                self.log(f"No se pudo leer adjunto {filename}: {exc}", level="WARNING")
+                continue
+
+            if not content.strip():
+                continue
+
+            summary = self._summarize_attachment_text(filename, content)
+            if summary:
+                summaries.append((filename, summary))
+
+        if not summaries:
+            self.response_text.insert("1.0", "No hay adjuntos con contenido resumible.\n")
+            self.log("No se encontró contenido resumible en los adjuntos")
+            return
+
+        blocks = ["Resumen de adjuntos:\n"]
+        for filename, summary in summaries:
+            blocks.append(f"\n[{filename}]\n{summary.strip()}\n")
+        self.response_text.insert("1.0", "".join(blocks).strip() + "\n")
+        self.log("Resumen de adjuntos insertado en el editor de respuesta")
+
+    @staticmethod
+    def _is_summarizable_attachment(attachment: dict[str, str]) -> bool:
+        filename = str(attachment.get("filename") or "").lower()
+        allowed_ext = {".pdf", ".txt", ".csv", ".xls", ".xlsx", ".doc", ".docx"}
+        return Path(filename).suffix in allowed_ext
+
+    def _extract_attachment_text(self, local_path: str, filename: str) -> str:
+        suffix = Path(filename).suffix.lower()
+        if suffix == ".txt":
+            return self._read_text_file(local_path)
+        if suffix == ".csv":
+            return self._read_csv_file(local_path)
+        if suffix == ".pdf":
+            return self._read_pdf_file(local_path)
+        if suffix == ".docx":
+            return self._read_docx_file(local_path)
+        if suffix == ".doc":
+            return self._read_doc_file(local_path)
+        if suffix == ".xlsx":
+            return self._read_xlsx_file(local_path)
+        if suffix == ".xls":
+            return self._read_xls_file(local_path)
+        return ""
+
+    @staticmethod
+    def _read_text_file(path: str) -> str:
+        with open(path, "r", encoding="utf-8", errors="ignore") as file:
+            return file.read()
+
+    @staticmethod
+    def _read_csv_file(path: str) -> str:
+        rows: list[str] = []
+        with open(path, "r", encoding="utf-8", errors="ignore", newline="") as file:
+            reader = csv.reader(file)
+            for idx, row in enumerate(reader):
+                if idx >= 200:
+                    break
+                rows.append(" | ".join(cell.strip() for cell in row if cell and cell.strip()))
+        return "\n".join(item for item in rows if item)
+
+    @staticmethod
+    def _read_pdf_file(path: str) -> str:
+        try:
+            from pypdf import PdfReader
+        except Exception:  # noqa: BLE001
+            return ""
+
+        reader = PdfReader(path)
+        texts: list[str] = []
+        for page in reader.pages[:20]:
+            texts.append((page.extract_text() or "").strip())
+        return "\n".join(item for item in texts if item)
+
+    @staticmethod
+    def _read_docx_file(path: str) -> str:
+        with zipfile.ZipFile(path) as archive:
+            with archive.open("word/document.xml") as file:
+                root = ET.fromstring(file.read())
+        texts = [node.text.strip() for node in root.iter() if node.tag.endswith("}t") and node.text and node.text.strip()]
+        return "\n".join(texts)
+
+    @staticmethod
+    def _read_doc_file(path: str) -> str:
+        try:
+            with open(path, "r", encoding="latin-1", errors="ignore") as file:
+                content = file.read()
+        except Exception:  # noqa: BLE001
+            return ""
+        cleaned = re.sub(r"[^\x20-\x7E\n\r\tÀ-ÿ]", " ", content)
+        return re.sub(r"\s+", " ", cleaned).strip()
+
+    @staticmethod
+    def _read_xlsx_file(path: str) -> str:
+        try:
+            import openpyxl
+        except Exception:  # noqa: BLE001
+            return ""
+
+        workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        try:
+            lines: list[str] = []
+            for sheet in workbook.worksheets:
+                lines.append(f"[{sheet.title}]")
+                for idx, row in enumerate(sheet.iter_rows(values_only=True)):
+                    if idx >= 100:
+                        break
+                    values = [str(cell).strip() for cell in row if cell not in (None, "")]
+                    if values:
+                        lines.append(" | ".join(values))
+            return "\n".join(lines)
+        finally:
+            workbook.close()
+
+    @staticmethod
+    def _read_xls_file(path: str) -> str:
+        try:
+            import xlrd
+        except Exception:  # noqa: BLE001
+            return ""
+
+        workbook = xlrd.open_workbook(path)
+        lines: list[str] = []
+        for sheet in workbook.sheets():
+            lines.append(f"[{sheet.name}]")
+            for row_idx in range(min(sheet.nrows, 100)):
+                values = [str(value).strip() for value in sheet.row_values(row_idx) if str(value).strip()]
+                if values:
+                    lines.append(" | ".join(values))
+        return "\n".join(lines)
+
+    def _summarize_attachment_text(self, filename: str, content: str) -> str:
+        trimmed_content = content.strip()
+        if not trimmed_content:
+            return ""
+
+        prompt = (
+            "Resume el contenido del archivo en español para lectura rápida.\n"
+            "Reglas:\n"
+            "- máximo 4 líneas\n"
+            "- usar viñetas (•)\n"
+            "- ideas concretas\n"
+            "- sin saludos ni despedidas\n"
+            "- no inventar información\n"
+            f"Archivo: {filename}\n\n"
+            f"Contenido:\n{trimmed_content[:12000]}"
+        )
+        try:
+            client = build_openai_client()
+            response = client.responses.create(model="gpt-4.1-mini", input=prompt)
+            return str(response.output_text or "").strip()
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"No se pudo resumir {filename}: {exc}", level="WARNING")
+            return ""
 
     def _resolve_reply_attachment_paths(self, gmail_id: str, attachments: list[dict[str, str]]) -> list[str] | None:
         if not attachments:
