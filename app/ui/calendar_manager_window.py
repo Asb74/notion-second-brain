@@ -77,6 +77,9 @@ class CalendarManagerWindow(ttk.Frame):
         self.open_email_manager_callback: Callable[[], Any] | None = None
         self.email_completion_callback: Callable[[dict[str, str | int] | None], None] | None = None
         self._attachments_by_name: dict[str, dict[str, Any]] = {}
+        self._inline_action_row: ttk.Frame | None = None
+        self._inline_action_entry: ttk.Entry | None = None
+        self._inline_action_saving = False
 
         style = ttk.Style(self)
         style.theme_use("clam")
@@ -564,6 +567,9 @@ class CalendarManagerWindow(ttk.Frame):
         for child in self.associated_actions_frame.winfo_children():
             child.destroy()
         self._action_vars.clear()
+        self._inline_action_row = None
+        self._inline_action_entry = None
+        self._inline_action_saving = False
 
         note_id = self._note_id_for_record(record)
         if note_id <= 0:
@@ -755,8 +761,60 @@ class CalendarManagerWindow(ttk.Frame):
         if self._note_id_for_record(item) <= 0:
             return
 
-        self._create_action_for_current_note()
-        self.recargar_agenda()
+        if getattr(self, "_inline_action_entry", None) is not None:
+            self._inline_action_entry.focus_set()
+            self._inline_action_entry.select_range(0, "end")
+            return
+
+        for child in self.associated_actions_frame.winfo_children():
+            if child.winfo_class() == "TLabel":
+                child.destroy()
+
+        # Nueva fila inline: checkbox + entrada de texto para capturar una acción rápida.
+        self._inline_action_row = ttk.Frame(self.associated_actions_frame)
+        self._inline_action_row.pack(fill="x", padx=6, pady=2)
+
+        inline_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(self._inline_action_row, variable=inline_var).pack(side="left", padx=(0, 4))
+        self._inline_action_entry = ttk.Entry(self._inline_action_row)
+        self._inline_action_entry.pack(side="left", fill="x", expand=True)
+
+        # Guardar con Enter o al perder foco, como en gestores de tareas modernos.
+        self._inline_action_entry.bind("<Return>", self._save_inline_action)
+        self._inline_action_entry.bind("<FocusOut>", self._save_inline_action)
+        self._inline_action_entry.focus_set()
+
+    def _save_inline_action(self, _event: tk.Event | None = None) -> str | None:
+        if getattr(self, "_inline_action_saving", False) or getattr(self, "_inline_action_entry", None) is None:
+            return "break"
+
+        self._inline_action_saving = True
+        description = self._inline_action_entry.get().strip()
+
+        if self._inline_action_row is not None:
+            self._inline_action_row.destroy()
+        self._inline_action_row = None
+        self._inline_action_entry = None
+        self._inline_action_saving = False
+
+        if not description:
+            return "break"
+
+        if not self._selected_record:
+            return "break"
+
+        note_id = self._note_id_for_record(self._selected_record)
+        if note_id <= 0:
+            return "break"
+
+        note = self.note_service.get_note_by_id(note_id)
+        if not note:
+            return "break"
+
+        self.note_service.actions_repo.create_action(note_id, description, note.area)
+        self._render_associated_actions(self._selected_record)
+        self._update_detail_scrollregion()
+        return "break"
 
     def abrir_email(self) -> None:
         item = self.selected_item
@@ -894,7 +952,6 @@ class CalendarManagerWindow(ttk.Frame):
     def _create_action_for_current_note(self) -> None:
         if not self._selected_record:
             return
-        # FIX: usar helper para resolver note_id/id de forma consistente.
         note_id = self._note_id_for_record(self._selected_record)
         note = self.note_service.get_note_by_id(note_id)
         if not note:
