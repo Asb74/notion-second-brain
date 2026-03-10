@@ -80,6 +80,8 @@ class CalendarManagerWindow(ttk.Frame):
         self._inline_action_row: ttk.Frame | None = None
         self._inline_action_entry: ttk.Entry | None = None
         self._inline_action_saving = False
+        self._inline_title_entry: ttk.Entry | None = None
+        self._inline_title_saving = False
 
         style = ttk.Style(self)
         style.theme_use("clam")
@@ -314,18 +316,26 @@ class CalendarManagerWindow(ttk.Frame):
         self.detail_content.bind("<Configure>", self._update_detail_scrollregion)
         self.detail_canvas.bind("<Configure>", self._resize_detail_canvas_window)
 
-        ttk.Label(self.detail_content, textvariable=self.detail_title_var, style="CalendarHeader.TLabel", font=("TkDefaultFont", 13, "bold")).pack(anchor="w")
+        self.detail_title_label = ttk.Label(
+            self.detail_content,
+            textvariable=self.detail_title_var,
+            style="CalendarHeader.TLabel",
+            font=("TkDefaultFont", 13, "bold"),
+        )
+        self.detail_title_label.pack(anchor="w", fill="x")
+        # Doble click: cambia el título a un Entry inline en el mismo lugar.
+        self.detail_title_label.bind("<Double-Button-1>", self._start_inline_title_edit)
 
-        metadata = ttk.Frame(self.detail_content)
-        metadata.pack(fill="x", pady=(6, 8))
-        ttk.Label(metadata, text="Tipo:").grid(row=0, column=0, sticky="w", padx=(0, 6))
-        ttk.Label(metadata, textvariable=self.detail_type_var).grid(row=0, column=1, sticky="w", padx=(0, 20))
-        ttk.Label(metadata, text="Estado:").grid(row=0, column=2, sticky="w", padx=(0, 6))
-        ttk.Label(metadata, textvariable=self.detail_status_var).grid(row=0, column=3, sticky="w", padx=(0, 20))
-        ttk.Label(metadata, text="Fecha:").grid(row=0, column=4, sticky="w", padx=(0, 6))
-        ttk.Label(metadata, textvariable=self.detail_date_var).grid(row=0, column=5, sticky="w", padx=(0, 20))
-        ttk.Label(metadata, text="Calendario:").grid(row=0, column=6, sticky="w", padx=(0, 6))
-        self.detail_calendar_label = ttk.Label(metadata, textvariable=self.detail_calendar_var)
+        self.detail_metadata = ttk.Frame(self.detail_content)
+        self.detail_metadata.pack(fill="x", pady=(6, 8))
+        ttk.Label(self.detail_metadata, text="Tipo:").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        ttk.Label(self.detail_metadata, textvariable=self.detail_type_var).grid(row=0, column=1, sticky="w", padx=(0, 20))
+        ttk.Label(self.detail_metadata, text="Estado:").grid(row=0, column=2, sticky="w", padx=(0, 6))
+        ttk.Label(self.detail_metadata, textvariable=self.detail_status_var).grid(row=0, column=3, sticky="w", padx=(0, 20))
+        ttk.Label(self.detail_metadata, text="Fecha:").grid(row=0, column=4, sticky="w", padx=(0, 6))
+        ttk.Label(self.detail_metadata, textvariable=self.detail_date_var).grid(row=0, column=5, sticky="w", padx=(0, 20))
+        ttk.Label(self.detail_metadata, text="Calendario:").grid(row=0, column=6, sticky="w", padx=(0, 6))
+        self.detail_calendar_label = ttk.Label(self.detail_metadata, textvariable=self.detail_calendar_var)
         self.detail_calendar_label.grid(row=0, column=7, sticky="w")
 
         self.content_text = tk.Text(self.detail_content, height=10, wrap="word")
@@ -500,6 +510,7 @@ class CalendarManagerWindow(ttk.Frame):
             self.show_detail(record)
 
     def show_detail(self, record: dict[str, str | int]) -> None:
+        self._restore_title_label()
         self._selected_record = record
         kind = str(record.get("kind") or "NOTE")
 
@@ -540,6 +551,59 @@ class CalendarManagerWindow(ttk.Frame):
             self.abrir_email()
             return
         self.editar_registro()
+
+    def _start_inline_title_edit(self, _event: tk.Event | None = None) -> str | None:
+        if self._inline_title_entry is not None:
+            self._inline_title_entry.focus_set()
+            self._inline_title_entry.select_range(0, "end")
+            return "break"
+
+        if not self._selected_record or self._note_id_for_record(self._selected_record) <= 0:
+            return "break"
+
+        current_title = self.detail_title_var.get().strip()
+        # Oculta el Label y muestra un Entry inline en la misma posición.
+        self.detail_title_label.pack_forget()
+        self._inline_title_entry = ttk.Entry(self.detail_content)
+        self._inline_title_entry.pack(anchor="w", fill="x", before=self.detail_metadata)
+        self._inline_title_entry.insert(0, current_title)
+        self._inline_title_entry.focus_set()
+        self._inline_title_entry.select_range(0, "end")
+
+        # Guardado inline con Enter o al perder foco.
+        self._inline_title_entry.bind("<Return>", self._save_inline_title_edit)
+        self._inline_title_entry.bind("<FocusOut>", self._save_inline_title_edit)
+        return "break"
+
+    def _restore_title_label(self) -> None:
+        if self._inline_title_entry is not None:
+            self._inline_title_entry.destroy()
+            self._inline_title_entry = None
+        if not self.detail_title_label.winfo_manager():
+            self.detail_title_label.pack(anchor="w", fill="x", before=self.detail_metadata)
+
+    def _save_inline_title_edit(self, _event: tk.Event | None = None) -> str | None:
+        if self._inline_title_saving or self._inline_title_entry is None:
+            return "break"
+
+        self._inline_title_saving = True
+        new_title = self._inline_title_entry.get().strip() or "(Sin título)"
+
+        note_id = self._note_id_for_record(self._selected_record or {})
+        if note_id > 0:
+            content = self.content_text.get("1.0", "end").strip()
+            # Persistencia: actualiza título vía NoteService.
+            self.note_service.update_note_title(note_id, new_title, content)
+
+        if self._selected_record is not None:
+            self._selected_record["title"] = new_title
+        self.detail_title_var.set(new_title)
+
+        # Restaura el Label y refresca la vista para propagar el nuevo título.
+        self._restore_title_label()
+        self._inline_title_saving = False
+        self.refresh_overview()
+        return "break"
 
     def _select_email_in_manager(self, item: dict[str, str | int], *, action_name: str) -> Any | None:
         """Open EmailManagerWindow and select the target email.

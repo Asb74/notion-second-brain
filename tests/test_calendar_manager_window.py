@@ -232,3 +232,62 @@ def test_save_inline_action_creates_action_and_rerenders() -> None:
     assert result == "break"
     assert calls == [(42, "Nueva tarea inline", "general")]
     assert rerendered == [{"note_id": 42}]
+
+
+def test_save_inline_title_edit_updates_note_and_refreshes() -> None:
+    window = CalendarManagerWindow.__new__(CalendarManagerWindow)
+    updates: list[tuple[int, str, str]] = []
+    refreshed: list[bool] = []
+
+    class _EntryStub:
+        @staticmethod
+        def get() -> str:
+            return "  Nuevo título inline  "
+
+        @staticmethod
+        def destroy() -> None:
+            return None
+
+    class _TextStub:
+        @staticmethod
+        def get(*_args) -> str:
+            return "contenido actualizado"
+
+    class _DetailTitleVarStub:
+        def __init__(self) -> None:
+            self.value = "Anterior"
+
+        def set(self, value: str) -> None:
+            self.value = value
+
+    class _NoteService:
+        @staticmethod
+        def update_note_title(note_id: int, title: str, content: str) -> None:
+            updates.append((note_id, title, content))
+
+    window._inline_title_entry = _EntryStub()
+    window._inline_title_saving = False
+    window._selected_record = {"note_id": 42, "title": "Anterior"}
+    window.content_text = _TextStub()
+    window.note_service = _NoteService()
+    window.detail_title_var = _DetailTitleVarStub()
+    window._restore_title_label = lambda: setattr(window, "_inline_title_entry", None)
+    window.refresh_overview = lambda: refreshed.append(True)
+
+    result = window._save_inline_title_edit()
+
+    assert result == "break"
+    assert updates == [(42, "Nuevo título inline", "contenido actualizado")]
+    assert window._selected_record["title"] == "Nuevo título inline"
+    assert window.detail_title_var.value == "Nuevo título inline"
+    assert refreshed == [True]
+
+
+def test_start_inline_title_edit_requires_selected_note() -> None:
+    window = CalendarManagerWindow.__new__(CalendarManagerWindow)
+    window._inline_title_entry = None
+    window._selected_record = None
+
+    result = window._start_inline_title_edit()
+
+    assert result == "break"
