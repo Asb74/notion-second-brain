@@ -338,7 +338,7 @@ def test_forward_email_updates_status_to_responded() -> None:
     assert updates == [("id-9", "responded")]
 
 
-def test_summarize_email_prepends_summary_in_response_editor() -> None:
+def test_summarize_email_replaces_response_editor_content() -> None:
     window = EmailManagerWindow.__new__(EmailManagerWindow)
     tree = _TreeStub()
     tree.selection_set(("id-5",))
@@ -355,5 +355,37 @@ def test_summarize_email_prepends_summary_in_response_editor() -> None:
     with patch("app.ui.email_manager_window.build_openai_client", return_value=fake_client):
         EmailManagerWindow._summarize_email(window)
 
-    assert window.response_text.value.startswith("Resumen:\n\nResumen generado.")
-    assert "Texto previo" in window.response_text.value
+    assert window.response_text.value == "Resumen rápido:\n\nResumen generado.\n"
+
+
+def test_summarize_attachments_without_useful_files_shows_message() -> None:
+    window = EmailManagerWindow.__new__(EmailManagerWindow)
+    tree = _TreeStub()
+    tree.selection_set(("id-6",))
+    window.tree = tree
+    window._rows_by_id = {"id-6": {"gmail_id": "id-6"}}
+    window.response_text = _TextStub()
+    window._build_email_attachments = lambda *_args: [{"filename": "logo.png"}]
+    window.log = lambda *_args, **_kwargs: None
+
+    EmailManagerWindow._summarize_attachments(window)
+
+    assert window.response_text.value == "No hay adjuntos con contenido resumible.\n"
+
+
+def test_summarize_attachments_renders_expected_format() -> None:
+    window = EmailManagerWindow.__new__(EmailManagerWindow)
+    tree = _TreeStub()
+    tree.selection_set(("id-7",))
+    window.tree = tree
+    window._rows_by_id = {"id-7": {"gmail_id": "id-7"}}
+    window.response_text = _TextStub()
+    window.log = lambda *_args, **_kwargs: None
+    window._build_email_attachments = lambda *_args: [{"filename": "informe.txt"}, {"filename": "logo.png"}]
+    window.attachment_cache = type("Cache", (), {"ensure_downloaded": lambda *_args, **_kwargs: "/tmp/informe.txt"})()
+    window._extract_attachment_text = lambda *_args, **_kwargs: "contenido"
+    window._summarize_attachment_text = lambda *_args, **_kwargs: "• idea 1\n• idea 2"
+
+    EmailManagerWindow._summarize_attachments(window)
+
+    assert window.response_text.value == "Resumen de adjuntos:\n\n[informe.txt]\n• idea 1\n• idea 2\n"
