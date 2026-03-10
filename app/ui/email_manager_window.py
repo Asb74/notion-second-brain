@@ -382,6 +382,7 @@ class EmailManagerWindow(tk.Toplevel):
         ttk.Button(response_actions, text="Generar respuesta", command=self._generate_response).pack(side="left", padx=(0, 6))
         ttk.Button(response_actions, text="Responder", command=self._create_outlook_draft).pack(side="left")
         ttk.Button(response_actions, text="Reenviar", command=self._forward_email).pack(side="left", padx=(6, 0))
+        ttk.Button(response_actions, text="Resumir", command=self._summarize_email).pack(side="left", padx=(6, 0))
 
         lower_panel.add(preview_frame, weight=1)
         lower_panel.add(response_frame, weight=1)
@@ -1353,6 +1354,9 @@ class EmailManagerWindow(tk.Toplevel):
             for path in attachment_paths or []:
                 self.log(f"Adjunto añadido a borrador: {path}")
             self.log("Borrador de Outlook abierto correctamente.")
+            self.email_repo.update_status(str(row["gmail_id"]), "responded")
+            self.log(f"Email {row['gmail_id']} marcado como responded")
+            self.refresh_emails()
 
             gmail_id = str(row["gmail_id"])
             note_id = self._pending_note_id_by_gmail_id.get(gmail_id)
@@ -1405,8 +1409,8 @@ class EmailManagerWindow(tk.Toplevel):
                 body=forward_body,
                 attachment_paths=attachment_paths,
             )
-            self.email_repo.update_status(row["gmail_id"], "forwarded")
-            self.log(f"Email {row['gmail_id']} marcado como forwarded")
+            self.email_repo.update_status(str(row["gmail_id"]), "responded")
+            self.log(f"Email {row['gmail_id']} marcado como responded")
             gmail_id = str(row["gmail_id"])
             note_id = self._pending_note_id_by_gmail_id.get(gmail_id)
             if note_id is None:
@@ -1424,6 +1428,50 @@ class EmailManagerWindow(tk.Toplevel):
             logger.exception("No se pudo crear borrador de reenvío")
             self.log(f"Error creando borrador de reenvío: {exc}", level="ERROR")
             messagebox.showerror("Error", f"No se pudo crear el borrador de reenvío en Outlook.\n\n{exc}")
+
+    def _summarize_email(self) -> None:
+        selection = self.tree.selection()
+        if len(selection) != 1:
+            messagebox.showwarning("Atención", "Selecciona un solo correo para resumir.")
+            return
+
+        row = self._rows_by_id.get(str(selection[0]))
+        if not row:
+            return
+
+        preview_body = self._html_to_text(self._current_html_content).strip() if self._current_html_content else ""
+        if not preview_body:
+            preview_body = (row.get("body_text") or "").strip()
+        if not preview_body:
+            messagebox.showwarning("Atención", "El correo seleccionado no tiene contenido para resumir.")
+            return
+
+        prompt = (
+            "Resume el siguiente email de forma breve y formal en 2 o 3 frases.\n\n"
+            f"Email:\n{preview_body}"
+        )
+        try:
+            self.log("Generando resumen...")
+            client = build_openai_client()
+            response = client.responses.create(
+                model=MODEL_NAME,
+                input=prompt,
+            )
+            summary = str(response.output_text or "").strip()
+            if not summary:
+                messagebox.showwarning("Atención", "No se pudo generar el resumen del email.")
+                return
+
+            existing_text = self.response_text.get("1.0", "end").strip()
+            summary_block = f"Resumen:\n\n{summary}\n\n"
+            combined_text = f"{summary_block}{existing_text}" if existing_text else summary_block
+            self.response_text.delete("1.0", "end")
+            self.response_text.insert("1.0", combined_text)
+            self.log("Resumen insertado en el editor de respuesta")
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("No se pudo generar el resumen")
+            self.log(f"Error generando resumen: {exc}", level="ERROR")
+            messagebox.showerror("OpenAI", f"No se pudo generar el resumen.\n\n{exc}")
 
     def _resolve_reply_attachment_paths(self, gmail_id: str, attachments: list[dict[str, str]]) -> list[str] | None:
         if not attachments:
