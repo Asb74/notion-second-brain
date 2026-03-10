@@ -1565,7 +1565,11 @@ class EmailManagerWindow(tk.Toplevel):
         value = str(raw_label or "").strip()
         if not value:
             return ""
-        return value.split(" ", 1)[0].strip()
+
+        if "[" in value:
+            value = value.split("[", 1)[0]
+
+        return value.strip()
 
     def _extract_attachment_text(self, local_path: str, filename: str) -> str:
         suffix = Path(filename).suffix.lower()
