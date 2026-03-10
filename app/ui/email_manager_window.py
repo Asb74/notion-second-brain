@@ -1511,7 +1511,7 @@ class EmailManagerWindow(tk.Toplevel):
 
         summaries: list[tuple[str, str]] = []
         for attachment in useful_attachments:
-            filename = str(attachment.get("filename") or "adjunto")
+            filename = self._extract_attachment_filename(str(attachment.get("filename") or "adjunto")) or "adjunto"
             try:
                 local_path = self.attachment_cache.ensure_downloaded(gmail_id, attachment)
                 attachment["local_path"] = local_path
@@ -1540,9 +1540,32 @@ class EmailManagerWindow(tk.Toplevel):
 
     @staticmethod
     def _is_summarizable_attachment(attachment: dict[str, str]) -> bool:
-        filename = str(attachment.get("filename") or "").lower()
-        allowed_ext = {".pdf", ".txt", ".csv", ".xls", ".xlsx", ".doc", ".docx"}
-        return Path(filename).suffix in allowed_ext
+        filename = EmailManagerWindow._extract_attachment_filename(str(attachment.get("filename") or ""))
+        if not filename:
+            return False
+
+        lowered_name = filename.lower()
+        if lowered_name.startswith("~"):
+            return False
+
+        ignored_names = {"logo", "logos", "firma", "signature", "signatures"}
+        stem = Path(lowered_name).stem
+        if stem in ignored_names:
+            return False
+
+        ignored_tokens = ("firma", "signature")
+        if any(token in lowered_name for token in ignored_tokens):
+            return False
+
+        allowed_ext = {".pdf", ".csv", ".xls", ".xlsx", ".txt", ".docx"}
+        return Path(lowered_name).suffix in allowed_ext
+
+    @staticmethod
+    def _extract_attachment_filename(raw_label: str) -> str:
+        value = str(raw_label or "").strip()
+        if not value:
+            return ""
+        return value.split(" ", 1)[0].strip()
 
     def _extract_attachment_text(self, local_path: str, filename: str) -> str:
         suffix = Path(filename).suffix.lower()

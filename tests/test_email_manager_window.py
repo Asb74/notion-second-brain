@@ -389,3 +389,18 @@ def test_summarize_attachments_renders_expected_format() -> None:
     EmailManagerWindow._summarize_attachments(window)
 
     assert window.response_text.value == "Resumen de adjuntos:\n\n[informe.txt]\n• idea 1\n• idea 2\n"
+
+
+def test_is_summarizable_attachment_extracts_real_filename_from_label() -> None:
+    attachment = {
+        "filename": "NARANJA_S11_Lora_Del_Rio_reporte_semanal.pdf [application/pdf] (89447 bytes)",
+        "mime": "application/octet-stream",
+    }
+
+    assert EmailManagerWindow._is_summarizable_attachment(attachment) is True
+
+
+def test_is_summarizable_attachment_ignores_temp_and_signature_files() -> None:
+    assert EmailManagerWindow._is_summarizable_attachment({"filename": "~WRD0000.jpg [image/jpeg] (1200 bytes)"}) is False
+    assert EmailManagerWindow._is_summarizable_attachment({"filename": "logos [application/octet-stream]"}) is False
+    assert EmailManagerWindow._is_summarizable_attachment({"filename": "imagen_firma.docx [application/vnd.openxmlformats-officedocument.wordprocessingml.document]"}) is False
