@@ -161,3 +161,74 @@ def test_create_action_uses_note_id_when_id_is_missing() -> None:
     window._create_action_for_current_note()
 
     assert created_for_note_ids == [42]
+
+
+def test_save_inline_action_ignores_empty_value() -> None:
+    window = CalendarManagerWindow.__new__(CalendarManagerWindow)
+
+    class _EntryStub:
+        @staticmethod
+        def get() -> str:
+            return "   "
+
+    class _RowStub:
+        def __init__(self) -> None:
+            self.destroyed = False
+
+        def destroy(self) -> None:
+            self.destroyed = True
+
+    window._inline_action_entry = _EntryStub()
+    window._inline_action_row = _RowStub()
+    window._inline_action_saving = False
+
+    result = window._save_inline_action()
+
+    assert result == "break"
+    assert window._inline_action_row is None
+    assert window._inline_action_entry is None
+
+
+def test_save_inline_action_creates_action_and_rerenders() -> None:
+    window = CalendarManagerWindow.__new__(CalendarManagerWindow)
+    calls: list[tuple[int, str, str]] = []
+    rerendered: list[dict[str, str | int]] = []
+
+    class _EntryStub:
+        @staticmethod
+        def get() -> str:
+            return "  Nueva tarea inline  "
+
+    class _RowStub:
+        @staticmethod
+        def destroy() -> None:
+            return None
+
+    class _ActionsRepo:
+        @staticmethod
+        def create_action(note_id: int, description: str, area: str) -> None:
+            calls.append((note_id, description, area))
+
+    class _NoteService:
+        actions_repo = _ActionsRepo()
+
+        @staticmethod
+        def get_note_by_id(note_id: int):
+            class _Note:
+                area = "general"
+
+            return _Note() if note_id == 42 else None
+
+    window._inline_action_entry = _EntryStub()
+    window._inline_action_row = _RowStub()
+    window._inline_action_saving = False
+    window._selected_record = {"note_id": 42}
+    window.note_service = _NoteService()
+    window._render_associated_actions = lambda record: rerendered.append(record)
+    window._update_detail_scrollregion = lambda *_args, **_kwargs: None
+
+    result = window._save_inline_action()
+
+    assert result == "break"
+    assert calls == [(42, "Nueva tarea inline", "general")]
+    assert rerendered == [{"note_id": 42}]
