@@ -255,6 +255,50 @@ def test_build_note_request_uses_custom_title_when_provided() -> None:
     assert request.raw_text.startswith("Título editable|")
 
 
+def test_extract_quick_summary_detects_resumen_rapido_marker() -> None:
+    response_text = (
+        "Resumen rápido:\n"
+        "• Falta completar rectificación de liquidación pasada\n"
+        "• Pendiente rectificación transporte Juan Antonio Cano\n"
+    )
+
+    summary = EmailManagerWindow._extract_quick_summary(response_text)
+
+    assert summary.startswith("• Falta completar")
+    assert "• Pendiente rectificación" in summary
+
+
+def test_extract_quick_summary_returns_empty_when_marker_not_found() -> None:
+    assert EmailManagerWindow._extract_quick_summary("Sin resumen") == ""
+
+
+def test_compose_note_body_with_summary_puts_summary_before_original_email() -> None:
+    result = EmailManagerWindow._compose_note_body_with_summary(
+        "Texto completo del correo",
+        "• Punto 1\n• Punto 2",
+    )
+
+    assert result.startswith("RESUMEN RÁPIDO\n--------------")
+    assert "• Punto 1\n• Punto 2" in result
+    assert result.endswith("Texto completo del correo")
+    assert result.index("RESUMEN RÁPIDO") < result.index("EMAIL ORIGINAL")
+
+
+def test_compose_note_body_with_summary_avoids_duplicate_when_already_integrated() -> None:
+    existing = (
+        "RESUMEN RÁPIDO\n"
+        "--------------\n"
+        "• Punto 1\n\n"
+        "EMAIL ORIGINAL\n"
+        "--------------\n"
+        "Texto completo del correo"
+    )
+
+    result = EmailManagerWindow._compose_note_body_with_summary(existing, "• Punto 1")
+
+    assert result == existing
+
+
 def test_get_email_attachments_parses_attachments_json() -> None:
     window = EmailManagerWindow.__new__(EmailManagerWindow)
     window.email_repo = type("Repo", (), {"get_email_content": lambda *_args: {"attachments_json": '[{"filename":"factura.pdf"}]'}})()
