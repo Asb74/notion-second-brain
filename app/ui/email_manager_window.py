@@ -18,6 +18,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 from email.utils import getaddresses, parseaddr
 from pathlib import Path
+from typing import Callable
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from tkinter.scrolledtext import ScrolledText
 
@@ -193,6 +194,7 @@ class EmailManagerWindow(tk.Toplevel):
         self.detected_persona_var = tk.StringVar(value="")
         self.detected_accion_var = tk.StringVar(value="")
         self._pending_note_id_by_gmail_id: dict[str, int] = {}
+        self.calendar_refresh_callback: Callable[[], None] | None = None
 
         self._build_layout()
         self.refresh_emails()
@@ -822,6 +824,8 @@ class EmailManagerWindow(tk.Toplevel):
                 skipped_count += 1
 
         self.refresh_emails()
+        if created_count and callable(self.calendar_refresh_callback):
+            self.calendar_refresh_callback()
         self.system_log(f"Creación de notas finalizada. Notas: {created_count}, omitidos: {skipped_count}")
         messagebox.showinfo("Resultado", f"Notas creadas: {created_count}\nOmitidos: {skipped_count}")
 
