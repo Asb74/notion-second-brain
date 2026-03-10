@@ -179,11 +179,16 @@ class MainWindow(ttk.Frame):
             token_path.parent.mkdir(parents=True, exist_ok=True)
             gmail_client = GmailClient(str(credentials_path), str(token_path))
             self._email_window = EmailManagerWindow(self.master, self.service, self.db_connection, gmail_client)
+            self._email_window.calendar_refresh_callback = self._refresh_calendar_if_open
             return self._email_window
         except Exception as exc:  # noqa: BLE001
             logger.exception("No se pudo abrir la ventana de gestión de emails")
             messagebox.showerror("Error", f"No se pudo abrir la gestión de emails.\n\n{exc}")
             return None
+
+    def _refresh_calendar_if_open(self) -> None:
+        if self._calendar_window is not None and self._calendar_window.winfo_exists():
+            self._calendar_window.refresh_calendar_view()
 
     def _open_email_manager(self) -> None:
         self._ensure_email_manager_window()
@@ -194,7 +199,7 @@ class MainWindow(ttk.Frame):
             self._calendar_toplevel.deiconify()
             self._calendar_toplevel.lift()
             self._calendar_toplevel.focus_force()
-            self._calendar_window.refresh_overview()
+            self._calendar_window.refresh_calendar_view()
             return self._calendar_window
 
         toplevel = tk.Toplevel(self.master)
@@ -631,6 +636,8 @@ class MainWindow(ttk.Frame):
             self.hora_fin_var.set("")
         self.refresh_notes()
         self.refresh_actions()
+        if self._calendar_window is not None and self._calendar_window.winfo_exists():
+            self._calendar_window.refresh_calendar_view()
 
     def _on_tipo_changed(self, _event: tk.Event | None = None) -> None:
         self._toggle_event_time_fields()
@@ -855,6 +862,8 @@ class MainWindow(ttk.Frame):
             self._process_completion_event(completion)
             self.status_var.set(f"Acción {action_id} marcada como hecha")
             self.refresh_actions()
+            if self._calendar_window is not None and self._calendar_window.winfo_exists():
+                self._calendar_window.refresh_calendar_view()
         except Exception:  # noqa: BLE001
             logger.exception("No se pudo marcar la acción id=%s como hecha", action_id)
             messagebox.showerror("Error", "No se pudo actualizar la acción.")
@@ -874,6 +883,8 @@ class MainWindow(ttk.Frame):
                     self._process_completion_event(event)
             self.status_var.set(f"Acciones finalizadas: {len(action_ids)}")
             self.refresh_actions()
+            if self._calendar_window is not None and self._calendar_window.winfo_exists():
+                self._calendar_window.refresh_calendar_view()
         except Exception:  # noqa: BLE001
             logger.exception("No se pudieron finalizar las acciones seleccionadas: %s", action_ids)
             messagebox.showerror("Error", "No se pudieron finalizar las acciones seleccionadas.")

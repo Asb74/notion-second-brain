@@ -155,7 +155,7 @@ def test_create_action_uses_note_id_when_id_is_missing() -> None:
 
     window.note_service = _NoteService()
     window.content_text = type("TextStub", (), {"get": lambda *_args: "Nueva acción"})()
-    window.refresh_overview = lambda: None
+    window.refresh_calendar_view = lambda: None
     window._selected_record = {"kind": "EVENT", "note_id": 42}
 
     window._create_action_for_current_note()
@@ -224,6 +224,7 @@ def test_save_inline_action_creates_action_and_rerenders() -> None:
     window._inline_action_saving = False
     window._selected_record = {"note_id": 42}
     window.note_service = _NoteService()
+    window.refresh_calendar_view = lambda: None
     window._render_associated_actions = lambda record: rerendered.append(record)
     window._update_detail_scrollregion = lambda *_args, **_kwargs: None
 
@@ -272,7 +273,7 @@ def test_save_inline_title_edit_updates_note_and_refreshes() -> None:
     window.note_service = _NoteService()
     window.detail_title_var = _DetailTitleVarStub()
     window._restore_title_label = lambda: setattr(window, "_inline_title_entry", None)
-    window.refresh_overview = lambda: refreshed.append(True)
+    window.refresh_calendar_view = lambda: refreshed.append(True)
 
     result = window._save_inline_title_edit()
 
