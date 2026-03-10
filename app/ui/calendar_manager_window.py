@@ -98,7 +98,7 @@ class CalendarManagerWindow(ttk.Frame):
         self._build_legend()
         self._build_layout()
         self._initialize_client()
-        self.refresh_calendar_view()
+        self.refresh_calendar()
 
     def _is_email_backed_record(self, record: dict[str, str | int]) -> bool:
         if str(record.get("kind") or "") == "EMAIL":
@@ -146,7 +146,7 @@ class CalendarManagerWindow(ttk.Frame):
 
         ttk.Button(toolbar, text="Lista", command=self._show_list_overview, style="Toolbar.TButton").grid(row=0, column=7, padx=4)
         ttk.Button(toolbar, text="Calendario", command=self._show_calendar_overview, style="Toolbar.TButton").grid(row=0, column=8, padx=4)
-        ttk.Button(toolbar, text="Actualizar", command=self.refresh_calendar_view, style="Toolbar.TButton").grid(row=0, column=9, padx=4)
+        ttk.Button(toolbar, text="Actualizar", command=self.refresh_calendar, style="Toolbar.TButton").grid(row=0, column=9, padx=4)
 
         toolbar.columnconfigure(6, weight=1)
 
@@ -199,7 +199,7 @@ class CalendarManagerWindow(ttk.Frame):
         if self.calendar_repo is None:
             return
         self.calendar_repo.set_calendar_selected(google_calendar_id, 1 if var.get() else 0)
-        self.refresh_calendar_view()
+        self.refresh_calendar()
 
     def _build_legend(self) -> None:
         legend_frame = ttk.Frame(self)
@@ -388,7 +388,7 @@ class CalendarManagerWindow(ttk.Frame):
     def _on_calendar_mousewheel(self, event: tk.Event) -> None:
         self.calendar_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
-    def _refresh_data(self) -> None:
+    def load_items(self) -> None:
         self.sync_google_calendars()
         self._refresh_calendar_filters()
         self.calendar_events = self._load_calendar_events()
@@ -399,18 +399,26 @@ class CalendarManagerWindow(ttk.Frame):
     def log(self, message: str) -> None:
         logger.info(message)
 
-    def refresh_calendar_view(self) -> None:
-        """Recarga datos y vuelve a renderizar la vista activa del calendario."""
-        self._refresh_data()
+    def render_current_calendar_view(self) -> None:
+        """Reconstruye la vista actual del calendario (día/semana/mes) sin cambiar navegación."""
         self._clear_calendar_body()
         self.render_calendar()
+
+    def refresh_calendar(self) -> None:
+        """Recarga los datos y vuelve a renderizar la vista actual del calendario."""
+        self.load_items()
+        self.render_current_calendar_view()
         self._refresh_overview_list()
         if self._selected_record:
             self.show_detail(self._selected_record)
         self.log("Calendario actualizado automáticamente")
 
+    def refresh_calendar_view(self) -> None:
+        """Compatibilidad: usa el refresco central del calendario."""
+        self.refresh_calendar()
+
     def refresh_overview(self) -> None:
-        self.refresh_calendar_view()
+        self.refresh_calendar()
 
     def _refresh_overview_list(self) -> None:
         self._overview_records.clear()
@@ -611,7 +619,7 @@ class CalendarManagerWindow(ttk.Frame):
         # Restaura el Label y refresca la vista para propagar el nuevo título.
         self._restore_title_label()
         self._inline_title_saving = False
-        self.refresh_calendar_view()
+        self.refresh_calendar()
         return "break"
 
     def _select_email_in_manager(self, item: dict[str, str | int], *, action_name: str) -> Any | None:
@@ -672,7 +680,7 @@ class CalendarManagerWindow(ttk.Frame):
             note = self.note_service.get_note_by_id(note_id)
             if note:
                 self._selected_record["status"] = note.estado
-        self.refresh_calendar_view()
+        self.refresh_calendar()
 
     def _render_context_actions(self, record: dict[str, str | int]) -> None:
         for child in self.context_buttons.winfo_children():
@@ -773,10 +781,10 @@ class CalendarManagerWindow(ttk.Frame):
         return self._selected_record
 
     def actualizar_ui(self) -> None:
-        self.refresh_calendar_view()
+        self.refresh_calendar()
 
     def recargar_agenda(self) -> None:
-        self.refresh_calendar_view()
+        self.refresh_calendar()
 
     def editar_registro(self) -> None:
         item = self.selected_item
@@ -885,7 +893,7 @@ class CalendarManagerWindow(ttk.Frame):
             return "break"
 
         self.note_service.actions_repo.create_action(note_id, description, note.area)
-        self.refresh_calendar_view()
+        self.refresh_calendar()
         self._render_associated_actions(self._selected_record)
         self._update_detail_scrollregion()
         return "break"
@@ -979,7 +987,7 @@ class CalendarManagerWindow(ttk.Frame):
         try:
             self.calendar_client.update_event(calendar_id=calendar_id, event_id=event_id, data=data)
             logger.info("Evento actualizado en calendario %s", calendar_id)
-            self.refresh_calendar_view()
+            self.refresh_calendar()
         except Exception:  # noqa: BLE001
             logger.exception("No se pudo actualizar evento en Google Calendar")
             messagebox.showwarning("Evento", "No se pudo actualizar el evento en Google Calendar")
@@ -1013,7 +1021,7 @@ class CalendarManagerWindow(ttk.Frame):
         self._selected_record["date"] = date_value.strip() or self._selected_record.get("date") or ""
 
         self._edit_actions_for_note(note_id)
-        self.refresh_calendar_view()
+        self.refresh_calendar()
 
     def _save_action_edits(self) -> None:
         if not self._selected_record:
@@ -1021,7 +1029,7 @@ class CalendarManagerWindow(ttk.Frame):
         action_id = int(self._selected_record.get("id") or 0)
         content = self.content_text.get("1.0", "end").strip()
         self.note_service.update_action_description(action_id, content)
-        self.refresh_calendar_view()
+        self.refresh_calendar()
 
     def _create_action_for_current_note(self) -> None:
         if not self._selected_record:
@@ -1032,7 +1040,7 @@ class CalendarManagerWindow(ttk.Frame):
             return
         description = self.content_text.get("1.0", "end").strip().splitlines()[0][:180] or "Nueva acción"
         self.note_service.actions_repo.create_action(note_id, description, note.area)
-        self.refresh_calendar_view()
+        self.refresh_calendar()
 
     def _complete_current_note(self) -> None:
         if not self._selected_record:
@@ -1043,14 +1051,14 @@ class CalendarManagerWindow(ttk.Frame):
         action_ids = [action.id for action in self.note_service.list_actions_by_note(note_id) if action.status != "hecha"]
         self.note_service.mark_actions_done(action_ids)
         self.note_service.note_repo.update_estado(note_id, "Finalizado")
-        self.refresh_calendar_view()
+        self.refresh_calendar()
 
     def _complete_current_action(self) -> None:
         if not self._selected_record:
             return
         action_id = int(self._selected_record.get("id") or 0)
         self.note_service.toggle_action_status(action_id)
-        self.refresh_calendar_view()
+        self.refresh_calendar()
 
     def _edit_event(self) -> None:
         self.abrir_evento_calendar()
