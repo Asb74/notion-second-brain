@@ -404,3 +404,8 @@ def test_is_summarizable_attachment_ignores_temp_and_signature_files() -> None:
     assert EmailManagerWindow._is_summarizable_attachment({"filename": "~WRD0000.jpg [image/jpeg] (1200 bytes)"}) is False
     assert EmailManagerWindow._is_summarizable_attachment({"filename": "logos [application/octet-stream]"}) is False
     assert EmailManagerWindow._is_summarizable_attachment({"filename": "imagen_firma.docx [application/vnd.openxmlformats-officedocument.wordprocessingml.document]"}) is False
+
+
+def test_extract_attachment_filename_keeps_spaces() -> None:
+    raw = "PK 881 EDEKA.xlsx [application/vnd.openxmlformats-officedocument.spreadsheetml.sheet]"
+    assert EmailManagerWindow._extract_attachment_filename(raw) == "PK 881 EDEKA.xlsx"
