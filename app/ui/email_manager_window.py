@@ -778,6 +778,15 @@ class EmailManagerWindow(tk.Toplevel):
             return
         self.system_log(f"Iniciando creación de notas para {len(selected_ids)} emails")
 
+        response_text = self.response_text.get("1.0", "end").strip()
+        summary_text = self._extract_quick_summary(response_text)
+        include_summary = False
+        if summary_text:
+            include_summary = messagebox.askyesno(
+                "Integrar resumen",
+                "Se ha detectado un 'Resumen rápido'. ¿Deseas integrarlo al principio de la nota?",
+            )
+
         created_count = 0
         skipped_count = 0
         for gmail_id in selected_ids:
@@ -804,7 +813,7 @@ class EmailManagerWindow(tk.Toplevel):
                     skipped_count += 1
                     continue
 
-                req = self._build_note_request_from_row(row, title)
+                req = self._build_note_request_from_row(row, title, summary_text=summary_text, include_summary=include_summary)
                 self.system_log(f"Analizando nota para email {gmail_id}")
                 note_id, _message = self.note_service.create_note(req)
                 if note_id is None:
@@ -816,6 +825,8 @@ class EmailManagerWindow(tk.Toplevel):
                 self.system_log(f"Tareas detectadas: {tasks_count}")
                 self.system_log(f"Tareas creadas: {tasks_count}")
                 self.email_repo.update_status(gmail_id, "converted_to_note")
+                if include_summary:
+                    self.log("Resumen integrado en la nota creada desde email")
                 created_count += 1
             except Exception as exc:  # noqa: BLE001
                 logger.exception("No se pudo crear nota desde email %s", gmail_id)
@@ -845,15 +856,24 @@ class EmailManagerWindow(tk.Toplevel):
             return None
         return cleaned
 
-    def _build_note_request_from_row(self, row: sqlite3.Row, title: str | None = None) -> NoteCreateRequest:
+    def _build_note_request_from_row(
+        self,
+        row: sqlite3.Row,
+        title: str | None = None,
+        summary_text: str | None = None,
+        include_summary: bool = False,
+    ) -> NoteCreateRequest:
         sender_for_note = row["original_from"] or row["real_sender"] or row["sender"] or ""
         note_title = (title if title is not None else (row["subject"] or "")).strip()
+        email_text = self._get_email_text_for_note(row)
+        if include_summary and summary_text:
+            email_text = self._compose_note_body_with_summary(email_text, summary_text)
         return NoteCreateRequest(
             title=note_title,
             raw_text=self._compose_note_text(
                 note_title,
                 sender_for_note,
-                (row["body_text"] or "").strip(),
+                email_text,
                 (row["body_html"] or "").strip(),
             ),
             source="email_pasted",
@@ -1917,3 +1937,32 @@ class EmailManagerWindow(tk.Toplevel):
         no_tags = re.sub(r"<[^>]+>", " ", content)
         normalized = re.sub(r"\s+", " ", no_tags).strip()
         return html.unescape(normalized)
+
+    @staticmethod
+    def _extract_quick_summary(response_text: str | None) -> str:
+        text = (response_text or "").strip()
+        marker = "Resumen rápido:"
+        if marker not in text:
+            return ""
+        _, _, summary = text.partition(marker)
+        return summary.strip()
+
+    @staticmethod
+    def _compose_note_body_with_summary(email_text: str, summary_text: str) -> str:
+        normalized_email = (email_text or "").strip()
+        if "EMAIL ORIGINAL\n--------------" in normalized_email:
+            return normalized_email
+        normalized_summary = (summary_text or "").strip()
+        if not normalized_summary:
+            return normalized_email
+        return (
+            "RESUMEN RÁPIDO\n"
+            "--------------\n"
+            f"{normalized_summary}\n\n"
+            "EMAIL ORIGINAL\n"
+            "--------------\n"
+            f"{normalized_email}"
+        ).strip()
+
+    def _get_email_text_for_note(self, row: sqlite3.Row) -> str:
+        return (row["body_text"] or "").strip() or self._html_to_text((row["body_html"] or "").strip())
