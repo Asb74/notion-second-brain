@@ -289,6 +289,20 @@ class ActionsRepository:
         )
         self.conn.commit()
 
+    def update_action_date(self, action_id: int, target_date: str) -> None:
+        action = self.get_action(action_id)
+        if action is None:
+            return
+
+        current_value = action.completed_at if action.status == "hecha" and action.completed_at else action.created_at
+        target_timestamp = f"{target_date}T00:00:00"
+        if current_value and "T" in current_value:
+            target_timestamp = f"{target_date}T{current_value.split('T', maxsplit=1)[1]}"
+
+        field = "completed_at" if action.status == "hecha" and action.completed_at else "created_at"
+        self.conn.execute(f"UPDATE actions SET {field} = ? WHERE id = ?", (target_timestamp, action_id))
+        self.conn.commit()
+
     def delete_action(self, action_id: int) -> None:
         self.conn.execute("DELETE FROM actions WHERE id = ?", (action_id,))
         self.conn.commit()

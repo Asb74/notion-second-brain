@@ -459,3 +459,84 @@ def test_save_inline_date_edit_updates_date_and_refreshes() -> None:
     assert window.detail_date_var.value == "2026-03-15"
     assert logs == ["Fecha modificada desde edición inline"]
     assert refreshed == [True]
+
+
+def test_update_dragged_entry_date_updates_note_and_email() -> None:
+    window = CalendarManagerWindow.__new__(CalendarManagerWindow)
+    calls: list[tuple[int, str]] = []
+
+    class _NoteService:
+        @staticmethod
+        def update_note_date(note_id: int, target_date: str) -> None:
+            calls.append((note_id, target_date))
+
+    window.note_service = _NoteService()
+
+    moved_note = window._update_dragged_entry_date({"kind": "NOTE", "note_id": 11}, __import__("datetime").date(2026, 1, 5))
+    moved_email = window._update_dragged_entry_date({"kind": "EMAIL", "note_id": 12}, __import__("datetime").date(2026, 1, 6))
+
+    assert moved_note is True
+    assert moved_email is True
+    assert calls == [(11, "2026-01-05"), (12, "2026-01-06")]
+
+
+def test_update_dragged_entry_date_updates_action() -> None:
+    window = CalendarManagerWindow.__new__(CalendarManagerWindow)
+    calls: list[tuple[int, str]] = []
+
+    class _NoteService:
+        @staticmethod
+        def update_action_date(action_id: int, target_date: str) -> None:
+            calls.append((action_id, target_date))
+
+    window.note_service = _NoteService()
+
+    moved = window._update_dragged_entry_date({"kind": "ACTION", "id": 30}, __import__("datetime").date(2026, 2, 7))
+
+    assert moved is True
+    assert calls == [(30, "2026-02-07")]
+
+
+def test_update_dragged_entry_date_moves_google_event() -> None:
+    window = CalendarManagerWindow.__new__(CalendarManagerWindow)
+    moved_calls: list[tuple[str, str, str]] = []
+
+    class _CalendarClient:
+        pass
+
+    class _NoteService:
+        @staticmethod
+        def update_note_date(_note_id: int, _target_date: str) -> None:
+            raise AssertionError("note date should not be used for pure google event")
+
+    window.note_service = _NoteService()
+    window.calendar_client = _CalendarClient()
+    window._move_google_calendar_event = lambda calendar_id, event_id, _entry, target_day: moved_calls.append(
+        (calendar_id, event_id, target_day.isoformat())
+    )
+
+    moved = window._update_dragged_entry_date(
+        {"kind": "EVENT", "id": "evt-1", "google_calendar_id": "cal-1"},
+        __import__("datetime").date(2026, 3, 8),
+    )
+
+    assert moved is True
+    assert moved_calls == [("cal-1", "evt-1", "2026-03-08")]
+
+
+def test_update_dragged_entry_date_updates_event_note_date() -> None:
+    window = CalendarManagerWindow.__new__(CalendarManagerWindow)
+    calls: list[tuple[int, str]] = []
+
+    class _NoteService:
+        @staticmethod
+        def update_note_date(note_id: int, target_date: str) -> None:
+            calls.append((note_id, target_date))
+
+    window.note_service = _NoteService()
+    window.calendar_client = None
+
+    moved = window._update_dragged_entry_date({"kind": "EVENT", "note_id": 44}, __import__("datetime").date(2026, 4, 9))
+
+    assert moved is True
+    assert calls == [(44, "2026-04-09")]

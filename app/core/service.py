@@ -196,6 +196,9 @@ class NoteService:
     def update_action_description(self, action_id: int, description: str) -> None:
         self.actions_repo.update_action_description(action_id, description)
 
+    def update_action_date(self, action_id: int, target_date: str) -> None:
+        self.actions_repo.update_action_date(action_id, target_date)
+
     def list_pending_actions(self, area: str | None = None) -> list[Action]:
         if area:
             return [a for a in self.actions_repo.get_actions_by_area(area) if a.status == "pendiente"]

@@ -140,6 +140,34 @@ class DedupTests(unittest.TestCase):
 
         self.assertEqual(note.estado, "Finalizado")
 
+
+    @patch("app.core.service.process_text")
+    def test_update_action_date_preserves_time_component(self, mock_process_text):
+        mock_process_text.return_value = ProcessedNote(
+            resumen="Resumen AI",
+            acciones=["Mover tarea"],
+            tipo_sugerido="Nota",
+            prioridad_sugerida="Media",
+        )
+        req = NoteCreateRequest(
+            title="",
+            raw_text="Texto con una tarea",
+            source="manual",
+            area="Ventas",
+            tipo="",
+            estado="Pendiente",
+            prioridad="",
+            fecha=datetime.now().date().isoformat(),
+        )
+        note_id, _ = self.service.create_note(req)
+        action = self.service.actions_repo.get_actions_by_note(note_id)[0]
+
+        self.service.update_action_date(action.id, "2026-01-20")
+
+        updated = self.service.actions_repo.get_action(action.id)
+        self.assertIsNotNone(updated)
+        assert updated is not None
+        self.assertTrue(updated.created_at.startswith("2026-01-20T"))
     @patch("app.core.service.process_text")
     def test_mark_action_done_updates_status(self, mock_process_text):
         mock_process_text.return_value = ProcessedNote(
