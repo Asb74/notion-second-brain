@@ -19,6 +19,7 @@ from app.core.service import NoteService
 from app.persistence.calendar_repository import CalendarRepository
 from app.ui.app_icons import apply_app_icon
 from app.ui.dictation_widgets import attach_dictation
+from app.ui.excel_filter import ExcelTreeFilter
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,7 @@ class CalendarManagerWindow(ttk.Frame):
         self._label_metadata: dict[str, dict[str, str | int]] = {}
         self._events_by_day: dict[date, list[dict[str, str | int]]] = {}
         self._overview_records: dict[str, dict[str, str | int]] = {}
+        self._all_rows: list[dict[str, str]] = []
         self._action_vars: dict[int, tk.BooleanVar] = {}
         self._selected_record: dict[str, str | int] | None = None
         self._calendar_mousewheel_bound = False
@@ -281,28 +283,57 @@ class CalendarManagerWindow(ttk.Frame):
         self._show_calendar_overview()
 
     def _build_overview_list(self) -> None:
-        columns = ("kind", "title", "status", "date")
-        self.overview_tree = ttk.Treeview(self.list_frame, columns=columns, show="headings", height=16)
-        self.overview_tree.heading("kind", text="Tipo")
-        self.overview_tree.heading("title", text="Título")
-        self.overview_tree.heading("status", text="Estado")
-        self.overview_tree.heading("date", text="Fecha")
-        self.overview_tree.column("kind", width=140, anchor="w")
-        self.overview_tree.column("title", width=480, anchor="w")
-        self.overview_tree.column("status", width=130, anchor="center")
-        self.overview_tree.column("date", width=120, anchor="center")
-        self.overview_tree.pack(fill="both", expand=True)
-        self.overview_tree.bind("<<TreeviewSelect>>", self._on_overview_select)
-        self.overview_tree.bind("<Double-1>", self._on_overview_double_click)
+        toolbar = ttk.Frame(self.list_frame)
+        toolbar.pack(fill="x", pady=(0, 6))
 
-        self.overview_tree.tag_configure("NOTE_PENDING", background=NOTE_PENDING_COLOR, foreground="#000000")
-        self.overview_tree.tag_configure("ACTION_PENDING", background=ACTION_COLOR, foreground="#000000")
-        self.overview_tree.tag_configure("EMAIL_PENDING", background=EMAIL_COLOR, foreground="#000000")
-        self.overview_tree.tag_configure("EVENT_PENDING", background=EVENT_COLOR, foreground="#000000")
-        self.overview_tree.tag_configure("NOTE_DONE", background=NOTE_DONE_COLOR, foreground="#000000")
-        self.overview_tree.tag_configure("ACTION_DONE", background=NOTE_DONE_COLOR, foreground="#000000")
-        self.overview_tree.tag_configure("EMAIL_DONE", background=NOTE_DONE_COLOR, foreground="#000000")
-        self.overview_tree.tag_configure("EVENT_DONE", background=NOTE_DONE_COLOR, foreground="#000000")
+        self.search_var = tk.StringVar()
+        ttk.Label(toolbar, text="Buscar:").pack(side="left")
+        self.search_entry = ttk.Entry(toolbar, textvariable=self.search_var, width=30)
+        self.search_entry.pack(side="left", padx=4)
+        self.search_entry.bind("<KeyRelease>", self._apply_global_search)
+        ttk.Button(toolbar, text="Limpiar filtros", command=self._clear_list_filters, style="Toolbar.TButton").pack(side="left", padx=(6, 0))
+
+        self.columns = ("id", "title", "tipo", "estado", "fecha")
+        self.column_titles = {
+            "id": "ID",
+            "title": "Título",
+            "tipo": "Tipo",
+            "estado": "Estado",
+            "fecha": "Fecha",
+        }
+        self.tree = ttk.Treeview(self.list_frame, columns=self.columns, show="headings", height=16)
+        for col in self.columns:
+            self.tree.heading(col, text=self.column_titles.get(col, col))
+        self.tree.column("id", width=120, anchor="w")
+        self.tree.column("title", width=440, anchor="w")
+        self.tree.column("tipo", width=140, anchor="w")
+        self.tree.column("estado", width=130, anchor="center")
+        self.tree.column("fecha", width=140, anchor="center")
+        self.tree.pack(fill="both", expand=True)
+        self.tree.bind("<<TreeviewSelect>>", self._on_overview_select)
+        self.tree.bind("<Double-1>", self._on_overview_double_click)
+
+        self.tree.tag_configure("NOTE_PENDING", background=NOTE_PENDING_COLOR, foreground="#000000")
+        self.tree.tag_configure("ACTION_PENDING", background=ACTION_COLOR, foreground="#000000")
+        self.tree.tag_configure("EMAIL_PENDING", background=EMAIL_COLOR, foreground="#000000")
+        self.tree.tag_configure("EVENT_PENDING", background=EVENT_COLOR, foreground="#000000")
+        self.tree.tag_configure("NOTE_DONE", background=NOTE_DONE_COLOR, foreground="#000000")
+        self.tree.tag_configure("ACTION_DONE", background=NOTE_DONE_COLOR, foreground="#000000")
+        self.tree.tag_configure("EMAIL_DONE", background=NOTE_DONE_COLOR, foreground="#000000")
+        self.tree.tag_configure("EVENT_DONE", background=NOTE_DONE_COLOR, foreground="#000000")
+
+        self.excel_filter = ExcelTreeFilter(
+            master=self,
+            tree=self.tree,
+            columns=self.columns,
+            column_titles=self.column_titles,
+            get_rows=lambda: self._rows_for_excel_filter(),
+            set_rows=self._set_filtered_rows,
+        )
+
+        self.search_count_var = tk.StringVar(value="Resultados encontrados: 0")
+        self.search_count_label = ttk.Label(self.list_frame, textvariable=self.search_count_var)
+        self.search_count_label.pack(anchor="w", padx=10, pady=(2, 6))
 
     def _set_initial_panel_sizes(self, _event: tk.Event | None = None) -> None:
         if getattr(self, "_initial_sash_set", False):
@@ -447,8 +478,7 @@ class CalendarManagerWindow(ttk.Frame):
 
     def _refresh_overview_list(self) -> None:
         self._overview_records.clear()
-        for iid in self.overview_tree.get_children():
-            self.overview_tree.delete(iid)
+        self._all_rows = []
 
         for note in self.note_service.list_notes(limit=2000):
             record_type = "EMAIL" if note.source == "email_pasted" else "NOTE"
@@ -472,6 +502,9 @@ class CalendarManagerWindow(ttk.Frame):
                 "status": note.estado or "Pendiente",
                 "date": display_date,
                 "time": note.hora_inicio or "",
+                "raw_text": note.raw_text or "",
+                "body": "",
+                "description": "",
                 "content": note.raw_text or "",
                 "source_id": note.source_id or "",
                 "email_link": email_link,
@@ -481,7 +514,7 @@ class CalendarManagerWindow(ttk.Frame):
                 "google_event_id": note.google_event_id or "",
             }
             self._enrich_with_email_fields(record, note)
-            self._insert_overview_record(record)
+            self._append_overview_record(record)
 
         for action in self.actions:
             record = {
@@ -490,10 +523,11 @@ class CalendarManagerWindow(ttk.Frame):
                 "title": action.description or "(Acción sin descripción)",
                 "status": action.status or "pendiente",
                 "date": action.completed_at or action.created_at,
+                "description": action.description or "",
                 "content": action.description or "",
                 "note_id": action.note_id,
             }
-            self._insert_overview_record(record)
+            self._append_overview_record(record)
 
         for event in self.calendar_events:
             event_date = self._event_date(event)
@@ -503,6 +537,7 @@ class CalendarManagerWindow(ttk.Frame):
                 "title": str(event.get("summary") or "(Sin título)"),
                 "status": "Pendiente",
                 "date": event_date.isoformat() if event_date else "",
+                "description": str(event.get("description") or ""),
                 "content": str(event.get("description") or ""),
                 "htmlLink": str(event.get("htmlLink") or ""),
                 "calendar_name": str(event.get("calendar_name") or ""),
@@ -510,28 +545,77 @@ class CalendarManagerWindow(ttk.Frame):
                 "foreground_color": _sanitize_tk_color(str(event.get("foreground_color") or "#000000")),
                 "google_calendar_id": str(event.get("google_calendar_id") or "primary"),
             }
-            self._insert_overview_record(record)
+            self._append_overview_record(record)
 
-    def _insert_overview_record(self, record: dict[str, str | int]) -> None:
+        self.excel_filter.apply()
+
+    def _append_overview_record(self, record: dict[str, str | int]) -> None:
         iid = f"{record['kind']}_{record['id']}"
         self._overview_records[iid] = record
-        tag = self._record_tag(record)
-        if str(record.get("kind") or "") == "EVENT" and tag.endswith("PENDING"):
-            bg = str(record.get("background_color") or EVENT_COLOR)
-            fg = _sanitize_tk_color(str(record.get("foreground_color") or "#000000"))
-            self.overview_tree.tag_configure(tag, background=bg, foreground=fg)
-        self.overview_tree.insert(
-            "",
-            "end",
-            iid=iid,
-            values=(
-                self.TYPE_LABELS.get(str(record["kind"]), str(record["kind"])),
-                str(record.get("title") or ""),
-                str(record.get("status") or ""),
-                str(record.get("date") or ""),
-            ),
-            tags=(tag,),
-        )
+        row = {
+            "id": iid,
+            "title": str(record.get("title") or ""),
+            "tipo": self.TYPE_LABELS.get(str(record["kind"]), str(record["kind"])),
+            "estado": str(record.get("status") or ""),
+            "fecha": str(record.get("date") or ""),
+            "kind": str(record.get("kind") or ""),
+            "raw_text": str(record.get("raw_text") or ""),
+            "body": str(record.get("body") or ""),
+            "description": str(record.get("description") or ""),
+            "content": str(record.get("content") or ""),
+        }
+        self._all_rows.append(row)
+
+    def _rows_for_excel_filter(self) -> list[dict[str, str]]:
+        text = self.search_var.get().lower().strip()
+        if not text:
+            return self._all_rows
+
+        filtered: list[dict[str, str]] = []
+        for row in self._all_rows:
+            searchable_text = " ".join(
+                [
+                    str(row.get("title", "")),
+                    str(row.get("raw_text", "")),
+                    str(row.get("body", "")),
+                    str(row.get("description", "")),
+                    str(row.get("content", "")),
+                ]
+            ).lower()
+            if text in searchable_text:
+                filtered.append(row)
+        return filtered
+
+    def _set_filtered_rows(self, rows: list[dict[str, str]]) -> None:
+        selected_ids = set(self.tree.selection())
+        for row_id in self.tree.get_children():
+            self.tree.delete(row_id)
+
+        for row in rows:
+            record = self._overview_records.get(str(row["id"]))
+            if record is None:
+                continue
+            tag = self._record_tag(record)
+            if str(record.get("kind") or "") == "EVENT" and tag.endswith("PENDING"):
+                bg = str(record.get("background_color") or EVENT_COLOR)
+                fg = _sanitize_tk_color(str(record.get("foreground_color") or "#000000"))
+                self.tree.tag_configure(tag, background=bg, foreground=fg)
+            values = (row["id"], row["title"], row["tipo"], row["estado"], row["fecha"])
+            self.tree.insert("", "end", iid=row["id"], values=values, tags=(tag,))
+            if row["id"] in selected_ids:
+                self.tree.selection_add(row["id"])
+
+        self._update_search_count(len(rows))
+
+    def _clear_list_filters(self) -> None:
+        self.search_var.set("")
+        self.excel_filter.clear_all_filters()
+
+    def _apply_global_search(self, _event: tk.Event | None = None) -> None:
+        self.excel_filter.apply()
+
+    def _update_search_count(self, count: int) -> None:
+        self.search_count_var.set(f"Resultados encontrados: {count}")
 
     def _record_tag(self, record: dict[str, str | int]) -> str:
         status = str(record.get("status") or "").lower()
@@ -544,7 +628,7 @@ class CalendarManagerWindow(ttk.Frame):
         return f"{kind}_{suffix}"
 
     def _on_overview_select(self, _event: tk.Event) -> None:
-        selected = self.overview_tree.selection()
+        selected = self.tree.selection()
         if not selected:
             return
         record = self._overview_records.get(selected[0])
