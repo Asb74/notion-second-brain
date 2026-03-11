@@ -557,7 +557,12 @@ class EmailManagerWindow(tk.Toplevel):
 
     def _retrain_model(self) -> None:
         rows = self.training_repo.conn.execute(
-            "SELECT category, COUNT(1) AS cnt FROM email_response_examples GROUP BY category"
+            """
+            SELECT label AS category, COUNT(1) AS cnt
+            FROM ml_training_examples
+            WHERE dataset = 'email_classification'
+            GROUP BY label
+            """
         ).fetchall()
         counts = {str(r["category"]): int(r["cnt"]) for r in rows}
         active = {k: v for k, v in counts.items() if v > 0}
@@ -778,6 +783,14 @@ class EmailManagerWindow(tk.Toplevel):
             row = self.email_repo.get_email_content(gmail_id)
             if row:
                 self.email_repo.register_sender_rule(row["sender"], target_type)
+                subject = str(row["subject"] or "")
+                body_text = str(row["body_text"] or "")
+                self.training_repo.save_training_example(
+                    dataset="email_classification",
+                    input_text=f"{subject}\n{body_text}".strip(),
+                    label=target_type,
+                    source="user_category_change",
+                )
 
         self.status_var.set(f"{len(selected_ids)} correos movidos a {target_label}.")
         self.refresh_emails()
@@ -1717,6 +1730,12 @@ class EmailManagerWindow(tk.Toplevel):
 
             self.response_text.delete("1.0", "end")
             self.response_text.insert("1.0", f"Resumen rápido:\n\n{summary}\n")
+            self.training_repo.save_training_example(
+                dataset="email_summary",
+                input_text=preview_body,
+                output_text=summary,
+                source="generated_summary",
+            )
             self.log("Resumen insertado en el editor de respuesta")
         except Exception as exc:  # noqa: BLE001
             logger.exception("No se pudo generar el resumen")
@@ -2013,18 +2032,24 @@ class EmailManagerWindow(tk.Toplevel):
         sender_type = "interno" if "sansebas.es" in sender_domain else "externo"
         subject = row.get("subject", "")
         keywords = self._extract_subject_keywords(subject)
-        created_at = datetime.utcnow().isoformat()
-
-        self.training_repo.save_example(
-            category=row.get("category", ""),
-            sender_type=sender_type,
-            original_subject=subject,
-            original_body=row.get("body_text", ""),
-            response_text=response_text,
-            created_at=created_at,
-            keywords=keywords,
+        metadata = json.dumps(
+            {
+                "sender_type": sender_type,
+                "keywords": keywords,
+            },
+            ensure_ascii=False,
         )
-        total_examples = self.training_repo.conn.execute("SELECT COUNT(*) FROM email_response_examples").fetchone()[0]
+        self.training_repo.save_training_example(
+            dataset="email_response",
+            input_text=f"{subject}\n{row.get('body_text', '')}".strip(),
+            output_text=response_text,
+            label=row.get("category", ""),
+            metadata=metadata,
+            source="generated_response",
+        )
+        total_examples = self.training_repo.conn.execute(
+            "SELECT COUNT(*) FROM ml_training_examples WHERE dataset = 'email_response'"
+        ).fetchone()[0]
         self.system_log("Ejemplo de respuesta guardado")
         self.system_log(f"Categoría: {row.get('category', '')}")
         self.system_log(f"Total ejemplos: {total_examples}")

@@ -108,6 +108,20 @@ class EmailRepository:
             )
             """
         )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ml_training_examples (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dataset TEXT NOT NULL,
+                input_text TEXT,
+                output_text TEXT,
+                label TEXT,
+                metadata TEXT,
+                source TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
         self.conn.commit()
 
     def _ensure_column(self, name: str, sql_type: str) -> None:
@@ -240,6 +254,25 @@ class EmailRepository:
         return None
 
     def get_labeled_dataset(self) -> list[sqlite3.Row]:
+        rows = self.conn.execute(
+            """
+            SELECT
+                id AS gmail_id,
+                COALESCE(substr(input_text, 1, instr(input_text || char(10), char(10)) - 1), '') AS subject,
+                '' AS sender,
+                CASE
+                    WHEN instr(input_text, char(10)) > 0 THEN substr(input_text, instr(input_text, char(10)) + 1)
+                    ELSE ''
+                END AS body_text,
+                label
+            FROM ml_training_examples
+            WHERE dataset = 'email_classification'
+              AND label IS NOT NULL
+            ORDER BY created_at ASC, id ASC
+            """
+        ).fetchall()
+        if rows:
+            return rows
         return self.conn.execute(
             """
             SELECT e.gmail_id, e.subject, e.sender, e.body_text, l.label
