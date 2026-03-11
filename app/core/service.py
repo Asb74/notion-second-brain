@@ -170,6 +170,12 @@ class NoteService:
     def update_note_date(self, note_id: int, fecha: str) -> None:
         self.note_repo.update_note_date(note_id, fecha)
 
+    def update_note_status(self, note_id: int, estado: str) -> None:
+        self.note_repo.update_estado(note_id, estado)
+
+    def update_note_time(self, note_id: int, hora_inicio: str) -> None:
+        self.note_repo.update_note_time(note_id, hora_inicio)
+
     def delete_action(self, action_id: int) -> None:
         self.actions_repo.delete_action(action_id)
 

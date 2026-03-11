@@ -107,6 +107,13 @@ class NoteRepository:
         )
         self.conn.commit()
 
+    def update_note_time(self, note_id: int, hora_inicio: str) -> None:
+        self.conn.execute(
+            "UPDATE notes_local SET hora_inicio = ? WHERE id = ?",
+            (hora_inicio, note_id),
+        )
+        self.conn.commit()
+
     def set_email_replied(self, note_id: int) -> None:
         self.conn.execute(
             "UPDATE notes_local SET email_replied = 1 WHERE id = ?",

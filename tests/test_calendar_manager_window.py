@@ -353,3 +353,109 @@ def test_refresh_calendar_loads_and_rerenders_current_view() -> None:
     window.refresh_calendar()
 
     assert calls == ["load", "render", "overview", "detail", "Calendario actualizado automáticamente"]
+
+def test_save_inline_status_edit_updates_status_and_refreshes() -> None:
+    window = CalendarManagerWindow.__new__(CalendarManagerWindow)
+    updates: list[tuple[int, str]] = []
+    logs: list[str] = []
+    refreshed: list[bool] = []
+
+    class _StatusWidgetStub:
+        @staticmethod
+        def get() -> str:
+            return "En curso"
+
+        @staticmethod
+        def destroy() -> None:
+            return None
+
+    class _NoteService:
+        @staticmethod
+        def update_note_status(note_id: int, estado: str) -> None:
+            updates.append((note_id, estado))
+
+    class _VarStub:
+        def __init__(self) -> None:
+            self.value = "Pendiente"
+
+        def set(self, value: str) -> None:
+            self.value = value
+
+    class _LabelStub:
+        @staticmethod
+        def grid() -> None:
+            return None
+
+    window._inline_status_widget = _StatusWidgetStub()
+    window._inline_status_saving = False
+    window._selected_record = {"note_id": 7, "status": "Pendiente"}
+    window.note_service = _NoteService()
+    window.detail_status_var = _VarStub()
+    window.detail_status_label = _LabelStub()
+    window.log = lambda message: logs.append(message)
+    window.refresh_calendar = lambda: refreshed.append(True)
+
+    result = window._save_inline_status_edit()
+
+    assert result == "break"
+    assert updates == [(7, "En curso")]
+    assert window._selected_record["status"] == "En curso"
+    assert window.detail_status_var.value == "En curso"
+    assert logs == ["Estado modificado desde edición inline"]
+    assert refreshed == [True]
+
+
+def test_save_inline_date_edit_updates_date_and_refreshes() -> None:
+    window = CalendarManagerWindow.__new__(CalendarManagerWindow)
+    updates: list[tuple[int, str]] = []
+    logs: list[str] = []
+    refreshed: list[bool] = []
+
+    class _DateWidgetStub:
+        @staticmethod
+        def get_date():
+            class _Date:
+                @staticmethod
+                def strftime(_fmt: str) -> str:
+                    return "2026-03-15"
+
+            return _Date()
+
+        @staticmethod
+        def destroy() -> None:
+            return None
+
+    class _NoteService:
+        @staticmethod
+        def update_note_date(note_id: int, fecha: str) -> None:
+            updates.append((note_id, fecha))
+
+    class _VarStub:
+        def __init__(self) -> None:
+            self.value = "2026-03-10"
+
+        def set(self, value: str) -> None:
+            self.value = value
+
+    class _LabelStub:
+        @staticmethod
+        def grid() -> None:
+            return None
+
+    window._inline_date_widget = _DateWidgetStub()
+    window._inline_date_saving = False
+    window._selected_record = {"note_id": 9, "date": "2026-03-10"}
+    window.note_service = _NoteService()
+    window.detail_date_var = _VarStub()
+    window.detail_date_label = _LabelStub()
+    window.log = lambda message: logs.append(message)
+    window.refresh_calendar = lambda: refreshed.append(True)
+
+    result = window._save_inline_date_edit()
+
+    assert result == "break"
+    assert updates == [(9, "2026-03-15")]
+    assert window._selected_record["date"] == "2026-03-15"
+    assert window.detail_date_var.value == "2026-03-15"
+    assert logs == ["Fecha modificada desde edición inline"]
+    assert refreshed == [True]

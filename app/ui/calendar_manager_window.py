@@ -9,6 +9,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
+
+from tkcalendar import DateEntry
 from typing import Any, Callable
 
 from app.core.calendar.google_calendar_client import GoogleCalendarClient
@@ -25,6 +27,7 @@ NOTE_DONE_COLOR = "#D9D9D9"
 EMAIL_COLOR = "#70AD47"
 EVENT_COLOR = "#ED7D31"
 ACTION_COLOR = "#FFC000"
+STATUS_OPTIONS = ["Pendiente", "En curso", "Finalizado", "Cancelado", "Completado"]
 
 
 def _sanitize_tk_color(color: str | None, fallback: str = "#000000") -> str:
@@ -82,6 +85,12 @@ class CalendarManagerWindow(ttk.Frame):
         self._inline_action_saving = False
         self._inline_title_entry: ttk.Entry | None = None
         self._inline_title_saving = False
+        self._inline_status_widget: ttk.Combobox | None = None
+        self._inline_status_saving = False
+        self._inline_date_widget: DateEntry | None = None
+        self._inline_date_saving = False
+        self._inline_time_widget: ttk.Combobox | None = None
+        self._inline_time_saving = False
 
         style = ttk.Style(self)
         style.theme_use("clam")
@@ -302,6 +311,7 @@ class CalendarManagerWindow(ttk.Frame):
         self.detail_type_var = tk.StringVar(value="-")
         self.detail_status_var = tk.StringVar(value="-")
         self.detail_date_var = tk.StringVar(value="-")
+        self.detail_time_var = tk.StringVar(value="-")
         self.detail_calendar_var = tk.StringVar(value="-")
 
         self.detail_canvas = tk.Canvas(self.detail_panel, highlightthickness=0)
@@ -331,12 +341,20 @@ class CalendarManagerWindow(ttk.Frame):
         ttk.Label(self.detail_metadata, text="Tipo:").grid(row=0, column=0, sticky="w", padx=(0, 6))
         ttk.Label(self.detail_metadata, textvariable=self.detail_type_var).grid(row=0, column=1, sticky="w", padx=(0, 20))
         ttk.Label(self.detail_metadata, text="Estado:").grid(row=0, column=2, sticky="w", padx=(0, 6))
-        ttk.Label(self.detail_metadata, textvariable=self.detail_status_var).grid(row=0, column=3, sticky="w", padx=(0, 20))
+        self.detail_status_label = ttk.Label(self.detail_metadata, textvariable=self.detail_status_var)
+        self.detail_status_label.grid(row=0, column=3, sticky="w", padx=(0, 20))
+        self.detail_status_label.bind("<Double-Button-1>", self._start_inline_status_edit)
         ttk.Label(self.detail_metadata, text="Fecha:").grid(row=0, column=4, sticky="w", padx=(0, 6))
-        ttk.Label(self.detail_metadata, textvariable=self.detail_date_var).grid(row=0, column=5, sticky="w", padx=(0, 20))
-        ttk.Label(self.detail_metadata, text="Calendario:").grid(row=0, column=6, sticky="w", padx=(0, 6))
+        self.detail_date_label = ttk.Label(self.detail_metadata, textvariable=self.detail_date_var)
+        self.detail_date_label.grid(row=0, column=5, sticky="w", padx=(0, 20))
+        self.detail_date_label.bind("<Double-Button-1>", self._start_inline_date_edit)
+        ttk.Label(self.detail_metadata, text="Hora:").grid(row=0, column=6, sticky="w", padx=(0, 6))
+        self.detail_time_label = ttk.Label(self.detail_metadata, textvariable=self.detail_time_var)
+        self.detail_time_label.grid(row=0, column=7, sticky="w", padx=(0, 20))
+        self.detail_time_label.bind("<Double-Button-1>", self._start_inline_time_edit)
+        ttk.Label(self.detail_metadata, text="Calendario:").grid(row=0, column=8, sticky="w", padx=(0, 6))
         self.detail_calendar_label = ttk.Label(self.detail_metadata, textvariable=self.detail_calendar_var)
-        self.detail_calendar_label.grid(row=0, column=7, sticky="w")
+        self.detail_calendar_label.grid(row=0, column=9, sticky="w")
 
         self.content_text = tk.Text(self.detail_content, height=10, wrap="word")
         self.content_text.pack(fill="both", expand=True)
@@ -528,15 +546,27 @@ class CalendarManagerWindow(ttk.Frame):
 
     def show_detail(self, record: dict[str, str | int]) -> None:
         self._restore_title_label()
+        self._restore_status_label()
+        self._restore_date_label()
+        self._restore_time_label()
         self._selected_record = record
         kind = str(record.get("kind") or "NOTE")
 
         self.detail_title_var.set(str(record.get("title") or "(Sin título)"))
         self.detail_type_var.set(self.TYPE_LABELS.get(kind, kind))
         self.detail_status_var.set(str(record.get("status") or "-"))
-        self.detail_date_var.set(str(record.get("date") or "-"))
+        raw_date = str(record.get("date") or "").strip()
+        parsed_date = raw_date.split(" ")[0] if raw_date else "-"
+        parsed_time = str(record.get("time") or "").strip() or (raw_date.split(" ")[1] if " " in raw_date else "")
+        self.detail_date_var.set(parsed_date)
+        self.detail_time_var.set(parsed_time or "-")
         calendar_name = str(record.get("calendar_name") or "-") if kind == "EVENT" else "-"
         self.detail_calendar_var.set(calendar_name)
+        if kind == "EVENT":
+            self.detail_time_label.grid()
+        else:
+            self._restore_time_label()
+            self.detail_time_var.set("-")
 
         self.content_text.configure(bg=self._detail_bg(record), fg="#000000")
         if kind == "EVENT":
@@ -619,6 +649,137 @@ class CalendarManagerWindow(ttk.Frame):
         # Restaura el Label y refresca la vista para propagar el nuevo título.
         self._restore_title_label()
         self._inline_title_saving = False
+        self.refresh_calendar()
+        return "break"
+
+
+    def _generate_time_values(self) -> list[str]:
+        values: list[str] = []
+        for hour in range(24):
+            for minute in (0, 30):
+                values.append(f"{hour:02d}:{minute:02d}")
+        return values
+
+    def _is_event_record(self, record: dict[str, str | int] | None = None) -> bool:
+        candidate = record or self._selected_record or {}
+        return str(candidate.get("kind") or "").upper() == "EVENT"
+
+    def _start_inline_status_edit(self, _event: tk.Event | None = None) -> str | None:
+        if self._inline_status_widget is not None:
+            self._inline_status_widget.focus_set()
+            return "break"
+        if not self._selected_record or self._note_id_for_record(self._selected_record) <= 0:
+            return "break"
+        self.detail_status_label.grid_remove()
+        self._inline_status_widget = ttk.Combobox(self.detail_metadata, values=STATUS_OPTIONS, state="readonly", width=14)
+        current_status = self.detail_status_var.get().strip()
+        self._inline_status_widget.set(current_status if current_status in STATUS_OPTIONS else STATUS_OPTIONS[0])
+        self._inline_status_widget.grid(row=0, column=3, sticky="w", padx=(0, 20))
+        self._inline_status_widget.bind("<<ComboboxSelected>>", self._save_inline_status_edit)
+        self._inline_status_widget.bind("<FocusOut>", self._save_inline_status_edit)
+        self._inline_status_widget.focus_set()
+        return "break"
+
+    def _restore_status_label(self) -> None:
+        if self._inline_status_widget is not None:
+            self._inline_status_widget.destroy()
+            self._inline_status_widget = None
+        self.detail_status_label.grid()
+
+    def _save_inline_status_edit(self, _event: tk.Event | None = None) -> str | None:
+        if self._inline_status_saving or self._inline_status_widget is None:
+            return "break"
+        self._inline_status_saving = True
+        new_status = self._inline_status_widget.get().strip() or STATUS_OPTIONS[0]
+        note_id = self._note_id_for_record(self._selected_record or {})
+        if note_id > 0:
+            self.note_service.update_note_status(note_id, new_status)
+        if self._selected_record is not None:
+            self._selected_record["status"] = new_status
+        self.detail_status_var.set(new_status)
+        self._restore_status_label()
+        self._inline_status_saving = False
+        self.log("Estado modificado desde edición inline")
+        self.refresh_calendar()
+        return "break"
+
+    def _start_inline_date_edit(self, _event: tk.Event | None = None) -> str | None:
+        if self._inline_date_widget is not None:
+            self._inline_date_widget.focus_set()
+            return "break"
+        if not self._selected_record or self._note_id_for_record(self._selected_record) <= 0:
+            return "break"
+        self.detail_date_label.grid_remove()
+        current_date = str(self._selected_record.get("date") or "").split(" ")[0] or date.today().isoformat()
+        selected_day = self._safe_parse_date(current_date) or date.today()
+        self._inline_date_widget = DateEntry(self.detail_metadata, date_pattern="yyyy-mm-dd", state="readonly")
+        self._inline_date_widget.set_date(selected_day)
+        self._inline_date_widget.grid(row=0, column=5, sticky="w", padx=(0, 20))
+        self._inline_date_widget.bind("<<DateEntrySelected>>", self._save_inline_date_edit)
+        self._inline_date_widget.bind("<FocusOut>", self._save_inline_date_edit)
+        self._inline_date_widget.focus_set()
+        return "break"
+
+    def _restore_date_label(self) -> None:
+        if self._inline_date_widget is not None:
+            self._inline_date_widget.destroy()
+            self._inline_date_widget = None
+        self.detail_date_label.grid()
+
+    def _save_inline_date_edit(self, _event: tk.Event | None = None) -> str | None:
+        if self._inline_date_saving or self._inline_date_widget is None:
+            return "break"
+        self._inline_date_saving = True
+        selected_date = self._inline_date_widget.get_date().strftime("%Y-%m-%d")
+        note_id = self._note_id_for_record(self._selected_record or {})
+        if note_id > 0:
+            self.note_service.update_note_date(note_id, selected_date)
+        if self._selected_record is not None:
+            self._selected_record["date"] = selected_date
+        self.detail_date_var.set(selected_date)
+        self._restore_date_label()
+        self._inline_date_saving = False
+        self.log("Fecha modificada desde edición inline")
+        self.refresh_calendar()
+        return "break"
+
+    def _start_inline_time_edit(self, _event: tk.Event | None = None) -> str | None:
+        if self._inline_time_widget is not None:
+            self._inline_time_widget.focus_set()
+            return "break"
+        if not self._is_event_record() or not self._selected_record or self._note_id_for_record(self._selected_record) <= 0:
+            return "break"
+        self.detail_time_label.grid_remove()
+        values = self._generate_time_values()
+        self._inline_time_widget = ttk.Combobox(self.detail_metadata, values=values, state="readonly", width=8)
+        current_time = str(self._selected_record.get("time") or "").strip()
+        self._inline_time_widget.set(current_time if current_time in values else values[0])
+        self._inline_time_widget.grid(row=0, column=7, sticky="w", padx=(0, 20))
+        self._inline_time_widget.bind("<<ComboboxSelected>>", self._save_inline_time_edit)
+        self._inline_time_widget.bind("<FocusOut>", self._save_inline_time_edit)
+        self._inline_time_widget.focus_set()
+        return "break"
+
+    def _restore_time_label(self) -> None:
+        if self._inline_time_widget is not None:
+            self._inline_time_widget.destroy()
+            self._inline_time_widget = None
+        self.detail_time_label.grid()
+
+    def _save_inline_time_edit(self, _event: tk.Event | None = None) -> str | None:
+        if self._inline_time_saving or self._inline_time_widget is None:
+            return "break"
+        self._inline_time_saving = True
+        selected_time = self._inline_time_widget.get().strip()
+        note_id = self._note_id_for_record(self._selected_record or {})
+        if note_id > 0 and selected_time:
+            self.note_service.update_note_time(note_id, selected_time)
+        if self._selected_record is not None:
+            self._selected_record["time"] = selected_time
+        self.detail_time_var.set(selected_time or "-")
+        self._restore_time_label()
+        self._inline_time_saving = False
+        self.log("Fecha modificada desde edición inline")
         self.refresh_calendar()
         return "break"
 
@@ -1002,23 +1163,54 @@ class CalendarManagerWindow(ttk.Frame):
         title = simpledialog.askstring("Editar", "Título:", initialvalue=self.detail_title_var.get().strip(), parent=self)
         if title is None:
             return
-        date_value = simpledialog.askstring(
-            "Editar",
-            "Fecha (YYYY-MM-DD):",
-            initialvalue=str(self._selected_record.get("date") or "").split(" ")[0],
-            parent=self,
-        )
-        if date_value is None:
+
+        picker = tk.Toplevel(self)
+        picker.title("Seleccionar fecha y hora")
+        picker.transient(self.winfo_toplevel())
+        picker.grab_set()
+
+        selected_date: dict[str, str] = {"value": ""}
+        selected_time: dict[str, str] = {"value": ""}
+        current_date = str(self._selected_record.get("date") or "").split(" ")[0] or date.today().isoformat()
+        current_day = self._safe_parse_date(current_date) or date.today()
+
+        ttk.Label(picker, text="Fecha:").grid(row=0, column=0, sticky="w", padx=8, pady=8)
+        date_picker = DateEntry(picker, date_pattern="yyyy-mm-dd", state="readonly")
+        date_picker.set_date(current_day)
+        date_picker.grid(row=0, column=1, sticky="w", padx=8, pady=8)
+
+        time_combo = None
+        if self._is_event_record(self._selected_record):
+            ttk.Label(picker, text="Hora:").grid(row=1, column=0, sticky="w", padx=8, pady=8)
+            time_combo = ttk.Combobox(picker, values=self._generate_time_values(), state="readonly", width=8)
+            current_time = str(self._selected_record.get("time") or "").strip()
+            time_combo.set(current_time if current_time else "09:00")
+            time_combo.grid(row=1, column=1, sticky="w", padx=8, pady=8)
+
+        def _accept() -> None:
+            selected_date["value"] = date_picker.get_date().strftime("%Y-%m-%d")
+            selected_time["value"] = time_combo.get().strip() if time_combo is not None else ""
+            picker.destroy()
+
+        ttk.Button(picker, text="Guardar", command=_accept).grid(row=2, column=0, columnspan=2, pady=(4, 10))
+        self.wait_window(picker)
+
+        date_value = selected_date["value"].strip()
+        if not date_value:
             return
+
         content = self.content_text.get("1.0", "end").strip()
         self.note_service.update_note_title(note_id, title, content)
-        if date_value.strip():
-            self.note_service.update_note_date(note_id, date_value.strip())
+        self.note_service.update_note_date(note_id, date_value)
+        if self._is_event_record(self._selected_record) and selected_time["value"]:
+            self.note_service.update_note_time(note_id, selected_time["value"])
 
-        # FIX: actualizar variables de UI inmediatamente tras editar.
         self.detail_title_var.set(title.strip() or "(Sin título)")
         self._selected_record["title"] = title.strip() or "(Sin título)"
-        self._selected_record["date"] = date_value.strip() or self._selected_record.get("date") or ""
+        self._selected_record["date"] = date_value
+        if self._is_event_record(self._selected_record) and selected_time["value"]:
+            self._selected_record["time"] = selected_time["value"]
+            self.detail_time_var.set(selected_time["value"])
 
         self._edit_actions_for_note(note_id)
         self.refresh_calendar()
