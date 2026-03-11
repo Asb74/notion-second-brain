@@ -269,6 +269,19 @@ class MLManagerWindow(tk.Toplevel):
             return "Reentrenamiento de generador de eventos pendiente de integración."
         return f"Dataset no reconocido: {dataset}"
 
+
+    def apply_filters(self, dataset: str | None = None, label: str | None = None) -> None:
+        if dataset is not None:
+            self.dataset_filter_var.set(dataset)
+            self._dataset_selected = dataset
+            self._refresh_label_and_source_filters()
+        if label is not None:
+            self.label_filter_var.set(label)
+        self.refresh_examples()
+
+    def trigger_retrain(self, dataset: str) -> str:
+        return self._trigger_retrain(dataset)
+
     def _clear_filters(self) -> None:
         self.dataset_filter_var.set("")
         self.label_filter_var.set("")
