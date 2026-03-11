@@ -91,6 +91,12 @@ class CalendarManagerWindow(ttk.Frame):
         self._inline_date_saving = False
         self._inline_time_widget: ttk.Combobox | None = None
         self._inline_time_saving = False
+        self.dragged_entry: dict[str, str | int] | None = None
+        self.drag_origin_day: date | None = None
+        self._dragged_widget: tk.Widget | None = None
+        self._drag_target_day: date | None = None
+        self._drag_hover_column: tk.Widget | None = None
+        self._week_day_columns: dict[str, tk.Widget] = {}
 
         style = ttk.Style(self)
         style.theme_use("clam")
@@ -1436,6 +1442,8 @@ class CalendarManagerWindow(ttk.Frame):
     def _render_week_view(self) -> None:
         self._clear_calendar_body()
         self._label_metadata.clear()
+        self._week_day_columns = {}
+        self._reset_drag_state()
 
         container = ttk.Frame(self.calendar_frame)
         container.pack(fill="both", expand=True)
@@ -1451,6 +1459,7 @@ class CalendarManagerWindow(ttk.Frame):
 
             column = tk.Frame(container, bg="#ffffff", highlightbackground="#d1d5db", highlightthickness=1, bd=0, padx=6, pady=6)
             column.grid(row=0, column=index, sticky="nsew", padx=2, pady=2)
+            self._week_day_columns[str(column)] = day_value
 
             ttk.Label(column, text=f"{day_name} {day_value.day}", style="Weekday.TLabel").pack(anchor="w")
 
@@ -1460,7 +1469,142 @@ class CalendarManagerWindow(ttk.Frame):
                 label = tk.Label(column, text=text, anchor="w", justify="left", cursor="hand2", wraplength=165, bg=self._detail_bg(entry), fg="#000000")
                 label.pack(anchor="w", fill="x", pady=1)
                 label.bind("<Button-1>", self._on_entry_click)
+                label.bind("<ButtonPress-1>", self._on_drag_start, add="+")
+                label.bind("<B1-Motion>", self._on_drag_motion, add="+")
+                label.bind("<ButtonRelease-1>", self._on_drag_release, add="+")
                 self._label_metadata[str(label)] = entry
+
+    def _on_drag_start(self, event: tk.Event) -> None:
+        widget = event.widget
+        entry_data = self._label_metadata.get(str(widget))
+        if not entry_data:
+            return
+
+        self.dragged_entry = entry_data
+        self._dragged_widget = widget
+        self.drag_origin_day = self._day_from_widget(widget)
+        self._drag_target_day = self.drag_origin_day
+        widget.configure(cursor="fleur", highlightthickness=2, highlightbackground="#1d4ed8", relief="solid")
+
+    def _on_drag_motion(self, event: tk.Event) -> None:
+        if self.dragged_entry is None or self._dragged_widget is None:
+            return
+        pointer_widget = self.winfo_containing(event.x_root, event.y_root)
+        target_day = self._day_from_widget(pointer_widget)
+        self._drag_target_day = target_day
+        self._highlight_drag_target(pointer_widget)
+
+    def _on_drag_release(self, event: tk.Event) -> None:
+        if self.dragged_entry is None or self.drag_origin_day is None:
+            self._reset_drag_state()
+            return
+
+        pointer_widget = self.winfo_containing(event.x_root, event.y_root)
+        target_day = self._day_from_widget(pointer_widget)
+        if target_day is None or target_day == self.drag_origin_day:
+            self._reset_drag_state()
+            return
+
+        moved = self._update_dragged_entry_date(self.dragged_entry, target_day)
+        self._reset_drag_state()
+        if moved:
+            self.log(f"Elemento movido a {target_day.isoformat()}")
+            self.refresh_calendar()
+
+    def _day_from_widget(self, widget: tk.Widget | None) -> date | None:
+        current = widget
+        while current is not None:
+            day_value = self._week_day_columns.get(str(current))
+            if day_value is not None:
+                return day_value
+            current = current.master
+        return None
+
+    def _highlight_drag_target(self, widget: tk.Widget | None) -> None:
+        target_widget = self._column_widget_from_child(widget)
+        if target_widget is self._drag_hover_column:
+            return
+        if self._drag_hover_column is not None:
+            self._drag_hover_column.configure(highlightbackground="#d1d5db")
+        if target_widget is not None:
+            target_widget.configure(highlightbackground="#1d4ed8")
+        self._drag_hover_column = target_widget
+
+    def _column_widget_from_child(self, widget: tk.Widget | None) -> tk.Widget | None:
+        current = widget
+        while current is not None:
+            if str(current) in self._week_day_columns:
+                return current
+            current = current.master
+        return None
+
+    def _update_dragged_entry_date(self, entry: dict[str, str | int], target_day: date) -> bool:
+        target_date = target_day.isoformat()
+        kind = str(entry.get("kind") or "")
+
+        if kind in {"NOTE", "EMAIL"}:
+            note_id = self._note_id_for_record(entry)
+            if note_id <= 0:
+                return False
+            self.note_service.update_note_date(note_id, target_date)
+            return True
+
+        if kind == "ACTION":
+            action_id = int(entry.get("id") or 0)
+            if action_id <= 0:
+                return False
+            self.note_service.update_action_date(action_id, target_date)
+            return True
+
+        if kind == "EVENT":
+            calendar_id = str(entry.get("google_calendar_id") or "").strip() or "primary"
+            event_id = str(entry.get("google_event_id") or entry.get("id") or "").strip()
+            if event_id and self.calendar_client is not None and not entry.get("note_id"):
+                self._move_google_calendar_event(calendar_id, event_id, entry, target_day)
+                return True
+
+            note_id = self._note_id_for_record(entry)
+            if note_id <= 0:
+                return False
+            self.note_service.update_note_date(note_id, target_date)
+            return True
+
+        return False
+
+    def _move_google_calendar_event(self, calendar_id: str, event_id: str, entry: dict[str, str | int], target_day: date) -> None:
+        if self.calendar_client is None:
+            return
+        start_time = str(entry.get("time") or "")
+        start_dt = datetime.combine(target_day, datetime.min.time())
+        if start_time:
+            minutes = self._to_minutes(start_time)
+            if minutes is not None:
+                start_dt = start_dt + timedelta(minutes=minutes)
+
+        payload: dict[str, dict[str, str]]
+        if start_time:
+            payload = {
+                "start": {"dateTime": start_dt.isoformat(), "timeZone": "Europe/Madrid"},
+                "end": {"dateTime": (start_dt + timedelta(hours=1)).isoformat(), "timeZone": "Europe/Madrid"},
+            }
+        else:
+            next_day = target_day + timedelta(days=1)
+            payload = {
+                "start": {"date": target_day.isoformat()},
+                "end": {"date": next_day.isoformat()},
+            }
+        self.calendar_client.update_event(calendar_id=calendar_id, event_id=event_id, data=payload)
+
+    def _reset_drag_state(self) -> None:
+        if self._dragged_widget is not None:
+            self._dragged_widget.configure(cursor="hand2", highlightthickness=0, relief="flat")
+        if self._drag_hover_column is not None:
+            self._drag_hover_column.configure(highlightbackground="#d1d5db")
+        self.dragged_entry = None
+        self.drag_origin_day = None
+        self._dragged_widget = None
+        self._drag_target_day = None
+        self._drag_hover_column = None
 
     def _render_day_view(self) -> None:
         self._clear_calendar_body()
