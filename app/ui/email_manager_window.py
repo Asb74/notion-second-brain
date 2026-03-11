@@ -725,11 +725,17 @@ class EmailManagerWindow(tk.Toplevel):
         row = self.email_repo.get_email_content(str(gmail_id or "").strip())
         if row is None:
             return {}
+        row_data = dict(row)
         return {
-            "gmail_id": str(row["gmail_id"] or "").strip(),
-            "thread_id": str(row["thread_id"] or "").strip(),
-            "sender": str(row["original_from"] or row["real_sender"] or row["sender"] or "").strip(),
-            "subject": str(row["subject"] or "").strip(),
+            "gmail_id": str(row_data.get("gmail_id", "") or "").strip(),
+            "thread_id": str(row_data.get("thread_id", "") or "").strip(),
+            "sender": str(
+                row_data.get("original_from", "")
+                or row_data.get("real_sender", "")
+                or row_data.get("sender", "")
+                or ""
+            ).strip(),
+            "subject": str(row_data.get("subject", "") or "").strip(),
         }
 
     def open_attachment(self, gmail_id: str, attachment: dict[str, str]) -> bool:
