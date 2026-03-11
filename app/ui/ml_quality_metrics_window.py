@@ -232,11 +232,22 @@ class MLQualityMetricsWindow(tk.Toplevel):
         dataset = self.dataset_var.get().strip()
         if not dataset:
             return
-        label = self._selected_label if self._selected_label and self._selected_label != "(sin etiqueta)" else None
+
+        label = self._selected_label.strip() if self._selected_label else ""
+        if label == "(sin etiqueta)":
+            label = ""
+        selected_label = label or None
+
         if self.open_ml_manager_callback is None:
             messagebox.showinfo("ML Quality Metrics", "No hay integración disponible con ML Manager.")
             return
-        self.open_ml_manager_callback(dataset, label)
+
+        logger.info(
+            "Abrir ML Manager desde métricas: dataset=%s label=%s",
+            dataset,
+            selected_label,
+        )
+        self.open_ml_manager_callback(dataset, selected_label)
 
     def _retrain_dataset(self) -> None:
         dataset = self.dataset_var.get().strip()

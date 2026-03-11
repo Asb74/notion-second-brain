@@ -17,7 +17,13 @@ logger = logging.getLogger(__name__)
 class MLManagerWindow(tk.Toplevel):
     """Visual explorer and maintenance panel for ML training examples."""
 
-    def __init__(self, master: tk.Misc, db_connection: sqlite3.Connection):
+    def __init__(
+        self,
+        master: tk.Misc,
+        db_connection: sqlite3.Connection,
+        dataset_filter: str | None = None,
+        label_filter: str | None = None,
+    ):
         super().__init__(master)
         self.title("ML Manager")
         self.geometry("1280x820")
@@ -29,6 +35,8 @@ class MLManagerWindow(tk.Toplevel):
         self._dataset_selected = ""
         self._example_id_by_item: dict[str, int] = {}
         self._dataset_by_item: dict[str, str] = {}
+        self._initial_dataset_filter = dataset_filter
+        self._initial_label_filter = label_filter
 
         self.dataset_filter_var = tk.StringVar(value="")
         self.label_filter_var = tk.StringVar(value="")
@@ -38,7 +46,21 @@ class MLManagerWindow(tk.Toplevel):
         self._build_layout()
         self._bind_events()
         self.refresh_all()
+        self._apply_initial_filters_if_needed()
         logger.info("ML Manager abierto")
+
+    def _apply_initial_filters_if_needed(self) -> None:
+        dataset_filter = self._initial_dataset_filter
+        label_filter = self._initial_label_filter
+        if dataset_filter is None and label_filter is None:
+            return
+
+        logger.info(
+            "ML Manager abierto con filtros iniciales: dataset=%s label=%s",
+            dataset_filter,
+            label_filter,
+        )
+        self.apply_filters(dataset=dataset_filter, label=label_filter)
 
     def _build_layout(self) -> None:
         wrapper = ttk.Frame(self, padding=10)
@@ -272,11 +294,22 @@ class MLManagerWindow(tk.Toplevel):
 
     def apply_filters(self, dataset: str | None = None, label: str | None = None) -> None:
         if dataset is not None:
-            self.dataset_filter_var.set(dataset)
-            self._dataset_selected = dataset
+            dataset_values = tuple(str(value) for value in self.dataset_filter.cget("values"))
+            normalized_dataset = dataset.strip()
+            if normalized_dataset in dataset_values:
+                self.dataset_filter_var.set(normalized_dataset)
+                self._dataset_selected = normalized_dataset
+            else:
+                logger.info("Filtro dataset ignorado por no existir: %s", dataset)
             self._refresh_label_and_source_filters()
         if label is not None:
-            self.label_filter_var.set(label)
+            label_values = tuple(str(value) for value in self.label_filter.cget("values"))
+            normalized_label = label.strip()
+            if normalized_label in label_values:
+                self.label_filter_var.set(normalized_label)
+            else:
+                self.label_filter_var.set("")
+                logger.info("Filtro label ignorado por no existir en dataset actual: %s", label)
         self.refresh_examples()
 
     def trigger_retrain(self, dataset: str) -> str:
