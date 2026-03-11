@@ -108,3 +108,156 @@ class MLTrainingRepository:
     def total_examples(self) -> int:
         row = self.conn.execute("SELECT COUNT(*) AS total FROM ml_training_examples").fetchone()
         return int(row["total"] if row else 0)
+
+    def get_dataset_summary(self) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            """
+            SELECT
+                dataset,
+                COUNT(*) AS total,
+                COUNT(DISTINCT NULLIF(TRIM(COALESCE(label, '')), '')) AS distinct_labels,
+                MAX(created_at) AS last_updated
+            FROM ml_training_examples
+            GROUP BY dataset
+            ORDER BY dataset
+            """
+        ).fetchall()
+
+    def get_label_distribution(self, dataset: str) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            """
+            WITH total_rows AS (
+                SELECT COUNT(*) AS total
+                FROM ml_training_examples
+                WHERE dataset = ?
+            )
+            SELECT
+                COALESCE(NULLIF(TRIM(label), ''), '(sin etiqueta)') AS label,
+                COUNT(*) AS count,
+                ROUND(CASE
+                    WHEN total_rows.total = 0 THEN 0
+                    ELSE (COUNT(*) * 100.0 / total_rows.total)
+                END, 2) AS percentage
+            FROM ml_training_examples, total_rows
+            WHERE dataset = ?
+            GROUP BY COALESCE(NULLIF(TRIM(label), ''), '(sin etiqueta)'), total_rows.total
+            ORDER BY count DESC, label ASC
+            """,
+            (dataset, dataset),
+        ).fetchall()
+
+    def count_incomplete_examples(self, dataset: str) -> sqlite3.Row:
+        return self.conn.execute(
+            """
+            SELECT
+                SUM(CASE WHEN input_text IS NULL OR TRIM(input_text) = '' THEN 1 ELSE 0 END) AS missing_input,
+                SUM(CASE WHEN output_text IS NULL OR TRIM(output_text) = '' THEN 1 ELSE 0 END) AS missing_output,
+                SUM(CASE WHEN label IS NULL OR TRIM(label) = '' THEN 1 ELSE 0 END) AS missing_label,
+                SUM(CASE
+                    WHEN (output_text IS NULL OR TRIM(output_text) = '')
+                     AND (label IS NULL OR TRIM(label) = '')
+                    THEN 1 ELSE 0 END
+                ) AS missing_output_or_label
+            FROM ml_training_examples
+            WHERE dataset = ?
+            """,
+            (dataset,),
+        ).fetchone()
+
+    def count_duplicate_examples(self, dataset: str) -> int:
+        row = self.conn.execute(
+            """
+            SELECT COALESCE(SUM(group_total - 1), 0) AS duplicates
+            FROM (
+                SELECT COUNT(*) AS group_total
+                FROM ml_training_examples
+                WHERE dataset = ?
+                GROUP BY dataset, COALESCE(label, ''), COALESCE(input_text, '')
+                HAVING COUNT(*) > 1
+            )
+            """,
+            (dataset,),
+        ).fetchone()
+        return int(row["duplicates"] if row else 0)
+
+    def get_quality_issues(self, dataset: str) -> list[str]:
+        issues: list[str] = []
+        total = self._dataset_total(dataset)
+        if total < 30:
+            issues.append(f"El dataset {dataset} tiene pocos ejemplos totales ({total}/30).")
+
+        distribution = self.get_label_distribution(dataset)
+        for row in distribution:
+            label = str(row["label"])
+            count = int(row["count"])
+            pct = float(row["percentage"])
+            if label != "(sin etiqueta)" and count < 5:
+                issues.append(f"La etiqueta {label} tiene pocos ejemplos ({count}).")
+            if pct > 60:
+                issues.append(f"El dataset {dataset} está desbalanceado: {label} ocupa {pct:.1f}%.")
+
+        missing = self.count_incomplete_examples(dataset)
+        required_fields = self._required_fields_for_dataset(dataset)
+        if "input_text" in required_fields and int(missing["missing_input"] or 0) > 0:
+            issues.append(f"Hay {int(missing['missing_input'])} ejemplos sin input_text en {dataset}.")
+        if "output_text" in required_fields and int(missing["missing_output"] or 0) > 0:
+            issues.append(f"Hay {int(missing['missing_output'])} ejemplos sin output_text en {dataset}.")
+        if "label" in required_fields and int(missing["missing_label"] or 0) > 0:
+            issues.append(f"Hay {int(missing['missing_label'])} ejemplos sin label en {dataset}.")
+        if "output_or_label" in required_fields and int(missing["missing_output_or_label"] or 0) > 0:
+            issues.append(f"Hay {int(missing['missing_output_or_label'])} ejemplos sin output_text ni label en {dataset}.")
+
+        duplicates = self.count_duplicate_examples(dataset)
+        if duplicates > 0:
+            issues.append(f"Hay {duplicates} ejemplos duplicados en {dataset}.")
+        return issues
+
+    def get_recommendations(self, dataset: str) -> list[str]:
+        recommendations: list[str] = []
+        total = self._dataset_total(dataset)
+        if total < 30:
+            recommendations.append(f"Añadir al menos {30 - total} ejemplos más a {dataset}.")
+
+        distribution = self.get_label_distribution(dataset)
+        for row in distribution:
+            label = str(row["label"])
+            count = int(row["count"])
+            if label != "(sin etiqueta)" and count < 5:
+                recommendations.append(f"Añadir al menos {5 - count} ejemplos más a {label}.")
+
+        if self.count_duplicate_examples(dataset) > 0:
+            recommendations.append(f"Revisar duplicados en {dataset}.")
+
+        if self._has_required_incompletes(dataset):
+            recommendations.append(f"No reentrenar {dataset} hasta completar ejemplos incompletos.")
+        else:
+            recommendations.append(f"Reentrenar {dataset} cuando todas las etiquetas tengan >=5 ejemplos.")
+        return recommendations
+
+    def _has_required_incompletes(self, dataset: str) -> bool:
+        missing = self.count_incomplete_examples(dataset)
+        required_fields = self._required_fields_for_dataset(dataset)
+        checks = {
+            "input_text": int(missing["missing_input"] or 0),
+            "output_text": int(missing["missing_output"] or 0),
+            "label": int(missing["missing_label"] or 0),
+            "output_or_label": int(missing["missing_output_or_label"] or 0),
+        }
+        return any(checks[field] > 0 for field in required_fields)
+
+    def _dataset_total(self, dataset: str) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS total FROM ml_training_examples WHERE dataset = ?",
+            (dataset,),
+        ).fetchone()
+        return int(row["total"] if row else 0)
+
+    @staticmethod
+    def _required_fields_for_dataset(dataset: str) -> set[str]:
+        return {
+            "email_classification": {"input_text", "label"},
+            "email_response": {"input_text", "output_text"},
+            "email_summary": {"input_text", "output_text"},
+            "task_detection": {"input_text", "output_or_label"},
+            "calendar_event_generation": {"input_text", "output_text"},
+        }.get(dataset, {"input_text", "label"})

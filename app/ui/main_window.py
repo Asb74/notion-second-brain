@@ -26,6 +26,7 @@ from app.ui.masters_dialog import MastersDialog
 from app.ui.email_manager_window import EmailManagerWindow
 from app.ui.calendar_manager_window import CalendarManagerWindow
 from app.ui.ml_manager_window import MLManagerWindow
+from app.ui.ml_quality_metrics_window import MLQualityMetricsWindow
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.user_profile_window import UserProfileWindow
 from app.ui.app_icons import apply_app_icon
@@ -90,6 +91,7 @@ class MainWindow(ttk.Frame):
         self._calendar_toplevel: tk.Toplevel | None = None
         self._calendar_window: CalendarManagerWindow | None = None
         self._ml_manager_window: MLManagerWindow | None = None
+        self._ml_quality_window: MLQualityMetricsWindow | None = None
         self._calendar_client: GoogleCalendarClient | None = None
         self.calendar_repo = CalendarRepository(db_connection) if db_connection is not None else None
         self.calendar_name_to_id: dict[str, str] = {}
@@ -147,6 +149,8 @@ class MainWindow(ttk.Frame):
         herramientas.add_command(label="Gestión de Emails", command=self._open_email_manager)
         herramientas.add_command(label="Agenda", command=self._open_calendar_manager)
         herramientas.add_command(label="ML Manager", command=self._open_ml_manager)
+        herramientas.add_command(label="ML Metrics", command=self._open_ml_quality_metrics)
+        herramientas.add_command(label="Calidad ML", command=self._open_ml_quality_metrics)
         menubar.add_cascade(label="Herramientas", menu=herramientas)
 
         maestros = tk.Menu(menubar, tearoff=0)
@@ -243,6 +247,44 @@ class MainWindow(ttk.Frame):
         except Exception as exc:  # noqa: BLE001
             logger.exception("No se pudo abrir ML Manager")
             messagebox.showerror("Error", f"No se pudo abrir ML Manager.\n\n{exc}")
+
+
+    def _open_ml_quality_metrics(self) -> None:
+        if self.db_connection is None:
+            messagebox.showerror("Error", "No hay conexión de base de datos disponible para ML Metrics.")
+            return
+
+        if self._ml_quality_window is not None and self._ml_quality_window.winfo_exists():
+            self._ml_quality_window.deiconify()
+            self._ml_quality_window.lift()
+            self._ml_quality_window.focus_force()
+            self._ml_quality_window.refresh_all()
+            return
+
+        try:
+            self._ml_quality_window = MLQualityMetricsWindow(
+                self.master,
+                self.db_connection,
+                open_ml_manager_callback=self._open_ml_manager_from_quality,
+                retrain_dataset_callback=self._retrain_dataset_from_quality,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("No se pudo abrir ML Quality Metrics")
+            messagebox.showerror("Error", f"No se pudo abrir ML Quality Metrics.\n\n{exc}")
+
+    def _open_ml_manager_from_quality(self, dataset: str, label: str | None) -> None:
+        self._open_ml_manager()
+        if self._ml_manager_window is None or not self._ml_manager_window.winfo_exists():
+            return
+        self._ml_manager_window.apply_filters(dataset=dataset, label=label)
+
+    def _retrain_dataset_from_quality(self, dataset: str) -> str:
+        self._open_ml_manager()
+        if self._ml_manager_window is None or not self._ml_manager_window.winfo_exists():
+            return "No se pudo abrir ML Manager para reentrenar."
+        result = self._ml_manager_window.trigger_retrain(dataset)
+        logger.info("Reentrenamiento lanzado desde ML Metrics para dataset: %s", dataset)
+        return result
 
     def _process_completion_event(self, completion: dict[str, str | int] | None) -> None:
         if not completion:
