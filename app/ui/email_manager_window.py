@@ -712,7 +712,8 @@ class EmailManagerWindow(tk.Toplevel):
         row = self.email_repo.get_email_content(str(gmail_id or "").strip())
         if row is None:
             return []
-        raw = row["attachments_json"] or "[]"
+        row_data = dict(row)
+        raw = row_data.get("attachments_json", "[]") or "[]"
         try:
             data = json.loads(raw)
         except (TypeError, ValueError):
