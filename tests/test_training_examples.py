@@ -1,5 +1,7 @@
 import sqlite3
 
+import pytest
+
 from app.persistence.training_repository import TrainingRepository
 
 
@@ -18,12 +20,21 @@ def test_training_repository_creates_and_saves_examples() -> None:
         keywords="consulta, licencia",
     )
 
-    row = conn.execute("SELECT * FROM email_response_examples").fetchone()
+    row = conn.execute("SELECT * FROM ml_training_examples").fetchone()
 
     assert row is not None
-    assert row["category"] == "priority"
-    assert row["sender_type"] == "externo"
-    assert row["keywords"] == "consulta, licencia"
+    assert row["dataset"] == "email_response"
+    assert row["label"] == "priority"
+    assert row["source"] == "generated_response"
+
+
+def test_save_training_example_rejects_unsupported_dataset() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    repo = TrainingRepository(conn)
+
+    with pytest.raises(ValueError, match="Dataset no soportado"):
+        repo.save_training_example(dataset="invalid", input_text="hola")
 
 
 def test_get_similar_examples_filters_by_category_sender_and_orders_by_match() -> None:

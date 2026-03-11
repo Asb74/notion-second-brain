@@ -96,6 +96,20 @@ class Database:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS ml_training_examples (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    dataset TEXT NOT NULL,
+                    input_text TEXT,
+                    output_text TEXT,
+                    label TEXT,
+                    metadata TEXT,
+                    source TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS actions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     note_id INTEGER NOT NULL,
