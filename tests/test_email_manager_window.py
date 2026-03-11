@@ -221,6 +221,24 @@ def test_set_reply_body_delegates_to_set_response_draft() -> None:
     assert called == {"body": "texto de prueba", "note_id": 21}
 
 
+
+
+def test_get_email_metadata_handles_missing_optional_fields() -> None:
+    window = EmailManagerWindow.__new__(EmailManagerWindow)
+    row = {
+        "gmail_id": "id-3",
+        "subject": "Hola",
+        "sender": "sender@example.com",
+    }
+    window.email_repo = type("Repo", (), {"get_email_content": lambda *_args: row})()
+
+    metadata = EmailManagerWindow.get_email_metadata(window, "id-3")
+
+    assert metadata["gmail_id"] == "id-3"
+    assert metadata["thread_id"] == ""
+    assert metadata["sender"] == "sender@example.com"
+    assert metadata["subject"] == "Hola"
+
 def test_build_note_request_uses_custom_title_when_provided() -> None:
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
