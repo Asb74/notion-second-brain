@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Callable
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from tkinter.scrolledtext import ScrolledText
+from tkcalendar import DateEntry
 
 from app.config.mail_config import USER_EMAIL
 from app.core.email.category_manager import CategoryManager
@@ -31,6 +32,7 @@ from app.core.models import NoteCreateRequest
 from app.core.outlook.outlook_service import OutlookService
 from app.core.service import NoteService
 from app.persistence.email_repository import EmailRepository
+from app.persistence.calendar_repository import CalendarRepository
 from app.persistence.training_repository import TrainingRepository
 from app.persistence.user_profile_repository import UserProfileRepository
 from app.services.email_entity_extractor import EmailEntityExtractor
@@ -144,6 +146,7 @@ class EmailManagerWindow(tk.Toplevel):
         self.note_service = note_service
         self.gmail_client = gmail_client
         self.email_repo = EmailRepository(db_connection)
+        self.calendar_repo = CalendarRepository(db_connection)
         self.training_repo = TrainingRepository(db_connection)
         self.user_profile_repo = UserProfileRepository(db_connection)
         self.category_manager = CategoryManager(self.email_repo)
@@ -225,6 +228,7 @@ class EmailManagerWindow(tk.Toplevel):
             ("Reclasificar emails", self._reclassify_current_emails),
             ("Nueva categoría", self._create_category),
             ("Crear nota", self._create_notes_from_selected_emails),
+            ("Crear evento", self._create_events_from_selected_emails),
             ("Marcar ignoradas", self._mark_selected_as_ignored),
             ("Eliminar", self._delete_selected_emails),
         ]
@@ -846,6 +850,209 @@ class EmailManagerWindow(tk.Toplevel):
             self.calendar_refresh_callback()
         self.system_log(f"Creación de notas finalizada. Notas: {created_count}, omitidos: {skipped_count}")
         messagebox.showinfo("Resultado", f"Notas creadas: {created_count}\nOmitidos: {skipped_count}")
+
+    def _create_events_from_selected_emails(self) -> None:
+        selected_ids = self._selected_ids()
+        if not selected_ids:
+            messagebox.showwarning("Atención", "Selecciona al menos un correo para crear eventos.")
+            return
+
+        response_text = self.response_text.get("1.0", "end").strip()
+        summary_text = self._extract_quick_summary(response_text)
+        include_summary = False
+        if summary_text:
+            include_summary = messagebox.askyesno(
+                "Integrar resumen",
+                "¿Deseas incluir el resumen en el evento?",
+            )
+
+        created_count = 0
+        skipped_count = 0
+        for gmail_id in selected_ids:
+            row = self.email_repo.get_email_content(gmail_id)
+            if row is None:
+                skipped_count += 1
+                continue
+
+            payload = self._prompt_event_creation_data(row)
+            if payload is None:
+                skipped_count += 1
+                continue
+
+            event_body = self._compose_event_body_from_email(row, summary_text, include_summary)
+            event_request = NoteCreateRequest(
+                title=payload["title"],
+                raw_text=event_body,
+                source="email_pasted",
+                area=self._resolve_default_value("Area", "default_area", "General"),
+                tipo="Evento",
+                estado=self._resolve_default_value("Estado", "default_estado", "Pendiente"),
+                prioridad=self._resolve_default_value("Prioridad", "default_prioridad", "Media"),
+                fecha=payload["date"],
+                hora_inicio=payload["time_start"],
+                hora_fin=payload["time_end"],
+                email_id=str(row["gmail_id"] or "").strip(),
+                google_calendar_id=payload["calendar_id"],
+            )
+
+            note_id, _message = self.note_service.create_note(event_request)
+            if note_id is None:
+                skipped_count += 1
+                continue
+
+            self.log("Evento creado desde email")
+            if include_summary and summary_text:
+                self.log("Resumen rápido integrado en evento")
+            created_count += 1
+
+        self.refresh_emails()
+        if created_count and callable(self.calendar_refresh_callback):
+            self.calendar_refresh_callback()
+        messagebox.showinfo("Resultado", f"Eventos creados: {created_count}\nOmitidos: {skipped_count}")
+
+    def _prompt_event_creation_data(self, row: sqlite3.Row) -> dict[str, str] | None:
+        dialog = tk.Toplevel(self)
+        dialog.title("Crear evento")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        suggested_date = self._suggest_event_date_from_email(row)
+        default_title = (row["subject"] or "").strip() or "(Sin título)"
+        ttk.Label(dialog, text="Título").grid(row=0, column=0, padx=8, pady=6, sticky="w")
+        title_var = tk.StringVar(value=default_title)
+        title_entry = ttk.Entry(dialog, textvariable=title_var, width=48)
+        title_entry.grid(row=0, column=1, padx=8, pady=6, sticky="ew")
+
+        ttk.Label(dialog, text="Fecha").grid(row=1, column=0, padx=8, pady=6, sticky="w")
+        date_picker = DateEntry(dialog, date_pattern="yyyy-mm-dd", state="readonly")
+        date_picker.set_date(suggested_date)
+        date_picker.grid(row=1, column=1, padx=8, pady=6, sticky="w")
+
+        time_values = self._generate_time_values()
+        ttk.Label(dialog, text="Hora inicio").grid(row=2, column=0, padx=8, pady=6, sticky="w")
+        time_start = ttk.Combobox(dialog, values=time_values, state="readonly", width=8)
+        time_start.set("09:00")
+        time_start.grid(row=2, column=1, padx=8, pady=6, sticky="w")
+
+        ttk.Label(dialog, text="Hora fin (opcional)").grid(row=3, column=0, padx=8, pady=6, sticky="w")
+        time_end_values = [""] + time_values
+        time_end = ttk.Combobox(dialog, values=time_end_values, state="readonly", width=8)
+        time_end.set("")
+        time_end.grid(row=3, column=1, padx=8, pady=6, sticky="w")
+
+        ttk.Label(dialog, text="Calendario destino").grid(row=4, column=0, padx=8, pady=6, sticky="w")
+        calendars = self.calendar_repo.list_calendars()
+        calendar_names = [str(item["name"]) for item in calendars]
+        id_by_name = {str(item["name"]): str(item["google_calendar_id"]) for item in calendars}
+        calendar_combo = ttk.Combobox(dialog, values=calendar_names, state="readonly", width=34)
+        primary = self.calendar_repo.get_primary_calendar()
+        if primary is not None:
+            calendar_combo.set(str(primary["name"]))
+        elif calendar_names:
+            calendar_combo.set(calendar_names[0])
+        calendar_combo.grid(row=4, column=1, padx=8, pady=6, sticky="w")
+
+        result: dict[str, str] = {}
+
+        def _accept() -> None:
+            cleaned_title = title_var.get().strip()
+            if not cleaned_title:
+                messagebox.showwarning("Crear evento", "El título no puede estar vacío.", parent=dialog)
+                return
+            calendar_name = calendar_combo.get().strip()
+            calendar_id = id_by_name.get(calendar_name, "")
+            result.update(
+                {
+                    "title": cleaned_title,
+                    "date": date_picker.get_date().strftime("%Y-%m-%d"),
+                    "time_start": time_start.get().strip(),
+                    "time_end": time_end.get().strip(),
+                    "calendar_id": calendar_id,
+                }
+            )
+            dialog.destroy()
+
+        def _cancel() -> None:
+            dialog.destroy()
+
+        dialog.columnconfigure(1, weight=1)
+        buttons = ttk.Frame(dialog)
+        buttons.grid(row=5, column=0, columnspan=2, sticky="e", padx=8, pady=(4, 10))
+        ttk.Button(buttons, text="Cancelar", command=_cancel).pack(side="right", padx=(4, 0))
+        ttk.Button(buttons, text="Crear", command=_accept).pack(side="right")
+
+        title_entry.focus_set()
+        self.wait_window(dialog)
+        return result or None
+
+    def _compose_event_body_from_email(self, row: sqlite3.Row, summary_text: str, include_summary: bool) -> str:
+        email_text = self._get_email_text_for_note(row)
+        if include_summary and summary_text:
+            return (
+                "RESUMEN RÁPIDO\n"
+                "--------------\n"
+                f"{summary_text.strip()}\n\n"
+                "EMAIL ORIGINAL\n"
+                "--------------\n"
+                f"{email_text.strip()}"
+            ).strip()
+        return (
+            f"ASUNTO DEL EMAIL\n--------------\n{(row['subject'] or '').strip()}\n\n"
+            f"EMAIL ORIGINAL\n--------------\n{email_text.strip()}"
+        ).strip()
+
+    def _suggest_event_date_from_email(self, row: sqlite3.Row) -> datetime.date:
+        email_text = "\n".join(
+            [
+                str(row.get("subject", "") if hasattr(row, "get") else row["subject"] or ""),
+                str(row.get("body_text", "") if hasattr(row, "get") else row["body_text"] or ""),
+            ]
+        )
+        detected = self._extract_date_from_text(email_text)
+        if detected is not None:
+            return detected
+        received = self._safe_parse_date(self._resolve_note_date(row["received_at"]))
+        return received or datetime.now().date()
+
+    @staticmethod
+    def _extract_date_from_text(text: str) -> datetime.date | None:
+        normalized = (text or "").strip()
+        if not normalized:
+            return None
+
+        patterns = [
+            r"\b(\d{4})-(\d{2})-(\d{2})\b",
+            r"\b(\d{2})/(\d{2})/(\d{4})\b",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, normalized)
+            if not match:
+                continue
+            try:
+                if pattern.startswith(r"\b(\d{4})"):
+                    year, month, day = (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+                else:
+                    day, month, year = (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+                return datetime(year, month, day).date()
+            except ValueError:
+                continue
+        return None
+
+    @staticmethod
+    def _safe_parse_date(value: str) -> datetime.date | None:
+        try:
+            return datetime.strptime(value, "%Y-%m-%d").date()
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _generate_time_values() -> list[str]:
+        values: list[str] = []
+        for hour in range(24):
+            for minute in (0, 15, 30, 45):
+                values.append(f"{hour:02d}:{minute:02d}")
+        return values
 
     def _prompt_note_title(self, default_title: str) -> str | None:
         title = simpledialog.askstring(

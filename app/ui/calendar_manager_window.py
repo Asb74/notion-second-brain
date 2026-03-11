@@ -84,6 +84,7 @@ class CalendarManagerWindow(ttk.Frame):
         self._inline_action_entry: ttk.Entry | None = None
         self._inline_action_saving = False
         self._inline_title_entry: ttk.Entry | None = None
+        self._inline_title_text: tk.Text | None = None
         self._inline_title_saving = False
         self._inline_status_widget: ttk.Combobox | None = None
         self._inline_status_saving = False
@@ -610,6 +611,10 @@ class CalendarManagerWindow(ttk.Frame):
             self._inline_title_entry.focus_set()
             self._inline_title_entry.select_range(0, "end")
             return "break"
+        inline_title_text = getattr(self, "_inline_title_text", None)
+        if inline_title_text is not None:
+            inline_title_text.focus_set()
+            return "break"
 
         if not self._selected_record or self._note_id_for_record(self._selected_record) <= 0:
             return "break"
@@ -617,30 +622,65 @@ class CalendarManagerWindow(ttk.Frame):
         current_title = self.detail_title_var.get().strip()
         # Oculta el Label y muestra un Entry inline en la misma posición.
         self.detail_title_label.pack_forget()
-        self._inline_title_entry = ttk.Entry(self.detail_content)
-        self._inline_title_entry.pack(anchor="w", fill="x", before=self.detail_metadata)
-        self._inline_title_entry.insert(0, current_title)
-        self._inline_title_entry.focus_set()
-        self._inline_title_entry.select_range(0, "end")
+        if len(current_title) > 80:
+            self._inline_title_text = tk.Text(self.detail_content, height=2, wrap="word")
+            self._inline_title_text.pack(anchor="w", fill="x", before=self.detail_metadata)
+            self._inline_title_text.insert("1.0", current_title)
+            self._inline_title_text.focus_set()
+            self._inline_title_text.bind("<KeyRelease>", self._auto_resize_title_text)
+            self._inline_title_text.bind("<Control-Return>", self._save_inline_title_edit)
+            self._inline_title_text.bind("<FocusOut>", self._save_inline_title_edit)
+            self._auto_resize_title_text()
+        else:
+            self._inline_title_entry = ttk.Entry(self.detail_content)
+            self._inline_title_entry.pack(anchor="w", fill="x", before=self.detail_metadata)
+            self._inline_title_entry.insert(0, current_title)
+            self._inline_title_entry.focus_set()
+            self._inline_title_entry.select_range(0, "end")
 
-        # Guardado inline con Enter o al perder foco.
-        self._inline_title_entry.bind("<Return>", self._save_inline_title_edit)
-        self._inline_title_entry.bind("<FocusOut>", self._save_inline_title_edit)
+            # Guardado inline con Enter o al perder foco.
+            self._inline_title_entry.bind("<Return>", self._save_inline_title_edit)
+            self._inline_title_entry.bind("<FocusOut>", self._save_inline_title_edit)
+            self._inline_title_entry.bind("<KeyRelease>", self._auto_resize_entry)
+            self._auto_resize_entry()
         return "break"
+
+    def _auto_resize_entry(self, _event: tk.Event | None = None) -> None:
+        if self._inline_title_entry is None:
+            return
+        text = self._inline_title_entry.get()
+        self._inline_title_entry.configure(width=max(20, len(text) + 2))
+
+    def _auto_resize_title_text(self, _event: tk.Event | None = None) -> None:
+        if self._inline_title_text is None:
+            return
+        content = self._inline_title_text.get("1.0", "end").strip()
+        wrapped_lines = max(1, len(content) // 80 + 1)
+        self._inline_title_text.configure(height=max(2, min(6, wrapped_lines)))
 
     def _restore_title_label(self) -> None:
         if self._inline_title_entry is not None:
             self._inline_title_entry.destroy()
             self._inline_title_entry = None
+        inline_title_text = getattr(self, "_inline_title_text", None)
+        if inline_title_text is not None:
+            inline_title_text.destroy()
+            self._inline_title_text = None
         if not self.detail_title_label.winfo_manager():
             self.detail_title_label.pack(anchor="w", fill="x", before=self.detail_metadata)
 
     def _save_inline_title_edit(self, _event: tk.Event | None = None) -> str | None:
-        if self._inline_title_saving or self._inline_title_entry is None:
+        if self._inline_title_saving:
             return "break"
 
         self._inline_title_saving = True
-        new_title = self._inline_title_entry.get().strip() or "(Sin título)"
+        if self._inline_title_entry is not None:
+            new_title = self._inline_title_entry.get().strip() or "(Sin título)"
+        elif getattr(self, "_inline_title_text", None) is not None:
+            new_title = self._inline_title_text.get("1.0", "end").strip() or "(Sin título)"
+        else:
+            self._inline_title_saving = False
+            return "break"
 
         note_id = self._note_id_for_record(self._selected_record or {})
         if note_id > 0:
