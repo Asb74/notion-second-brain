@@ -6,6 +6,8 @@ from unittest.mock import patch
 # Minimal stubs so importing UI module does not require optional google deps.
 google = types.ModuleType("google")
 auth = types.ModuleType("google.auth")
+auth_exceptions = types.ModuleType("google.auth.exceptions")
+auth_exceptions.RefreshError = Exception
 transport = types.ModuleType("google.auth.transport")
 requests = types.ModuleType("google.auth.transport.requests")
 requests.Request = object
@@ -23,6 +25,7 @@ errors.HttpError = Exception
 
 sys.modules.setdefault("google", google)
 sys.modules.setdefault("google.auth", auth)
+sys.modules.setdefault("google.auth.exceptions", auth_exceptions)
 sys.modules.setdefault("google.auth.transport", transport)
 sys.modules.setdefault("google.auth.transport.requests", requests)
 sys.modules.setdefault("google.oauth2", oauth2)
@@ -453,3 +456,21 @@ def test_is_summarizable_attachment_ignores_temp_and_signature_files() -> None:
 def test_extract_attachment_filename_keeps_spaces() -> None:
     raw = "PK 881 EDEKA.xlsx [application/vnd.openxmlformats-officedocument.spreadsheetml.sheet]"
     assert EmailManagerWindow._extract_attachment_filename(raw) == "PK 881 EDEKA.xlsx"
+
+
+def test_get_email_metadata_handles_missing_optional_fields() -> None:
+    window = EmailManagerWindow.__new__(EmailManagerWindow)
+    window.email_repo = type(
+        "Repo",
+        (),
+        {"get_email_content": lambda *_args: {"gmail_id": "id-1", "sender": "sender@example.com", "subject": "Hola"}},
+    )()
+
+    metadata = EmailManagerWindow.get_email_metadata(window, "id-1")
+
+    assert metadata == {
+        "gmail_id": "id-1",
+        "thread_id": "",
+        "sender": "sender@example.com",
+        "subject": "Hola",
+    }
