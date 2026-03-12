@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 
 from app.core.email.ml_email_model import MLEmailModel
+
+logger = logging.getLogger(__name__)
 
 
 class EmailClassifier:
@@ -13,7 +16,7 @@ class EmailClassifier:
 
     RULE_THRESHOLD = 3
     ML_CONFIDENCE_THRESHOLD = 0.55
-    MIN_TRAINING_SAMPLES = 30
+    MIN_TRAINING_SAMPLES = 10
 
     ORDER_PATTERNS = [
         r"\bpedido\b",
@@ -103,6 +106,8 @@ class EmailClassifier:
 
     def retrain_if_possible(self, force: bool = False) -> bool:
         if self.email_repo is None:
+            self.last_training_warning = "Repositorio de emails no disponible."
+            logger.warning("Entrenamiento cancelado: email_repo no disponible")
             return False
 
         previous_categories = list(self._known_categories)
@@ -114,35 +119,63 @@ class EmailClassifier:
         dataset = self.email_repo.get_labeled_dataset()
         self.examples_count = len(dataset)
         self.last_training_warning = None
-        if not force and self.examples_count < self.MIN_TRAINING_SAMPLES:
-            return False
+        logger.info(
+            "Entrenamiento email classifier: ejemplos=%s categorias=%s force=%s category_changed=%s",
+            self.examples_count,
+            categories,
+            force,
+            category_changed,
+        )
+
         if not dataset:
+            self.last_training_warning = "No hay ejemplos etiquetados para entrenar."
+            logger.warning("Entrenamiento cancelado: dataset vacío")
+            return False
+
+        if self.examples_count < self.MIN_TRAINING_SAMPLES:
+            self.last_training_warning = (
+                f"Entrenamiento cancelado: ejemplos insuficientes ({self.examples_count} < {self.MIN_TRAINING_SAMPLES})."
+            )
+            logger.warning(self.last_training_warning)
             return False
 
         texts = [MLEmailModel.compose_features(row["subject"], row["sender"], row["body_text"]) for row in dataset]
         labels = [str(row["label"] or "other") for row in dataset]
 
         unique_labels = {label for label in labels}
+        logger.info("Entrenamiento email classifier: etiquetas detectadas=%s", sorted(unique_labels))
         if len(unique_labels) == 1:
-            self.last_training_warning = "Entrenamiento insuficiente: solo una categoría detectada."
+            self.last_training_warning = "Entrenamiento cancelado: solo una categoría activa."
+            logger.warning(self.last_training_warning)
             return False
 
-        if category_changed or not self.ml_model.is_trained:
-            candidate_model = MLEmailModel(model_path=self.ml_model.model_path)
-            candidate_model.fit(texts, labels, classes=categories)
-            if candidate_model.is_trained:
-                self.ml_model = candidate_model
-        else:
-            self.ml_model.partial_fit(texts, labels)
+        try:
+            if category_changed or not self.ml_model.is_trained:
+                logger.info("Entrenamiento email classifier: ejecutando fit completo")
+                candidate_model = MLEmailModel(model_path=self.ml_model.model_path)
+                candidate_model.fit(texts, labels, classes=categories)
+                if candidate_model.is_trained:
+                    self.ml_model = candidate_model
+            else:
+                logger.info("Entrenamiento email classifier: ejecutando partial_fit")
+                self.ml_model.partial_fit(texts, labels)
+        except Exception as exc:  # noqa: BLE001
+            self.last_training_warning = f"Error durante entrenamiento: {exc}"
+            logger.exception("Entrenamiento cancelado por excepción")
+            return False
 
         if self.ml_model.last_warning:
             self.last_training_warning = self.ml_model.last_warning
+            logger.warning("Entrenamiento cancelado por warning del modelo: %s", self.ml_model.last_warning)
             return False
 
         if not self.ml_model.is_trained:
+            self.last_training_warning = "El modelo no quedó entrenado tras el intento de fit."
+            logger.warning("Entrenamiento cancelado: modelo no entrenado")
             return False
 
         self.ml_model.save()
+        logger.info("Entrenamiento email classifier completado correctamente")
         return True
 
     def reclassify_all_emails(self) -> int:
@@ -163,8 +196,13 @@ class EmailClassifier:
         return len(updates)
 
     def model_status(self) -> str:
-        if self.ml_model.is_trained and self.examples_count >= self.MIN_TRAINING_SAMPLES:
-            return f"Modelo: híbrido ({self.examples_count} ejemplos, {self.categories_count} categorías)"
+        if self.ml_model.is_trained:
+            base = f"Modelo: híbrido ({self.examples_count} ejemplos, {self.categories_count} categorías)"
+            if self.last_training_warning:
+                return f"{base} | aviso: {self.last_training_warning}"
+            return base
+        if self.last_training_warning:
+            return f"Modelo: reglas ({self.categories_count} categorías) | aviso: {self.last_training_warning}"
         return f"Modelo: reglas ({self.categories_count} categorías)"
 
     def _sync_categories_state(self) -> list[str]:

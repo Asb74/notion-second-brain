@@ -7,9 +7,9 @@ import sqlite3
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from app.core.email.email_classifier import EmailClassifier
 from app.persistence.email_repository import EmailRepository
 from app.persistence.ml_training_repository import MLTrainingRepository
+from app.ml.retraining_service import DatasetRetrainingService
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +31,7 @@ class MLManagerWindow(tk.Toplevel):
 
         self.repo = MLTrainingRepository(db_connection)
         self.email_repo = EmailRepository(db_connection)
+        self.retraining_service = DatasetRetrainingService(db_connection, self.email_repo)
 
         self._dataset_selected = ""
         self._example_id_by_item: dict[str, int] = {}
@@ -274,22 +275,8 @@ class MLManagerWindow(tk.Toplevel):
         messagebox.showinfo("ML Manager", result)
 
     def _trigger_retrain(self, dataset: str) -> str:
-        if dataset == "email_classification":
-            classifier = EmailClassifier(email_repo=self.email_repo)
-            trained = classifier.retrain_if_possible(force=True)
-            if trained:
-                return "Reentrenamiento de clasificador completado."
-            return classifier.last_training_warning or "No se pudo reentrenar el clasificador."
-
-        if dataset == "email_response":
-            return "Reentrenamiento de generador de respuestas pendiente de integración."
-        if dataset == "email_summary":
-            return "Reentrenamiento de modelo de resumen pendiente de integración."
-        if dataset == "task_detection":
-            return "Reentrenamiento de detector de tareas pendiente de integración."
-        if dataset == "calendar_event_generation":
-            return "Reentrenamiento de generador de eventos pendiente de integración."
-        return f"Dataset no reconocido: {dataset}"
+        result = self.retraining_service.check_and_retrain_dataset(dataset, auto=False)
+        return str(result.get("reason") or "No se pudo reentrenar el dataset.")
 
 
     def apply_filters(self, dataset: str | None = None, label: str | None = None) -> None:
