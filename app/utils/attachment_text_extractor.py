@@ -3,7 +3,14 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
+import shutil
+
+try:
+    import pytesseract  # type: ignore
+except Exception:  # noqa: BLE001
+    pytesseract = None  # type: ignore[assignment]
 
 MAX_ATTACHMENT_TEXT = 20_000
 MAX_CSV_CHARS = 12_000
@@ -12,6 +19,32 @@ SUPPORTED_ATTACHMENT_EXTENSIONS = {".pdf", ".docx", ".txt", ".csv", ".xlsx", ".x
 PDF_OCR_MIN_TEXT_LENGTH = 50
 
 logger = logging.getLogger(__name__)
+
+
+def configure_tesseract() -> None:
+    """Configure pytesseract to find tesseract.exe in common locations."""
+    if pytesseract is None:
+        logger.warning("pytesseract is not available; OCR fallback may be limited")
+        return
+
+    try:
+        tesseract_from_path = shutil.which("tesseract")
+        if tesseract_from_path:
+            logger.info("Tesseract found in PATH: %s", tesseract_from_path)
+            return
+
+        default_path = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+        if os.path.exists(default_path):
+            pytesseract.pytesseract.tesseract_cmd = default_path
+            logger.info("Tesseract configured manually: %s", default_path)
+            return
+
+        logger.warning("Tesseract executable not found on system")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Tesseract configuration failed: %s", exc)
+
+
+configure_tesseract()
 
 
 def extract_text_from_attachment(file_path: str, filename: str = "") -> str:
@@ -143,10 +176,15 @@ def _extract_pdf(path: Path) -> str:
 def _extract_pdf_with_ocr(path: Path) -> str:
     try:
         from pdf2image import convert_from_path  # type: ignore
-        import pytesseract  # type: ignore
     except Exception:  # noqa: BLE001
         logger.warning("OCR dependencies are not available for %s", path.name)
         return ""
+
+    if pytesseract is None:
+        logger.warning("OCR dependencies are not available for %s", path.name)
+        return ""
+
+    logger.info("OCR fallback started")
 
     try:
         images = convert_from_path(str(path))
@@ -163,7 +201,9 @@ def _extract_pdf_with_ocr(path: Path) -> str:
             continue
         if text:
             texts.append(text)
-    return "\n\n".join(texts).strip()
+    extracted = "\n\n".join(texts).strip()
+    logger.info("OCR extracted %s characters", len(extracted))
+    return extracted
 
 
 def _detect_extension(filename: str, file_path: str) -> str:
