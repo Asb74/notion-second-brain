@@ -521,3 +521,28 @@ def test_get_email_metadata_handles_missing_optional_fields() -> None:
         "sender": "sender@example.com",
         "subject": "Hola",
     }
+
+
+def test_extract_attachment_filename_sanitizes_mime_suffix() -> None:
+    raw = 'LORARIOSEBAS_20250526_143207.pdf [application/octet-stream]'
+    cleaned = EmailManagerWindow._extract_attachment_filename(raw)
+
+    assert cleaned == 'LORARIOSEBAS_20250526_143207.pdf'
+
+
+def test_is_summarizable_attachment_accepts_octet_stream_with_supported_extension() -> None:
+    attachment = {
+        'filename': 'LORARIOSEBAS_20250526_143207.pdf [application/octet-stream]',
+        'mime': 'application/octet-stream',
+    }
+
+    assert EmailManagerWindow._is_summarizable_attachment(attachment) is True
+
+
+def test_is_summarizable_attachment_rejects_images() -> None:
+    attachment = {
+        'filename': 'logo_s_el.jpg',
+        'mime': 'image/jpeg',
+    }
+
+    assert EmailManagerWindow._is_summarizable_attachment(attachment) is False
