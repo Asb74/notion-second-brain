@@ -33,6 +33,7 @@ from app.persistence.email_repository import EmailRepository
 from app.persistence.calendar_repository import CalendarRepository
 from app.persistence.training_repository import TrainingRepository
 from app.ml.continuous_learning_service import ContinuousLearningService
+from app.ml.ml_training_manager import MLTrainingManager
 from app.ml.retraining_service import DatasetRetrainingService
 from app.persistence.user_profile_repository import UserProfileRepository
 from app.services.email_entity_extractor import EmailEntityExtractor
@@ -183,6 +184,8 @@ class EmailManagerWindow(tk.Toplevel):
             db_connection=db_connection,
             email_classifier=self.classifier,
         )
+        dataset_dir = Path(os.getenv("ML_DATASET_DIR", "data/ml_datasets"))
+        self.ml_training_manager = MLTrainingManager(base_dir=dataset_dir)
         self.outlook_service = OutlookService()
         self.attachment_cache = AttachmentCache(gmail_client=gmail_client)
         self.my_email = self._resolve_my_email()
@@ -802,6 +805,15 @@ class EmailManagerWindow(tk.Toplevel):
                     output_text=None,
                     label=target_type,
                     source="user_category_change",
+                )
+                self._save_jsonl_training_example_async(
+                    dataset="email_classification",
+                    input_text=f"{subject}\n{body_text}".strip(),
+                    output_text=target_type,
+                    metadata={
+                        "email_id": str(row.get("gmail_id", "") or "").strip(),
+                        "event": "user_category_change",
+                    },
                 )
                 if not bool(learn_result.get("inserted")):
                     self.log("Ejemplo duplicado ignorado en email_classification", level="INFO")
@@ -2092,6 +2104,11 @@ class EmailManagerWindow(tk.Toplevel):
             label=row.get("category", ""),
             metadata=metadata,
             source="interactive_response_review",
+            jsonl_dataset="email_reply",
+            jsonl_metadata={
+                "email_id": str(row.get("gmail_id", "") or "").strip(),
+                "edited_by_user": bool(edited_by_user),
+            },
         )
 
     def _save_email_summary_feedback_async(
@@ -2137,6 +2154,12 @@ class EmailManagerWindow(tk.Toplevel):
             label=None,
             metadata=metadata,
             source="interactive_summary_review",
+            jsonl_dataset="attachment_summary" if summary_source == "attachment" else "email_summary",
+            jsonl_metadata={
+                "email_id": str(row.get("gmail_id", "") or "").strip(),
+                "edited_by_user": bool(edited_by_user),
+                "summary_source": summary_source,
+            },
         )
 
     def _build_training_metadata(
@@ -2169,6 +2192,8 @@ class EmailManagerWindow(tk.Toplevel):
         label: str | None,
         metadata: str,
         source: str,
+        jsonl_dataset: str,
+        jsonl_metadata: dict[str, object] | None = None,
     ) -> None:
         def worker() -> None:
             try:
@@ -2179,6 +2204,12 @@ class EmailManagerWindow(tk.Toplevel):
                     label=label,
                     metadata=metadata,
                     source=source,
+                )
+                self._save_jsonl_training_example_async(
+                    dataset=jsonl_dataset,
+                    input_text=input_text,
+                    output_text=output_text,
+                    metadata=jsonl_metadata,
                 )
                 inserted = bool(result.get("inserted"))
                 if not inserted:
@@ -2196,6 +2227,24 @@ class EmailManagerWindow(tk.Toplevel):
                 logger.exception("Error saving training example in background: %s", exc)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _save_jsonl_training_example_async(
+        self,
+        *,
+        dataset: str,
+        input_text: str,
+        output_text: str,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
+        try:
+            self.ml_training_manager.save_training_example(
+                dataset=dataset,
+                input_text=input_text,
+                output_text=output_text,
+                metadata=metadata,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("No se pudo guardar ejemplo JSONL ML: %s", exc)
 
     @staticmethod
     def _extract_subject_keywords(subject: str) -> str:
