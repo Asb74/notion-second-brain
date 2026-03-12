@@ -34,6 +34,8 @@ from app.core.service import NoteService
 from app.persistence.email_repository import EmailRepository
 from app.persistence.calendar_repository import CalendarRepository
 from app.persistence.training_repository import TrainingRepository
+from app.ml.dataset_state_service import DatasetStateService
+from app.ml.retraining_service import DatasetRetrainingService
 from app.persistence.user_profile_repository import UserProfileRepository
 from app.services.email_entity_extractor import EmailEntityExtractor
 from app.ui.app_icons import apply_app_icon
@@ -148,10 +150,12 @@ class EmailManagerWindow(tk.Toplevel):
         self.email_repo = EmailRepository(db_connection)
         self.calendar_repo = CalendarRepository(db_connection)
         self.training_repo = TrainingRepository(db_connection)
+        self.dataset_state_service = DatasetStateService(db_connection)
         self.user_profile_repo = UserProfileRepository(db_connection)
         self.category_manager = CategoryManager(self.email_repo)
         self.mail_ingestion_service = MailIngestionService(gmail_client=gmail_client, db_connection=db_connection)
         self.classifier = self.mail_ingestion_service.classifier
+        self.retraining_service = DatasetRetrainingService(db_connection, self.email_repo)
         self.outlook_service = OutlookService()
         self.attachment_cache = AttachmentCache(gmail_client=gmail_client)
         self.my_email = self._resolve_my_email()
@@ -556,45 +560,25 @@ class EmailManagerWindow(tk.Toplevel):
         self.refresh_emails()
 
     def _retrain_model(self) -> None:
-        rows = self.training_repo.conn.execute(
-            """
-            SELECT label AS category, COUNT(1) AS cnt
-            FROM ml_training_examples
-            WHERE dataset = 'email_classification'
-            GROUP BY label
-            """
-        ).fetchall()
-        counts = {str(r["category"]): int(r["cnt"]) for r in rows}
-        active = {k: v for k, v in counts.items() if v > 0}
-        summary = ", ".join(f"{k}: {v}" for k, v in sorted(active.items())) or "sin datos"
-        total = sum(active.values())
-        sufficient_by_category = bool(active) and all(count >= 5 for count in active.values())
-        sufficient_by_total = total >= 30
-        is_sufficient = sufficient_by_category or sufficient_by_total
-        self.log(
-            f"Reentrenar modelo. Ejemplos por categoría: {summary}. Total: {total}. "
-            f"Suficiente: {'sí' if is_sufficient else 'no'}"
-        )
+        logger.info("Inicio de reentrenamiento manual del clasificador de emails")
+        self.log("Iniciando reentrenamiento manual del clasificador...")
+        try:
+            result = self.retraining_service.check_and_retrain_dataset("email_classification", auto=False, classifier=self.classifier)
+            trained = bool(result.get("trained"))
+            reason = str(result.get("reason", ""))
+            self.model_var.set(self.classifier.model_status())
+            if trained:
+                self.log(f"Entrenamiento OK: {reason}")
+                logger.info("Reentrenamiento manual completado")
+                return
 
-        if not is_sufficient:
-            invalid = [f"{cat}({cnt})" for cat, cnt in sorted(active.items()) if cnt < 5]
-            reason = (
-                "Insuficiente para entrenar: se requieren >=5 por categoría activa "
-                f"o >=30 en total. Total={total}. Debajo de mínimo: {', '.join(invalid) or 'ninguna'}"
-            )
-            self.log(reason, level="WARNING")
-            messagebox.showwarning("Entrenamiento", reason)
-            return
-
-        trained = self.classifier.retrain_if_possible(force=True)
-        self.model_var.set(self.classifier.model_status())
-        if trained:
-            self.log(f"Entrenamiento OK: modelo actualizado ({datetime.now().isoformat(timespec='seconds')})")
-            return
-
-        warning = self.classifier.last_training_warning or "No se pudo reentrenar el modelo."
-        self.log(warning, level="WARNING")
-        messagebox.showwarning("Entrenamiento", warning)
+            self.log(f"Reentrenamiento no completado: {reason}", level="WARNING")
+            logger.warning("Reentrenamiento manual cancelado: %s", reason)
+            messagebox.showwarning("Entrenamiento", reason or "No se pudo reentrenar el clasificador.")
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Error al intentar reentrenar el clasificador")
+            self.log(f"Error de reentrenamiento: {exc}", level="ERROR")
+            messagebox.showerror("Entrenamiento", f"Error al reentrenar el clasificador.\n\n{exc}")
 
     def _reclassify_current_emails(self) -> None:
         if not self.classifier.ml_model.is_trained:
@@ -1730,13 +1714,17 @@ class EmailManagerWindow(tk.Toplevel):
 
             self.response_text.delete("1.0", "end")
             self.response_text.insert("1.0", f"Resumen rápido:\n\n{summary}\n")
-            self.training_repo.save_training_example(
-                dataset="email_summary",
+            save_result = self.training_repo.example_service.save_email_summary_feedback(
                 input_text=preview_body,
                 output_text=summary,
+                corrected_by_user=False,
+                summary_type="quick",
                 source="generated_summary",
             )
-            self.log("Resumen insertado en el editor de respuesta")
+            if bool(save_result.get("inserted")):
+                self.log("Resumen insertado en el editor de respuesta")
+            else:
+                self.log(f"Resumen no guardado: {save_result.get('reason')}", level="WARNING")
         except Exception as exc:  # noqa: BLE001
             logger.exception("No se pudo generar el resumen")
             self.log(f"Error generando resumen: {exc}", level="ERROR")
@@ -2032,21 +2020,19 @@ class EmailManagerWindow(tk.Toplevel):
         sender_type = "interno" if "sansebas.es" in sender_domain else "externo"
         subject = row.get("subject", "")
         keywords = self._extract_subject_keywords(subject)
-        metadata = json.dumps(
-            {
-                "sender_type": sender_type,
-                "keywords": keywords,
-            },
-            ensure_ascii=False,
-        )
-        self.training_repo.save_training_example(
-            dataset="email_response",
+        save_result = self.training_repo.example_service.save_email_response_feedback(
             input_text=f"{subject}\n{row.get('body_text', '')}".strip(),
             output_text=response_text,
-            label=row.get("category", ""),
-            metadata=metadata,
+            category=row.get("category", ""),
+            sender_type=sender_type,
+            keywords=keywords,
+            edited_by_user=False,
             source="generated_response",
         )
+        if not bool(save_result.get("inserted")):
+            self.system_log(f"Ejemplo de respuesta omitido: {save_result.get('reason')}", level="WARNING")
+            return
+
         total_examples = self.training_repo.conn.execute(
             "SELECT COUNT(*) FROM ml_training_examples WHERE dataset = 'email_response'"
         ).fetchone()[0]

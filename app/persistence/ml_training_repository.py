@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import sqlite3
 
+from app.ml.dataset_rules import get_dataset_rule
+
 
 class MLTrainingRepository:
     """Data access helpers for ``ml_training_examples``."""
@@ -165,14 +167,19 @@ class MLTrainingRepository:
         ).fetchone()
 
     def count_duplicate_examples(self, dataset: str) -> int:
+        rule = get_dataset_rule(dataset)
+        group_fields = [field for field in rule.dedupe_on if field in {"dataset", "input_text", "output_text", "label"}]
+        if not group_fields:
+            return 0
+        group_sql = ", ".join(f"COALESCE({field}, '')" for field in group_fields)
         row = self.conn.execute(
-            """
+            f"""
             SELECT COALESCE(SUM(group_total - 1), 0) AS duplicates
             FROM (
                 SELECT COUNT(*) AS group_total
                 FROM ml_training_examples
                 WHERE dataset = ?
-                GROUP BY dataset, COALESCE(label, ''), COALESCE(input_text, '')
+                GROUP BY {group_sql}
                 HAVING COUNT(*) > 1
             )
             """,
@@ -254,10 +261,12 @@ class MLTrainingRepository:
 
     @staticmethod
     def _required_fields_for_dataset(dataset: str) -> set[str]:
-        return {
-            "email_classification": {"input_text", "label"},
-            "email_response": {"input_text", "output_text"},
-            "email_summary": {"input_text", "output_text"},
-            "task_detection": {"input_text", "output_or_label"},
-            "calendar_event_generation": {"input_text", "output_text"},
-        }.get(dataset, {"input_text", "label"})
+        rule = get_dataset_rule(dataset)
+        fields: set[str] = set()
+        if rule.required_input_text:
+            fields.add("input_text")
+        if rule.required_output_text:
+            fields.add("output_text")
+        if rule.required_label:
+            fields.add("label")
+        return fields or {"input_text", "label"}

@@ -6,6 +6,8 @@ import json
 import re
 import sqlite3
 
+from app.ml.training_example_service import TrainingExampleService
+
 
 class TrainingRepository:
     """Data access layer for generic ML training datasets."""
@@ -21,6 +23,7 @@ class TrainingRepository:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
         self.ensure_table()
+        self.example_service = TrainingExampleService(conn)
 
     def ensure_table(self) -> None:
         self.conn.execute(
@@ -47,26 +50,20 @@ class TrainingRepository:
         label: str | None = None,
         metadata: str | None = None,
         source: str = "manual",
-    ) -> None:
+    ) -> dict[str, object]:
         normalized_dataset = (dataset or "").strip()
         if normalized_dataset not in self.SUPPORTED_DATASETS:
             raise ValueError(f"Dataset no soportado: {normalized_dataset}")
 
-        self.conn.execute(
-            """
-            INSERT INTO ml_training_examples (
-                dataset,
-                input_text,
-                output_text,
-                label,
-                metadata,
-                source
-            )
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (normalized_dataset, input_text, output_text, label, metadata, source),
+        return self.example_service.save_training_example_if_new(
+            dataset=normalized_dataset,
+            input_text=input_text,
+            output_text=output_text,
+            label=label,
+            metadata=metadata,
+            source=source,
+            detect_near_duplicates=normalized_dataset in {"email_response", "email_summary"},
         )
-        self.conn.commit()
 
     def save_example(
         self,

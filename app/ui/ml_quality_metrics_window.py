@@ -9,6 +9,7 @@ from collections.abc import Callable
 from tkinter import messagebox, ttk
 
 from app.persistence.ml_training_repository import MLTrainingRepository
+from app.ml.dataset_rules import get_dataset_rule
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +168,16 @@ class MLQualityMetricsWindow(tk.Toplevel):
         missing = self.repo.count_incomplete_examples(dataset)
         duplicates = self.repo.count_duplicate_examples(dataset)
 
+        rule = get_dataset_rule(dataset)
+        completeness_parts = []
+        if rule.required_label:
+            completeness_parts.append(f"Sin label: {int(missing['missing_label'] or 0)}")
+        if rule.required_output_text:
+            completeness_parts.append(f"Sin output_text: {int(missing['missing_output'] or 0)}")
+        if rule.required_input_text:
+            completeness_parts.append(f"Sin input_text: {int(missing['missing_input'] or 0)}")
+        completeness_parts.append(f"Duplicados: {duplicates}")
+
         self.main_metrics_var.set(
             "\n".join(
                 [
@@ -175,7 +186,7 @@ class MLQualityMetricsWindow(tk.Toplevel):
                     f"Labels distintas: {summary['distinct_labels']}",
                     f"Última actualización: {summary['last_updated'] or '-'}",
                     f"Etiquetas débiles: {', '.join(weak_labels) if weak_labels else 'Ninguna'}",
-                    f"Sin label: {int(missing['missing_label'] or 0)} | Sin output_text: {int(missing['missing_output'] or 0)} | Duplicados: {duplicates}",
+                    " | ".join(completeness_parts),
                 ]
             )
         )
