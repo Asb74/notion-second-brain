@@ -9,6 +9,7 @@ import os
 import re
 import base64
 import csv
+import threading
 import shutil
 import sqlite3
 import tempfile
@@ -132,6 +133,17 @@ def system_log(message: str, level: str = "INFO") -> None:
     _SYSTEM_LOG_WIDGET.insert("end", f"[{timestamp}][{normalized_level}] {message}\n")
     _SYSTEM_LOG_WIDGET.see("end")
     _SYSTEM_LOG_WIDGET.configure(state="disabled")
+
+
+def build_email_training_input_text(subject: str, sender: str, body_text: str) -> str:
+    return (
+        "EMAIL_SUBJECT:\n"
+        f"{(subject or '').strip()}\n\n"
+        "EMAIL_SENDER:\n"
+        f"{(sender or '').strip()}\n\n"
+        "EMAIL_BODY:\n"
+        f"{(body_text or '').strip()}"
+    ).strip()
 
 
 class EmailManagerWindow(tk.Toplevel):
@@ -1445,8 +1457,7 @@ class EmailManagerWindow(tk.Toplevel):
                 "Saludos,"
             )
 
-        self.response_text.delete("1.0", "end")
-        self.response_text.insert("1.0", self._apply_user_signature(body))
+        self._open_response_review_dialog(row=row, draft_ai_response=body)
 
     def _generate_ai_response(self, prompt: str) -> str:
         try:
@@ -1620,13 +1631,6 @@ class EmailManagerWindow(tk.Toplevel):
                 self.note_service.note_repo.set_email_replied(note_id)
                 self.log(f"Nota {note_id} actualizada a Responded")
 
-            if self._is_trainable_response(body, row["category"]):
-                save = messagebox.askyesno(
-                    "Entrenamiento",
-                    "¿Deseas guardar esta respuesta como ejemplo para mejorar futuras respuestas?",
-                )
-                if save:
-                    self._save_training_example(row, body)
         except Exception as exc:  # noqa: BLE001
             logger.exception("No se pudo crear borrador de Outlook")
             self.log(f"Error creando borrador Outlook: {exc}", level="ERROR")
@@ -1724,20 +1728,7 @@ class EmailManagerWindow(tk.Toplevel):
             if not summary:
                 messagebox.showwarning("Atención", "No se pudo generar el resumen del email.")
                 return
-
-            self.response_text.delete("1.0", "end")
-            self.response_text.insert("1.0", f"Resumen rápido:\n\n{summary}\n")
-            save_result = self.training_repo.example_service.save_email_summary_feedback(
-                input_text=preview_body,
-                output_text=summary,
-                corrected_by_user=False,
-                summary_type="quick",
-                source="generated_summary",
-            )
-            if bool(save_result.get("inserted")):
-                self.log("Resumen insertado en el editor de respuesta")
-            else:
-                self.log(f"Resumen no guardado: {save_result.get('reason')}", level="WARNING")
+            self._open_summary_review_dialog(row=row, ai_summary=summary, preview_body=preview_body)
         except Exception as exc:  # noqa: BLE001
             logger.exception("No se pudo generar el resumen")
             self.log(f"Error generando resumen: {exc}", level="ERROR")
@@ -2027,36 +2018,195 @@ class EmailManagerWindow(tk.Toplevel):
         trivial_words = {"ok", "recibido", "vale", "gracias"}
         return not all(word in trivial_words for word in words)
 
-    def _save_training_example(self, row: dict[str, str], response_text: str) -> None:
-        sender_email = parseaddr(row.get("sender", ""))[1].lower()
-        sender_domain = sender_email.split("@", 1)[1] if "@" in sender_email else ""
-        sender_type = "interno" if "sansebas.es" in sender_domain else "externo"
-        subject = row.get("subject", "")
-        keywords = self._extract_subject_keywords(subject)
-        save_result = self.training_repo.example_service.save_email_response_feedback(
-            input_text=f"{subject}\n{row.get('body_text', '')}".strip(),
-            output_text=response_text,
-            category=row.get("category", ""),
-            sender_type=sender_type,
-            keywords=keywords,
-            edited_by_user=False,
-            source="generated_response",
-        )
-        if not bool(save_result.get("inserted")):
-            self.system_log(f"Ejemplo de respuesta omitido: {save_result.get('reason')}", level="WARNING")
-            return
+    def _open_response_review_dialog(self, row: dict[str, str], draft_ai_response: str) -> None:
+        dialog = tk.Toplevel(self)
+        apply_app_icon(dialog)
+        dialog.title("Respuesta propuesta por IA")
+        dialog.geometry("760x520")
+        dialog.transient(self)
+        dialog.grab_set()
 
-        total_examples = self.training_repo.conn.execute(
-            "SELECT COUNT(*) FROM ml_training_examples WHERE dataset = 'email_response'"
-        ).fetchone()[0]
-        self.system_log("Ejemplo de respuesta guardado")
-        self.system_log(f"Categoría: {row.get('category', '')}")
-        self.system_log(f"Total ejemplos: {total_examples}")
-        logger.info(
-            "Ejemplo de entrenamiento guardado para categoría '%s' con remitente '%s'.",
-            row.get("category", ""),
-            sender_type,
+        ttk.Label(dialog, text="RESPUESTA PROPUESTA POR IA", font=("Segoe UI", 11, "bold")).pack(
+            fill="x", padx=12, pady=(12, 6), anchor="w"
         )
+
+        editor = ScrolledText(dialog, wrap="word", height=18)
+        editor.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        editor.insert("1.0", self._apply_user_signature(draft_ai_response))
+
+        buttons = ttk.Frame(dialog)
+        buttons.pack(fill="x", padx=12, pady=(0, 12))
+
+        def use_response() -> None:
+            final_text = self._apply_user_signature(draft_ai_response).strip()
+            self.response_text.delete("1.0", "end")
+            self.response_text.insert("1.0", final_text)
+            self._save_email_response_feedback_async(row=row, output_text=final_text, edited_by_user=False)
+            dialog.destroy()
+
+        def edit_and_use_response() -> None:
+            edited_text = editor.get("1.0", "end").strip()
+            if not edited_text:
+                messagebox.showwarning("Atención", "La respuesta no puede estar vacía.")
+                return
+            self.response_text.delete("1.0", "end")
+            self.response_text.insert("1.0", edited_text)
+            self._save_email_response_feedback_async(row=row, output_text=edited_text, edited_by_user=True)
+            dialog.destroy()
+
+        ttk.Button(buttons, text="Usar respuesta", command=use_response).pack(side="left")
+        ttk.Button(buttons, text="Editar y usar", command=edit_and_use_response).pack(side="left", padx=6)
+        ttk.Button(buttons, text="Cancelar", command=dialog.destroy).pack(side="right")
+
+        self.wait_window(dialog)
+
+    def _open_summary_review_dialog(self, row: dict[str, str], ai_summary: str, preview_body: str) -> None:
+        dialog = tk.Toplevel(self)
+        apply_app_icon(dialog)
+        dialog.title("Resumen generado")
+        dialog.geometry("760x520")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        ttk.Label(dialog, text="RESUMEN GENERADO", font=("Segoe UI", 11, "bold")).pack(
+            fill="x", padx=12, pady=(12, 6), anchor="w"
+        )
+
+        editor = ScrolledText(dialog, wrap="word", height=18)
+        editor.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        editor.insert("1.0", ai_summary)
+
+        buttons = ttk.Frame(dialog)
+        buttons.pack(fill="x", padx=12, pady=(0, 12))
+
+        def confirm_summary() -> None:
+            self.response_text.delete("1.0", "end")
+            self.response_text.insert("1.0", f"Resumen rápido:\n\n{ai_summary}\n")
+            self._save_email_summary_feedback_async(row=row, output_text=ai_summary, edited_by_user=False, preview_body=preview_body)
+            dialog.destroy()
+
+        def edit_summary() -> None:
+            edited_summary = editor.get("1.0", "end").strip()
+            if not edited_summary:
+                messagebox.showwarning("Atención", "El resumen no puede estar vacío.")
+                return
+            self.response_text.delete("1.0", "end")
+            self.response_text.insert("1.0", f"Resumen rápido:\n\n{edited_summary}\n")
+            self._save_email_summary_feedback_async(row=row, output_text=edited_summary, edited_by_user=True, preview_body=preview_body)
+            dialog.destroy()
+
+        ttk.Button(buttons, text="Confirmar resumen", command=confirm_summary).pack(side="left")
+        ttk.Button(buttons, text="Editar resumen", command=edit_summary).pack(side="left", padx=6)
+        ttk.Button(buttons, text="Cancelar", command=dialog.destroy).pack(side="right")
+
+        self.wait_window(dialog)
+
+    def _save_email_response_feedback_async(self, row: dict[str, str], output_text: str, edited_by_user: bool) -> None:
+        sender = row.get("real_sender") or row.get("sender", "")
+        metadata = self._build_training_metadata(
+            row=row,
+            edited_by_user=edited_by_user,
+            extra={"email_category": row.get("category", "")},
+        )
+        input_text = build_email_training_input_text(
+            subject=row.get("subject", ""),
+            sender=sender,
+            body_text=row.get("body_text", ""),
+        )
+        self._enqueue_training_example_save(
+            dataset="email_response",
+            input_text=input_text,
+            output_text=output_text,
+            label=row.get("category", ""),
+            metadata=metadata,
+            source="interactive_response_review",
+        )
+
+    def _save_email_summary_feedback_async(
+        self,
+        row: dict[str, str],
+        output_text: str,
+        edited_by_user: bool,
+        preview_body: str,
+    ) -> None:
+        sender = row.get("real_sender") or row.get("sender", "")
+        metadata = self._build_training_metadata(
+            row=row,
+            edited_by_user=edited_by_user,
+            extra={"summary_type": "email_summary"},
+            body_text=preview_body,
+        )
+        input_text = build_email_training_input_text(
+            subject=row.get("subject", ""),
+            sender=sender,
+            body_text=preview_body,
+        )
+        self._enqueue_training_example_save(
+            dataset="email_summary",
+            input_text=input_text,
+            output_text=output_text,
+            label=None,
+            metadata=metadata,
+            source="interactive_summary_review",
+        )
+
+    def _build_training_metadata(
+        self,
+        row: dict[str, str],
+        edited_by_user: bool,
+        extra: dict[str, str] | None = None,
+        body_text: str | None = None,
+    ) -> str:
+        sender_email = parseaddr(str(row.get("sender", "")))[1].lower()
+        sender_domain = sender_email.split("@", 1)[1] if "@" in sender_email else ""
+        text_body = body_text if body_text is not None else row.get("body_text", "")
+        payload = {
+            "sender_domain": sender_domain,
+            "email_category": row.get("category", ""),
+            "email_length": len((text_body or "").strip()),
+            "edited_by_user": bool(edited_by_user),
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+        }
+        if extra:
+            payload.update(extra)
+        return json.dumps(payload, ensure_ascii=False)
+
+    def _enqueue_training_example_save(
+        self,
+        *,
+        dataset: str,
+        input_text: str,
+        output_text: str,
+        label: str | None,
+        metadata: str,
+        source: str,
+    ) -> None:
+        def worker() -> None:
+            try:
+                result = self.continuous_learning_service.on_new_training_example(
+                    dataset=dataset,
+                    input_text=input_text,
+                    output_text=output_text,
+                    label=label,
+                    metadata=metadata,
+                    source=source,
+                )
+                inserted = bool(result.get("inserted"))
+                if not inserted:
+                    reason = str(result.get("reason") or "duplicate")
+                    if reason in {"duplicate", "near_duplicate"}:
+                        logger.info("Training example duplicate ignored")
+                        self.after(0, lambda: self.system_log("Duplicate example ignored", level="WARNING"))
+                    return
+
+                logger.info("Training example saved for %s", dataset)
+                logger.info("Dataset marked dirty")
+                self.after(0, lambda: self.system_log(f"Training example saved for {dataset}"))
+                self.after(0, lambda: self.system_log("Dataset marked dirty"))
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Error saving training example in background: %s", exc)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     @staticmethod
     def _extract_subject_keywords(subject: str) -> str:

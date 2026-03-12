@@ -403,16 +403,25 @@ def test_forward_email_updates_status_to_responded() -> None:
     assert updates == [("id-9", "responded")]
 
 
-def test_summarize_email_replaces_response_editor_content() -> None:
+def test_summarize_email_opens_review_dialog_with_generated_summary() -> None:
     window = EmailManagerWindow.__new__(EmailManagerWindow)
     tree = _TreeStub()
     tree.selection_set(("id-5",))
     window.tree = tree
-    window._rows_by_id = {"id-5": {"gmail_id": "id-5", "body_text": "Texto del correo"}}
+    window._rows_by_id = {"id-5": {"gmail_id": "id-5", "subject": "Asunto", "body_text": "Texto del correo"}}
     window._current_html_content = ""
     window.response_text = _TextStub()
     window.response_text.insert("1.0", "Texto previo")
     window.log = lambda *_args, **_kwargs: None
+
+    captured: dict[str, str] = {}
+
+    def _capture_dialog(*, row, ai_summary, preview_body):
+        captured["row_gmail_id"] = row["gmail_id"]
+        captured["summary"] = ai_summary
+        captured["preview_body"] = preview_body
+
+    window._open_summary_review_dialog = _capture_dialog
 
     fake_response = type("Response", (), {"output_text": "Resumen generado."})()
     fake_client = type("Client", (), {"responses": type("Responses", (), {"create": lambda *_args, **_kwargs: fake_response})()})()
@@ -420,8 +429,11 @@ def test_summarize_email_replaces_response_editor_content() -> None:
     with patch("app.ui.email_manager_window.build_openai_client", return_value=fake_client):
         EmailManagerWindow._summarize_email(window)
 
-    assert window.response_text.value == "Resumen rápido:\n\nResumen generado.\n"
-
+    assert captured == {
+        "row_gmail_id": "id-5",
+        "summary": "Resumen generado.",
+        "preview_body": "Texto del correo",
+    }
 
 def test_summarize_attachments_without_useful_files_shows_message() -> None:
     window = EmailManagerWindow.__new__(EmailManagerWindow)
