@@ -445,9 +445,10 @@ def test_summarize_attachments_without_useful_files_shows_message() -> None:
     window._build_email_attachments = lambda *_args: [{"filename": "logo.png"}]
     window.log = lambda *_args, **_kwargs: None
 
-    EmailManagerWindow._summarize_attachments(window)
+    with patch("app.ui.email_manager_window.messagebox.showinfo") as mocked_info:
+        EmailManagerWindow._summarize_attachments(window)
 
-    assert window.response_text.value == "No hay adjuntos con contenido resumible.\n"
+    mocked_info.assert_called_once_with("Adjuntos", "No se encontró contenido resumible en los adjuntos")
 
 
 def test_summarize_attachments_renders_expected_format() -> None:
@@ -455,17 +456,33 @@ def test_summarize_attachments_renders_expected_format() -> None:
     tree = _TreeStub()
     tree.selection_set(("id-7",))
     window.tree = tree
-    window._rows_by_id = {"id-7": {"gmail_id": "id-7"}}
+    window._rows_by_id = {"id-7": {"gmail_id": "id-7", "subject": "Informe", "sender": "acme@example.com"}}
     window.response_text = _TextStub()
     window.log = lambda *_args, **_kwargs: None
     window._build_email_attachments = lambda *_args: [{"filename": "informe.txt"}, {"filename": "logo.png"}]
     window.attachment_cache = type("Cache", (), {"ensure_downloaded": lambda *_args, **_kwargs: "/tmp/informe.txt"})()
-    window._extract_attachment_text = lambda *_args, **_kwargs: "contenido"
-    window._summarize_attachment_text = lambda *_args, **_kwargs: "• idea 1\n• idea 2"
+    captured: dict[str, object] = {}
 
-    EmailManagerWindow._summarize_attachments(window)
+    def _capture_dialog(*, row, ai_summary, preview_body, summary_source, attachment_types):
+        captured["row"] = row
+        captured["summary"] = ai_summary
+        captured["preview_body"] = preview_body
+        captured["summary_source"] = summary_source
+        captured["attachment_types"] = attachment_types
 
-    assert window.response_text.value == "Resumen de adjuntos:\n\n[informe.txt]\n• idea 1\n• idea 2\n"
+    window._open_summary_review_dialog = _capture_dialog
+    window._summarize_attachments_content = lambda *_args, **_kwargs: "• idea 1\n• idea 2"
+
+    with patch("app.ui.email_manager_window.extract_text_from_attachments", return_value="ATTACHMENT: informe.txt\ncontenido"):
+        EmailManagerWindow._summarize_attachments(window)
+
+    assert captured == {
+        "row": {"gmail_id": "id-7", "subject": "Informe", "sender": "acme@example.com"},
+        "summary": "• idea 1\n• idea 2",
+        "preview_body": "ATTACHMENT: informe.txt\ncontenido",
+        "summary_source": "attachment",
+        "attachment_types": ["txt"],
+    }
 
 
 def test_is_summarizable_attachment_extracts_real_filename_from_label() -> None:
