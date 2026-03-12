@@ -178,6 +178,73 @@ class EmailClassifier:
         logger.info("Entrenamiento email classifier completado correctamente")
         return True
 
+
+    def can_incremental_train(self, new_label: str | None = None) -> bool:
+        categories = self._sync_categories_state()
+        self.categories_count = len(categories)
+        normalized_label = (new_label or "").strip()
+
+        if not self.ml_model.is_trained:
+            self.last_training_warning = "Incremental training omitido: modelo no entrenado"
+            logger.warning("Incremental training omitido: modelo no entrenado")
+            return False
+
+        if len(categories) < 2:
+            self.last_training_warning = "Incremental training omitido: solo una categoría"
+            logger.warning("Incremental training omitido: solo una categoría")
+            return False
+
+        if not normalized_label:
+            self.last_training_warning = "Incremental training omitido: etiqueta inválida"
+            logger.warning("Incremental training omitido: etiqueta inválida")
+            return False
+
+        if normalized_label not in categories:
+            self.last_training_warning = f"Incremental training omitido: etiqueta desconocida ({normalized_label})"
+            logger.warning("Incremental training omitido: etiqueta desconocida (%s)", normalized_label)
+            return False
+
+        if self.ml_model.last_warning:
+            self.last_training_warning = f"Incremental training omitido por warning previo: {self.ml_model.last_warning}"
+            logger.warning("Incremental training omitido por warning previo: %s", self.ml_model.last_warning)
+            return False
+
+        return True
+
+    def incremental_train_on_examples(self, texts: list[str], labels: list[str]) -> bool:
+        if not texts or not labels or len(texts) != len(labels):
+            self.last_training_warning = "Incremental training omitido: ejemplos inválidos."
+            return False
+
+        normalized_labels = [str(label or "").strip() for label in labels]
+        if any(not label for label in normalized_labels):
+            self.last_training_warning = "Incremental training omitido: etiqueta vacía."
+            return False
+
+        if any(not self.can_incremental_train(new_label=label) for label in normalized_labels):
+            return False
+
+        try:
+            features = self.ml_model.vectorizer.transform(texts)
+            self.ml_model.classifier.partial_fit(features, normalized_labels)
+            self.ml_model.last_warning = None
+            self.ml_model.save()
+            self.last_training_warning = None
+            logger.info("Incremental training aplicado correctamente")
+            return True
+        except Exception as exc:  # noqa: BLE001
+            self.last_training_warning = f"Error en incremental training: {exc}"
+            logger.exception("Error en incremental training")
+            return False
+
+    def incremental_train_single(self, subject: str, sender: str, body_text: str, label: str) -> bool:
+        logger.info("Incremental training email_classification: label=%s", label)
+        if not self.can_incremental_train(new_label=label):
+            return False
+
+        features_text = MLEmailModel.compose_features(subject, sender, body_text)
+        return self.incremental_train_on_examples([features_text], [label])
+
     def reclassify_all_emails(self) -> int:
         if self.email_repo is None:
             return 0

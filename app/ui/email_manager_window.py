@@ -34,7 +34,7 @@ from app.core.service import NoteService
 from app.persistence.email_repository import EmailRepository
 from app.persistence.calendar_repository import CalendarRepository
 from app.persistence.training_repository import TrainingRepository
-from app.ml.dataset_state_service import DatasetStateService
+from app.ml.continuous_learning_service import ContinuousLearningService
 from app.ml.retraining_service import DatasetRetrainingService
 from app.persistence.user_profile_repository import UserProfileRepository
 from app.services.email_entity_extractor import EmailEntityExtractor
@@ -150,12 +150,15 @@ class EmailManagerWindow(tk.Toplevel):
         self.email_repo = EmailRepository(db_connection)
         self.calendar_repo = CalendarRepository(db_connection)
         self.training_repo = TrainingRepository(db_connection)
-        self.dataset_state_service = DatasetStateService(db_connection)
         self.user_profile_repo = UserProfileRepository(db_connection)
         self.category_manager = CategoryManager(self.email_repo)
         self.mail_ingestion_service = MailIngestionService(gmail_client=gmail_client, db_connection=db_connection)
         self.classifier = self.mail_ingestion_service.classifier
         self.retraining_service = DatasetRetrainingService(db_connection, self.email_repo)
+        self.continuous_learning_service = ContinuousLearningService(
+            db_connection=db_connection,
+            email_classifier=self.classifier,
+        )
         self.outlook_service = OutlookService()
         self.attachment_cache = AttachmentCache(gmail_client=gmail_client)
         self.my_email = self._resolve_my_email()
@@ -769,12 +772,22 @@ class EmailManagerWindow(tk.Toplevel):
                 self.email_repo.register_sender_rule(row["sender"], target_type)
                 subject = str(row["subject"] or "")
                 body_text = str(row["body_text"] or "")
-                self.training_repo.save_training_example(
+                learn_result = self.continuous_learning_service.on_new_training_example(
                     dataset="email_classification",
                     input_text=f"{subject}\n{body_text}".strip(),
+                    output_text=None,
                     label=target_type,
                     source="user_category_change",
                 )
+                if not bool(learn_result.get("inserted")):
+                    self.log("Ejemplo duplicado ignorado en email_classification", level="INFO")
+                elif bool(learn_result.get("incremental", {}).get("trained")):
+                    self.log("Incremental training aplicado correctamente", level="INFO")
+                else:
+                    self.log(
+                        f"Incremental training omitido: {learn_result.get('incremental', {}).get('reason', 'pendiente full retrain')}",
+                        level="INFO",
+                    )
 
         self.status_var.set(f"{len(selected_ids)} correos movidos a {target_label}.")
         self.refresh_emails()
