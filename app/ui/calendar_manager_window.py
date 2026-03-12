@@ -107,9 +107,9 @@ class CalendarManagerWindow(ttk.Frame):
         style.configure("CalendarHeader.TLabel", font=("TkDefaultFont", 11, "bold"))
         style.configure("Weekday.TLabel", anchor="center", font=("TkDefaultFont", 9, "bold"))
         style.configure("DayNumber.TLabel", font=("TkDefaultFont", 9, "bold"))
-        style.configure("Item.TLabel", foreground="#1f2937")
-        style.configure("MoreItems.TLabel", foreground="#4b5563")
-        style.configure("Time.TLabel", foreground="#4b5563")
+        style.configure("Item.TLabel", foreground=_sanitize_tk_color("#1f2937"))
+        style.configure("MoreItems.TLabel", foreground=_sanitize_tk_color("#4b5563"))
+        style.configure("Time.TLabel", foreground=_sanitize_tk_color("#4b5563"))
 
         self._build_toolbar()
         self._build_calendar_filters()
@@ -201,7 +201,7 @@ class CalendarManagerWindow(ttk.Frame):
                 row,
                 width=12,
                 height=12,
-                bg=str(calendar_row["background_color"]),
+                bg=_sanitize_tk_color(str(calendar_row["background_color"]), fallback=EVENT_COLOR),
                 bd=1,
                 relief="solid",
             ).pack(side="left", padx=(0, 4))
@@ -235,7 +235,7 @@ class CalendarManagerWindow(ttk.Frame):
             item = ttk.Frame(legend_frame)
             item.grid(row=0, column=index, padx=(0, 10), sticky="w")
 
-            tk.Frame(item, width=14, height=14, bg=color, bd=1, relief="solid").pack(side="left", padx=(0, 5))
+            tk.Frame(item, width=14, height=14, bg=_sanitize_tk_color(color, fallback=EVENT_COLOR), bd=1, relief="solid").pack(side="left", padx=(0, 5))
             ttk.Label(item, text=label_text).pack(side="left")
 
         legend_frame.columnconfigure(len(legend_items), weight=1)
@@ -313,14 +313,14 @@ class CalendarManagerWindow(ttk.Frame):
         self.tree.bind("<<TreeviewSelect>>", self._on_overview_select)
         self.tree.bind("<Double-1>", self._on_overview_double_click)
 
-        self.tree.tag_configure("NOTE_PENDING", background=NOTE_PENDING_COLOR, foreground="#000000")
-        self.tree.tag_configure("ACTION_PENDING", background=ACTION_COLOR, foreground="#000000")
-        self.tree.tag_configure("EMAIL_PENDING", background=EMAIL_COLOR, foreground="#000000")
-        self.tree.tag_configure("EVENT_PENDING", background=EVENT_COLOR, foreground="#000000")
-        self.tree.tag_configure("NOTE_DONE", background=NOTE_DONE_COLOR, foreground="#000000")
-        self.tree.tag_configure("ACTION_DONE", background=NOTE_DONE_COLOR, foreground="#000000")
-        self.tree.tag_configure("EMAIL_DONE", background=NOTE_DONE_COLOR, foreground="#000000")
-        self.tree.tag_configure("EVENT_DONE", background=NOTE_DONE_COLOR, foreground="#000000")
+        self.tree.tag_configure("NOTE_PENDING", background=_sanitize_tk_color(NOTE_PENDING_COLOR, fallback=NOTE_PENDING_COLOR), foreground=_sanitize_tk_color("#000000"))
+        self.tree.tag_configure("ACTION_PENDING", background=_sanitize_tk_color(ACTION_COLOR, fallback=ACTION_COLOR), foreground=_sanitize_tk_color("#000000"))
+        self.tree.tag_configure("EMAIL_PENDING", background=_sanitize_tk_color(EMAIL_COLOR, fallback=EMAIL_COLOR), foreground=_sanitize_tk_color("#000000"))
+        self.tree.tag_configure("EVENT_PENDING", background=_sanitize_tk_color(EVENT_COLOR, fallback=EVENT_COLOR), foreground=_sanitize_tk_color("#000000"))
+        self.tree.tag_configure("NOTE_DONE", background=_sanitize_tk_color(NOTE_DONE_COLOR, fallback=NOTE_DONE_COLOR), foreground=_sanitize_tk_color("#000000"))
+        self.tree.tag_configure("ACTION_DONE", background=_sanitize_tk_color(NOTE_DONE_COLOR, fallback=NOTE_DONE_COLOR), foreground=_sanitize_tk_color("#000000"))
+        self.tree.tag_configure("EMAIL_DONE", background=_sanitize_tk_color(NOTE_DONE_COLOR, fallback=NOTE_DONE_COLOR), foreground=_sanitize_tk_color("#000000"))
+        self.tree.tag_configure("EVENT_DONE", background=_sanitize_tk_color(NOTE_DONE_COLOR, fallback=NOTE_DONE_COLOR), foreground=_sanitize_tk_color("#000000"))
 
         self.excel_filter = ExcelTreeFilter(
             master=self,
@@ -597,7 +597,7 @@ class CalendarManagerWindow(ttk.Frame):
                 continue
             tag = self._record_tag(record)
             if str(record.get("kind") or "") == "EVENT" and tag.endswith("PENDING"):
-                bg = str(record.get("background_color") or EVENT_COLOR)
+                bg = _sanitize_tk_color(str(record.get("background_color") or EVENT_COLOR), fallback=EVENT_COLOR)
                 fg = _sanitize_tk_color(str(record.get("foreground_color") or "#000000"))
                 self.tree.tag_configure(tag, background=bg, foreground=fg)
             values = (row["id"], row["title"], row["tipo"], row["estado"], row["fecha"])
@@ -659,11 +659,11 @@ class CalendarManagerWindow(ttk.Frame):
             self._restore_time_label()
             self.detail_time_var.set("-")
 
-        self.content_text.configure(bg=self._detail_bg(record), fg="#000000")
+        self.content_text.configure(bg=_sanitize_tk_color(self._detail_bg(record), fallback="#ffffff"), fg=_sanitize_tk_color("#000000"))
         if kind == "EVENT":
             self.detail_calendar_label.configure(foreground=_sanitize_tk_color(str(record.get("foreground_color") or "#000000")))
         else:
-            self.detail_calendar_label.configure(foreground="#000000")
+            self.detail_calendar_label.configure(foreground=_sanitize_tk_color("#000000"))
         self.content_text.delete("1.0", "end")
         self.content_text.insert("1.0", str(record.get("content") or ""))
 
@@ -1513,21 +1513,21 @@ class CalendarManagerWindow(ttk.Frame):
                 child.destroy()
 
             if day_value.month != self.current_month.month:
-                cell.configure(bg="#f5f5f5")
-                day_number_label.configure(text=str(day_value.day), foreground="#9ca3af")
+                cell.configure(bg=_sanitize_tk_color("#f5f5f5"))
+                day_number_label.configure(text=str(day_value.day), foreground=_sanitize_tk_color("#9ca3af"))
                 continue
 
-            cell.configure(bg="#ffffff")
+            cell.configure(bg=_sanitize_tk_color("#ffffff", fallback="#ffffff"))
             today = date.today()
             if day_value == today:
-                day_number_label.configure(text=str(day_value.day), foreground="#1d4ed8")
+                day_number_label.configure(text=str(day_value.day), foreground=_sanitize_tk_color("#1d4ed8"))
             else:
-                day_number_label.configure(text=str(day_value.day), foreground="#111827")
+                day_number_label.configure(text=str(day_value.day), foreground=_sanitize_tk_color("#111827"))
 
             day_entries = self._events_by_day.get(day_value, [])
             for entry in day_entries[:3]:
                 text = self._entry_label_text(entry)
-                label = tk.Label(events_frame, text=text, anchor="w", justify="left", cursor="hand2", wraplength=170, bg=self._detail_bg(entry), fg="#000000")
+                label = tk.Label(events_frame, text=text, anchor="w", justify="left", cursor="hand2", wraplength=170, bg=_sanitize_tk_color(self._detail_bg(entry), fallback="#ffffff"), fg=_sanitize_tk_color("#000000"))
                 label.pack(anchor="w", fill="x", pady=1)
                 label.bind("<Button-1>", self._on_entry_click)
                 self._label_metadata[str(label)] = entry
@@ -1549,7 +1549,7 @@ class CalendarManagerWindow(ttk.Frame):
         for week in range(6):
             container.rowconfigure(week + 1, weight=1, uniform="calendar-row", minsize=120)
             for day in range(7):
-                cell = tk.Frame(container, bg="#ffffff", highlightbackground="#d1d5db", highlightthickness=1, bd=0, padx=6, pady=6)
+                cell = tk.Frame(container, bg=_sanitize_tk_color("#ffffff", fallback="#ffffff"), highlightbackground="#d1d5db", highlightthickness=1, bd=0, padx=6, pady=6)
                 cell.grid(row=week + 1, column=day, sticky="nsew", padx=2, pady=2)
                 cell.grid_propagate(False)
 
@@ -1581,7 +1581,7 @@ class CalendarManagerWindow(ttk.Frame):
             container.columnconfigure(index, weight=1, uniform="week-col")
             day_value = week_start + timedelta(days=index)
 
-            column = tk.Frame(container, bg="#ffffff", highlightbackground="#d1d5db", highlightthickness=1, bd=0, padx=6, pady=6)
+            column = tk.Frame(container, bg=_sanitize_tk_color("#ffffff", fallback="#ffffff"), highlightbackground="#d1d5db", highlightthickness=1, bd=0, padx=6, pady=6)
             column.grid(row=0, column=index, sticky="nsew", padx=2, pady=2)
             self._week_day_columns[str(column)] = day_value
 
@@ -1590,7 +1590,7 @@ class CalendarManagerWindow(ttk.Frame):
             day_entries = self._events_by_day.get(day_value, [])
             for entry in day_entries:
                 text = self._entry_label_text(entry)
-                label = tk.Label(column, text=text, anchor="w", justify="left", cursor="hand2", wraplength=165, bg=self._detail_bg(entry), fg="#000000")
+                label = tk.Label(column, text=text, anchor="w", justify="left", cursor="hand2", wraplength=165, bg=_sanitize_tk_color(self._detail_bg(entry), fallback="#ffffff"), fg=_sanitize_tk_color("#000000"))
                 label.pack(anchor="w", fill="x", pady=1)
                 label.bind("<Button-1>", self._on_entry_click)
                 label.bind("<ButtonPress-1>", self._on_drag_start, add="+")
@@ -1748,7 +1748,7 @@ class CalendarManagerWindow(ttk.Frame):
         top_label = ttk.Label(container, text="Eventos del día (sin hora fija)", style="CalendarHeader.TLabel")
         top_label.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
 
-        top_frame = tk.Frame(container, bg="#ffffff", highlightbackground="#d1d5db", highlightthickness=1, bd=0, padx=8, pady=6)
+        top_frame = tk.Frame(container, bg=_sanitize_tk_color("#ffffff", fallback="#ffffff"), highlightbackground="#d1d5db", highlightthickness=1, bd=0, padx=8, pady=6)
         top_frame.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(0, 10))
         container.rowconfigure(1, weight=0)
 
@@ -1757,7 +1757,7 @@ class CalendarManagerWindow(ttk.Frame):
         else:
             for entry in top_section_entries:
                 text = self._entry_label_text(entry, include_time=True)
-                label = tk.Label(top_frame, text=text, anchor="w", justify="left", cursor="hand2", wraplength=600, bg=self._detail_bg(entry), fg="#000000")
+                label = tk.Label(top_frame, text=text, anchor="w", justify="left", cursor="hand2", wraplength=600, bg=_sanitize_tk_color(self._detail_bg(entry), fallback="#ffffff"), fg=_sanitize_tk_color("#000000"))
                 label.pack(anchor="w", fill="x", pady=1)
                 label.bind("<Button-1>", self._on_entry_click)
                 self._label_metadata[str(label)] = entry
@@ -1769,13 +1769,13 @@ class CalendarManagerWindow(ttk.Frame):
             time_label = ttk.Label(container, text=slot, style="Time.TLabel")
             time_label.grid(row=row, column=0, sticky="nw", padx=(0, 8), pady=1)
 
-            slot_frame = tk.Frame(container, bg="#ffffff", highlightbackground="#d1d5db", highlightthickness=1, bd=0, padx=6, pady=4)
+            slot_frame = tk.Frame(container, bg=_sanitize_tk_color("#ffffff", fallback="#ffffff"), highlightbackground="#d1d5db", highlightthickness=1, bd=0, padx=6, pady=4)
             slot_frame.grid(row=row, column=1, sticky="nsew", pady=1)
 
             for entry in timed_slot_map.get(slot, []):
                 include_entry_time = str(entry.get("time") or "") != slot
                 text = self._entry_label_text(entry, include_time=include_entry_time)
-                label = tk.Label(slot_frame, text=text, anchor="w", justify="left", cursor="hand2", wraplength=500, bg=self._detail_bg(entry), fg="#000000")
+                label = tk.Label(slot_frame, text=text, anchor="w", justify="left", cursor="hand2", wraplength=500, bg=_sanitize_tk_color(self._detail_bg(entry), fallback="#ffffff"), fg=_sanitize_tk_color("#000000"))
                 label.pack(anchor="w", fill="x", pady=1)
                 label.bind("<Button-1>", self._on_entry_click)
                 self._label_metadata[str(label)] = entry

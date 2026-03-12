@@ -49,6 +49,16 @@ from app.utils.attachment_text_extractor import (
 
 logger = logging.getLogger(__name__)
 
+def _sanitize_tk_color(color: str | None, fallback: str = "#000000") -> str:
+    """Return a Tkinter-safe color value for known invalid system color aliases."""
+    value = str(color or "").strip()
+    if not value:
+        return fallback
+    if value.lower() == "windowtext":
+        return fallback
+    return value
+
+
 ATTACHMENT_SUMMARY_REQUEST = (
     "Analiza el contenido consolidado de adjuntos y devuelve un resumen accionable en español.\n"
     "Reglas:\n"
@@ -244,8 +254,8 @@ class EmailManagerWindow(tk.Toplevel):
         style.configure("Toolbar.TButton", padding=(8, 6))
         style.map(
             "Treeview",
-            background=[("selected", "#2E6BD1")],
-            foreground=[("selected", "white")],
+            background=[("selected", _sanitize_tk_color("#2E6BD1"))],
+            foreground=[("selected", _sanitize_tk_color("white"))],
         )
 
         toolbar_container = ttk.Frame(self, padding=(10, 10, 10, 6))
@@ -340,10 +350,10 @@ class EmailManagerWindow(tk.Toplevel):
         table_frame.pack(fill="both", expand=True)
 
         self.tree = ttk.Treeview(table_frame, columns=self.columns, show="headings", height=12, selectmode="extended")
-        self.tree.tag_configure("email_new", background="#E8F4FF", font=("Segoe UI", 9, "bold"))
-        self.tree.tag_configure("email_ignored", foreground="#999999")
-        self.tree.tag_configure("email_converted", background="#E8FFE8")
-        self.tree.tag_configure("email_forwarded", background="#FFF3E0")
+        self.tree.tag_configure("email_new", background=_sanitize_tk_color("#E8F4FF"), font=("Segoe UI", 9, "bold"))
+        self.tree.tag_configure("email_ignored", foreground=_sanitize_tk_color("#999999"))
+        self.tree.tag_configure("email_converted", background=_sanitize_tk_color("#E8FFE8"))
+        self.tree.tag_configure("email_forwarded", background=_sanitize_tk_color("#FFF3E0"))
         for col in self.columns:
             self.tree.heading(col, text=self.column_titles.get(col, col))
 
@@ -381,7 +391,7 @@ class EmailManagerWindow(tk.Toplevel):
         self.preview_html = HTMLScrolledText(
             html_preview_frame,
             html="",
-            background="white",
+            background=_sanitize_tk_color("white"),
         )
         self.preview_html.pack(fill="both", expand=True)
 
