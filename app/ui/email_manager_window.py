@@ -8,14 +8,11 @@ import logging
 import os
 import re
 import base64
-import csv
 import threading
 import shutil
 import sqlite3
 import tempfile
 import tkinter as tk
-import zipfile
-import xml.etree.ElementTree as ET
 from datetime import datetime
 from email.utils import getaddresses, parseaddr
 from pathlib import Path
@@ -43,8 +40,23 @@ from app.ui.app_icons import apply_app_icon
 from app.ui.excel_filter import ExcelTreeFilter
 from app.ui.dictation_widgets import attach_dictation
 from app.utils.openai_client import MODEL_NAME, build_openai_client
+from app.utils.attachment_text_extractor import (
+    MAX_ATTACHMENT_TEXT,
+    SUPPORTED_ATTACHMENT_EXTENSIONS,
+    extract_text_from_attachments,
+)
 
 logger = logging.getLogger(__name__)
+
+ATTACHMENT_SUMMARY_REQUEST = (
+    "Analiza el contenido consolidado de adjuntos y devuelve un resumen accionable en español.\n"
+    "Reglas:\n"
+    "- máximo 8 líneas\n"
+    "- usar viñetas (•)\n"
+    "- destacar datos, fechas, importes y riesgos relevantes\n"
+    "- no inventar información\n"
+    "- si falta contexto, indícalo brevemente\n"
+)
 
 _SYSTEM_LOG_WIDGET: ScrolledText | None = None
 
@@ -1750,42 +1762,54 @@ class EmailManagerWindow(tk.Toplevel):
 
         attachments = self._build_email_attachments(gmail_id)
         useful_attachments = [item for item in attachments if self._is_summarizable_attachment(item)]
-
-        self.response_text.delete("1.0", "end")
-
         if not useful_attachments:
-            self.response_text.insert("1.0", "No hay adjuntos con contenido resumible.\n")
+            messagebox.showinfo("Adjuntos", "No se encontró contenido resumible en los adjuntos")
             self.log("No hay adjuntos útiles para resumir")
             return
 
-        summaries: list[tuple[str, str]] = []
+        prepared_attachments: list[dict[str, str]] = []
+        attachment_types: list[str] = []
         for attachment in useful_attachments:
             filename = self._extract_attachment_filename(str(attachment.get("filename") or "adjunto")) or "adjunto"
             try:
                 local_path = self.attachment_cache.ensure_downloaded(gmail_id, attachment)
                 attachment["local_path"] = local_path
-                content = self._extract_attachment_text(local_path, filename)
+                prepared_attachments.append(
+                    {
+                        "file_path": local_path,
+                        "local_path": local_path,
+                        "filename": filename,
+                        "mime_type": str(attachment.get("mime") or attachment.get("mime_type") or ""),
+                    }
+                )
+                suffix = (Path(filename).suffix.lower() or Path(local_path).suffix.lower()).lstrip(".")
+                if suffix and suffix not in attachment_types:
+                    attachment_types.append(suffix)
             except Exception as exc:  # noqa: BLE001
                 self.log(f"No se pudo leer adjunto {filename}: {exc}", level="WARNING")
-                continue
 
-            if not content.strip():
-                continue
+        extracted_text = extract_text_from_attachments(prepared_attachments)
+        if len(extracted_text) > MAX_ATTACHMENT_TEXT:
+            extracted_text = extracted_text[:MAX_ATTACHMENT_TEXT]
 
-            summary = self._summarize_attachment_text(filename, content)
-            if summary:
-                summaries.append((filename, summary))
-
-        if not summaries:
-            self.response_text.insert("1.0", "No hay adjuntos con contenido resumible.\n")
+        if not extracted_text.strip():
+            messagebox.showinfo("Adjuntos", "No se encontró contenido resumible en los adjuntos")
             self.log("No se encontró contenido resumible en los adjuntos")
             return
 
-        blocks = ["Resumen de adjuntos:\n"]
-        for filename, summary in summaries:
-            blocks.append(f"\n[{filename}]\n{summary.strip()}\n")
-        self.response_text.insert("1.0", "".join(blocks).strip() + "\n")
-        self.log("Resumen de adjuntos insertado en el editor de respuesta")
+        self.log("Generating attachment summary")
+        summary = self._summarize_attachments_content(row=row, extracted_text=extracted_text)
+        if not summary:
+            messagebox.showwarning("Atención", "No se pudo generar el resumen de adjuntos.")
+            return
+
+        self._open_summary_review_dialog(
+            row=row,
+            ai_summary=summary,
+            preview_body=extracted_text,
+            summary_source="attachment",
+            attachment_types=attachment_types,
+        )
 
     @staticmethod
     def _is_summarizable_attachment(attachment: dict[str, str]) -> bool:
@@ -1806,7 +1830,7 @@ class EmailManagerWindow(tk.Toplevel):
         if any(token in lowered_name for token in ignored_tokens):
             return False
 
-        allowed_ext = {".pdf", ".csv", ".xls", ".xlsx", ".txt", ".docx"}
+        allowed_ext = SUPPORTED_ATTACHMENT_EXTENSIONS
         return Path(lowered_name).suffix in allowed_ext
 
     @staticmethod
@@ -1820,132 +1844,23 @@ class EmailManagerWindow(tk.Toplevel):
 
         return value.strip()
 
-    def _extract_attachment_text(self, local_path: str, filename: str) -> str:
-        suffix = Path(filename).suffix.lower()
-        if suffix == ".txt":
-            return self._read_text_file(local_path)
-        if suffix == ".csv":
-            return self._read_csv_file(local_path)
-        if suffix == ".pdf":
-            return self._read_pdf_file(local_path)
-        if suffix == ".docx":
-            return self._read_docx_file(local_path)
-        if suffix == ".doc":
-            return self._read_doc_file(local_path)
-        if suffix == ".xlsx":
-            return self._read_xlsx_file(local_path)
-        if suffix == ".xls":
-            return self._read_xls_file(local_path)
-        return ""
-
-    @staticmethod
-    def _read_text_file(path: str) -> str:
-        with open(path, "r", encoding="utf-8", errors="ignore") as file:
-            return file.read()
-
-    @staticmethod
-    def _read_csv_file(path: str) -> str:
-        rows: list[str] = []
-        with open(path, "r", encoding="utf-8", errors="ignore", newline="") as file:
-            reader = csv.reader(file)
-            for idx, row in enumerate(reader):
-                if idx >= 200:
-                    break
-                rows.append(" | ".join(cell.strip() for cell in row if cell and cell.strip()))
-        return "\n".join(item for item in rows if item)
-
-    @staticmethod
-    def _read_pdf_file(path: str) -> str:
-        try:
-            from pypdf import PdfReader
-        except Exception:  # noqa: BLE001
-            return ""
-
-        reader = PdfReader(path)
-        texts: list[str] = []
-        for page in reader.pages[:20]:
-            texts.append((page.extract_text() or "").strip())
-        return "\n".join(item for item in texts if item)
-
-    @staticmethod
-    def _read_docx_file(path: str) -> str:
-        with zipfile.ZipFile(path) as archive:
-            with archive.open("word/document.xml") as file:
-                root = ET.fromstring(file.read())
-        texts = [node.text.strip() for node in root.iter() if node.tag.endswith("}t") and node.text and node.text.strip()]
-        return "\n".join(texts)
-
-    @staticmethod
-    def _read_doc_file(path: str) -> str:
-        try:
-            with open(path, "r", encoding="latin-1", errors="ignore") as file:
-                content = file.read()
-        except Exception:  # noqa: BLE001
-            return ""
-        cleaned = re.sub(r"[^\x20-\x7E\n\r\tÀ-ÿ]", " ", content)
-        return re.sub(r"\s+", " ", cleaned).strip()
-
-    @staticmethod
-    def _read_xlsx_file(path: str) -> str:
-        try:
-            import openpyxl
-        except Exception:  # noqa: BLE001
-            return ""
-
-        workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
-        try:
-            lines: list[str] = []
-            for sheet in workbook.worksheets:
-                lines.append(f"[{sheet.title}]")
-                for idx, row in enumerate(sheet.iter_rows(values_only=True)):
-                    if idx >= 100:
-                        break
-                    values = [str(cell).strip() for cell in row if cell not in (None, "")]
-                    if values:
-                        lines.append(" | ".join(values))
-            return "\n".join(lines)
-        finally:
-            workbook.close()
-
-    @staticmethod
-    def _read_xls_file(path: str) -> str:
-        try:
-            import xlrd
-        except Exception:  # noqa: BLE001
-            return ""
-
-        workbook = xlrd.open_workbook(path)
-        lines: list[str] = []
-        for sheet in workbook.sheets():
-            lines.append(f"[{sheet.name}]")
-            for row_idx in range(min(sheet.nrows, 100)):
-                values = [str(value).strip() for value in sheet.row_values(row_idx) if str(value).strip()]
-                if values:
-                    lines.append(" | ".join(values))
-        return "\n".join(lines)
-
-    def _summarize_attachment_text(self, filename: str, content: str) -> str:
-        trimmed_content = content.strip()
-        if not trimmed_content:
-            return ""
-
+    def _summarize_attachments_content(self, row: dict[str, str], extracted_text: str) -> str:
+        sender = row.get("real_sender") or row.get("sender", "")
         prompt = (
-            "Resume el contenido del archivo en español para lectura rápida.\n"
-            "Reglas:\n"
-            "- máximo 4 líneas\n"
-            "- usar viñetas (•)\n"
-            "- ideas concretas\n"
-            "- sin saludos ni despedidas\n"
-            "- no inventar información\n"
-            f"Archivo: {filename}\n\n"
-            f"Contenido:\n{trimmed_content[:12000]}"
+            f"{ATTACHMENT_SUMMARY_REQUEST}\n\n"
+            "EMAIL_SUBJECT:\n"
+            f"{(row.get('subject') or '').strip()}\n\n"
+            "EMAIL_SENDER:\n"
+            f"{(sender or '').strip()}\n\n"
+            "ATTACHMENT_CONTENT:\n"
+            f"{(extracted_text or '').strip()[:MAX_ATTACHMENT_TEXT]}"
         )
         try:
             client = build_openai_client()
             response = client.responses.create(model="gpt-4.1-mini", input=prompt)
             return str(response.output_text or "").strip()
         except Exception as exc:  # noqa: BLE001
-            self.log(f"No se pudo resumir {filename}: {exc}", level="WARNING")
+            self.log(f"No se pudo generar resumen de adjuntos: {exc}", level="WARNING")
             return ""
 
     def _resolve_reply_attachment_paths(self, gmail_id: str, attachments: list[dict[str, str]]) -> list[str] | None:
@@ -2060,7 +1975,14 @@ class EmailManagerWindow(tk.Toplevel):
 
         self.wait_window(dialog)
 
-    def _open_summary_review_dialog(self, row: dict[str, str], ai_summary: str, preview_body: str) -> None:
+    def _open_summary_review_dialog(
+        self,
+        row: dict[str, str],
+        ai_summary: str,
+        preview_body: str,
+        summary_source: str = "email",
+        attachment_types: list[str] | None = None,
+    ) -> None:
         dialog = tk.Toplevel(self)
         apply_app_icon(dialog)
         dialog.title("Resumen generado")
@@ -2082,7 +2004,14 @@ class EmailManagerWindow(tk.Toplevel):
         def confirm_summary() -> None:
             self.response_text.delete("1.0", "end")
             self.response_text.insert("1.0", f"Resumen rápido:\n\n{ai_summary}\n")
-            self._save_email_summary_feedback_async(row=row, output_text=ai_summary, edited_by_user=False, preview_body=preview_body)
+            self._save_email_summary_feedback_async(
+                row=row,
+                output_text=ai_summary,
+                edited_by_user=False,
+                preview_body=preview_body,
+                summary_source=summary_source,
+                attachment_types=attachment_types,
+            )
             dialog.destroy()
 
         def edit_summary() -> None:
@@ -2092,7 +2021,14 @@ class EmailManagerWindow(tk.Toplevel):
                 return
             self.response_text.delete("1.0", "end")
             self.response_text.insert("1.0", f"Resumen rápido:\n\n{edited_summary}\n")
-            self._save_email_summary_feedback_async(row=row, output_text=edited_summary, edited_by_user=True, preview_body=preview_body)
+            self._save_email_summary_feedback_async(
+                row=row,
+                output_text=edited_summary,
+                edited_by_user=True,
+                preview_body=preview_body,
+                summary_source=summary_source,
+                attachment_types=attachment_types,
+            )
             dialog.destroy()
 
         ttk.Button(buttons, text="Confirmar resumen", command=confirm_summary).pack(side="left")
@@ -2128,17 +2064,34 @@ class EmailManagerWindow(tk.Toplevel):
         output_text: str,
         edited_by_user: bool,
         preview_body: str,
+        summary_source: str = "email",
+        attachment_types: list[str] | None = None,
     ) -> None:
         sender = row.get("real_sender") or row.get("sender", "")
+        if summary_source == "attachment":
+            input_text = (
+                "EMAIL_SUBJECT:\n"
+                f"{(row.get('subject') or '').strip()}\n\n"
+                "EMAIL_SENDER:\n"
+                f"{(sender or '').strip()}\n\n"
+                "ATTACHMENT_CONTENT:\n"
+                f"{(preview_body or '').strip()[:MAX_ATTACHMENT_TEXT]}"
+            ).strip()
+        else:
+            input_text = build_email_training_input_text(
+                subject=row.get("subject", ""),
+                sender=sender,
+                body_text=preview_body,
+            )
+
         metadata = self._build_training_metadata(
             row=row,
             edited_by_user=edited_by_user,
-            extra={"summary_type": "email_summary"},
-            body_text=preview_body,
-        )
-        input_text = build_email_training_input_text(
-            subject=row.get("subject", ""),
-            sender=sender,
+            extra={
+                "summary_type": "email_summary",
+                "summary_source": summary_source,
+                "attachment_types": attachment_types or [],
+            },
             body_text=preview_body,
         )
         self._enqueue_training_example_save(
@@ -2154,7 +2107,7 @@ class EmailManagerWindow(tk.Toplevel):
         self,
         row: dict[str, str],
         edited_by_user: bool,
-        extra: dict[str, str] | None = None,
+        extra: dict[str, object] | None = None,
         body_text: str | None = None,
     ) -> str:
         sender_email = parseaddr(str(row.get("sender", "")))[1].lower()
@@ -2200,9 +2153,9 @@ class EmailManagerWindow(tk.Toplevel):
                     return
 
                 logger.info("Training example saved for %s", dataset)
-                logger.info("Dataset marked dirty")
+                logger.info("Dataset %s marked dirty", dataset)
                 self.after(0, lambda: self.system_log(f"Training example saved for {dataset}"))
-                self.after(0, lambda: self.system_log("Dataset marked dirty"))
+                self.after(0, lambda: self.system_log(f"Dataset {dataset} marked dirty"))
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Error saving training example in background: %s", exc)
 
