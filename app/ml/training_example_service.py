@@ -55,7 +55,10 @@ class TrainingExampleService:
         )
         self.conn.commit()
         examples_count = self._count_examples(normalized_dataset)
-        self.dataset_state_service.mark_dirty(normalized_dataset, examples_count=examples_count)
+        self.dataset_state_service.mark_example_added(normalized_dataset)
+        self.dataset_state_service.set_examples_count(normalized_dataset, examples_count)
+        logger.info("Nuevo ejemplo añadido a %s", normalized_dataset)
+        logger.info("Dataset %s marcado como dirty", normalized_dataset)
         return {"inserted": True, "reason": "inserted", "examples_count": examples_count}
 
     def save_email_response_feedback(

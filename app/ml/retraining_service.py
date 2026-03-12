@@ -32,7 +32,8 @@ class DatasetRetrainingService:
         active_classifier = classifier or EmailClassifier(email_repo=self.email_repo)
         trained = active_classifier.retrain_if_possible(force=not auto)
         if trained:
-            self.state_service.mark_trained(dataset, examples_count=active_classifier.examples_count)
+            self.state_service.set_examples_count(dataset, active_classifier.examples_count)
+            self.state_service.mark_full_train_success(dataset)
             logger.info("Dataset %s reentrenado correctamente", dataset)
             return {"trained": True, "reason": "Reentrenamiento completado."}
 
