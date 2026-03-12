@@ -10,6 +10,7 @@ from tkinter import messagebox, ttk
 
 from app.persistence.ml_training_repository import MLTrainingRepository
 from app.ml.dataset_rules import get_dataset_rule
+from app.ml.dataset_state_service import DatasetStateService
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,7 @@ class MLQualityMetricsWindow(tk.Toplevel):
         self.minsize(920, 620)
 
         self.repo = MLTrainingRepository(db_connection)
+        self.dataset_state_service = DatasetStateService(db_connection)
         self.open_ml_manager_callback = open_ml_manager_callback
         self.retrain_dataset_callback = retrain_dataset_callback
 
@@ -178,6 +180,17 @@ class MLQualityMetricsWindow(tk.Toplevel):
             completeness_parts.append(f"Sin input_text: {int(missing['missing_input'] or 0)}")
         completeness_parts.append(f"Duplicados: {duplicates}")
 
+        state = self.dataset_state_service.get_state(dataset)
+        state_parts: list[str] = []
+        if state is not None:
+            state_parts = [
+                f"Dirty: {'Sí' if bool(state['dirty']) else 'No'}",
+                f"Pendientes: {int(state['pending_examples_count'] or 0)}",
+                f"Último incremental: {state['last_incremental_at'] or '-'}",
+                f"Último full train: {state['last_trained_at'] or '-'}",
+                f"Último error: {state['last_error'] or '-'}",
+            ]
+
         self.main_metrics_var.set(
             "\n".join(
                 [
@@ -187,12 +200,17 @@ class MLQualityMetricsWindow(tk.Toplevel):
                     f"Última actualización: {summary['last_updated'] or '-'}",
                     f"Etiquetas débiles: {', '.join(weak_labels) if weak_labels else 'Ninguna'}",
                     " | ".join(completeness_parts),
+                    " | ".join(state_parts) if state_parts else "Estado aprendizaje: sin datos",
                 ]
             )
         )
 
         issues = self.repo.get_quality_issues(dataset)
-        self.dataset_status_var.set("⚠ Dataset con problemas" if issues else "✅ Dataset listo")
+        state_error = str(state['last_error'] or '').strip() if state is not None else ''
+        if state_error:
+            self.dataset_status_var.set(f"⚠ Dataset con problemas | último error: {state_error}")
+        else:
+            self.dataset_status_var.set("⚠ Dataset con problemas" if issues else "✅ Dataset listo")
 
         self._fill_distribution(distribution)
         self._fill_text_widget(self.issues_text, issues, empty_message="No se detectaron problemas.")

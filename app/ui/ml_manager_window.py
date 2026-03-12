@@ -10,6 +10,7 @@ from tkinter import messagebox, ttk
 from app.persistence.email_repository import EmailRepository
 from app.persistence.ml_training_repository import MLTrainingRepository
 from app.ml.retraining_service import DatasetRetrainingService
+from app.ml.dataset_state_service import DatasetStateService
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,7 @@ class MLManagerWindow(tk.Toplevel):
         self.repo = MLTrainingRepository(db_connection)
         self.email_repo = EmailRepository(db_connection)
         self.retraining_service = DatasetRetrainingService(db_connection, self.email_repo)
+        self.dataset_state_service = DatasetStateService(db_connection)
 
         self._dataset_selected = ""
         self._example_id_by_item: dict[str, int] = {}
@@ -69,11 +71,12 @@ class MLManagerWindow(tk.Toplevel):
 
         summary_frame = ttk.LabelFrame(wrapper, text="Resumen datasets")
         summary_frame.pack(fill="x")
-        self.dataset_tree = ttk.Treeview(summary_frame, columns=("dataset", "total", "last_updated"), show="headings", height=5)
+        self.dataset_tree = ttk.Treeview(summary_frame, columns=("dataset", "total", "last_updated", "state"), show="headings", height=5)
         for column, label, width in [
-            ("dataset", "dataset", 260),
-            ("total", "total ejemplos", 120),
-            ("last_updated", "última actualización", 220),
+            ("dataset", "dataset", 220),
+            ("total", "total ejemplos", 110),
+            ("last_updated", "última actualización", 190),
+            ("state", "estado aprendizaje", 420),
         ]:
             self.dataset_tree.heading(column, text=label)
             self.dataset_tree.column(column, width=width, anchor="w")
@@ -160,8 +163,23 @@ class MLManagerWindow(tk.Toplevel):
         self.dataset_tree.delete(*self.dataset_tree.get_children())
         self._dataset_by_item.clear()
         for row in self.repo.list_datasets_summary():
-            item = self.dataset_tree.insert("", "end", values=(row["dataset"], row["total"], row["last_updated"] or ""))
-            self._dataset_by_item[item] = str(row["dataset"])
+            dataset = str(row["dataset"])
+            state = self.dataset_state_service.get_state(dataset)
+            if state is None:
+                state_text = "sin estado"
+            else:
+                dirty_text = "dirty" if bool(state["dirty"]) else "clean"
+                pending = int(state["pending_examples_count"] or 0)
+                error = str(state["last_error"] or "").strip()
+                state_text = f"{dirty_text} | pending={pending}"
+                if error:
+                    state_text += f" | error={error[:80]}"
+            item = self.dataset_tree.insert(
+                "",
+                "end",
+                values=(dataset, row["total"], row["last_updated"] or "", state_text),
+            )
+            self._dataset_by_item[item] = dataset
 
     def _fill_filter_values(self) -> None:
         dataset_values = [""] + self.repo.list_distinct_values("dataset")
@@ -227,6 +245,15 @@ class MLManagerWindow(tk.Toplevel):
                 labels_txt.append(f"{row['label']}: {row['total']}{warning}")
             if labels_txt:
                 fragments.append(f"Etiquetas en {dataset_for_labels} → " + ", ".join(labels_txt))
+
+            state = self.dataset_state_service.get_state(dataset_for_labels)
+            if state is not None:
+                fragments.append(
+                    "Estado → "
+                    f"dirty={'sí' if bool(state['dirty']) else 'no'}, "
+                    f"pendientes={int(state['pending_examples_count'] or 0)}, "
+                    f"último_error={str(state['last_error'] or '-')}"
+                )
 
         self.stats_label.configure(text=" | ".join(fragments))
 

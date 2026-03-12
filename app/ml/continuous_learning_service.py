@@ -64,6 +64,8 @@ class ContinuousLearningService:
         incremental_result = {"trained": False, "reason": "not_applicable"}
         if dataset_name == "email_classification":
             incremental_result = self.maybe_incremental_train_email_classification(label=label, input_text=input_text)
+        else:
+            logger.info("Dataset %s marcado dirty sin entrenamiento automático", dataset_name)
 
         full_retrain_result = self.maybe_full_retrain(dataset_name, force=False)
 
@@ -85,6 +87,8 @@ class ContinuousLearningService:
             reason = classifier.last_training_warning or "not_ready_for_incremental"
             if "no entrenado" in reason.lower():
                 logger.warning("Incremental training omitido: modelo no entrenado")
+            else:
+                logger.info("Incremental training omitido: %s", reason)
             return {"trained": False, "reason": reason}
 
         subject = ""
@@ -97,7 +101,7 @@ class ContinuousLearningService:
         trained = classifier.incremental_train_single(subject=subject, sender="", body_text=body, label=str(label or "other"))
         if trained:
             self.dataset_state_service.mark_incremental_success("email_classification")
-            logger.info("Incremental training aplicado")
+            logger.info("Incremental training aplicado correctamente")
             return {"trained": True, "reason": "incremental_ok"}
 
         self.dataset_state_service.mark_error("email_classification", classifier.last_training_warning or "Incremental training failed")
@@ -123,12 +127,15 @@ class ContinuousLearningService:
         distinct_labels = self._count_distinct_labels(dataset_name)
 
         if examples_count < int(rules["min_examples"]):
+            logger.info("Full retrain omitido: ejemplos insuficientes")
             return {"trained": False, "reason": "insufficient_examples"}
         if distinct_labels < int(rules["min_distinct_labels"]):
+            logger.info("Full retrain omitido: etiquetas insuficientes")
             return {"trained": False, "reason": "insufficient_labels"}
 
         if not force:
             if pending < int(rules["pending_examples_threshold"]):
+                logger.info("Full retrain omitido: threshold pendiente no alcanzado")
                 return {"trained": False, "reason": "pending_threshold_not_reached"}
             if self._is_cooldown_active(str(state["last_trained_at"] or ""), int(rules["cooldown_minutes"])):
                 logger.info("Full retrain omitido: cooldown activo")
