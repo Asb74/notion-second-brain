@@ -8,7 +8,7 @@ from pathlib import Path
 MAX_ATTACHMENT_TEXT = 20_000
 MAX_CSV_CHARS = 12_000
 MAX_SPREADSHEET_ROWS = 2_000
-SUPPORTED_ATTACHMENT_EXTENSIONS = {".pdf", ".docx", ".txt", ".csv", ".xlsx", ".xls"}
+SUPPORTED_ATTACHMENT_EXTENSIONS = {".pdf", ".doc", ".docx", ".txt", ".csv", ".xlsx", ".xls"}
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +25,8 @@ def extract_text_from_attachment(file_path: str) -> str:
             return _extract_pdf(path)
         if suffix == ".docx":
             return _extract_docx(path)
+        if suffix == ".doc":
+            return _extract_doc(path)
         if suffix == ".txt":
             return _extract_txt(path)
         if suffix == ".csv":
@@ -75,6 +77,34 @@ def _extract_pdf(path: Path) -> str:
     texts: list[str] = []
 
     try:
+        import pdfplumber  # type: ignore
+
+        with pdfplumber.open(str(path)) as doc:
+            for page in doc.pages:
+                text = str(page.extract_text() or "").strip()
+                if text:
+                    texts.append(text)
+    except Exception:  # noqa: BLE001
+        logger.warning("pdfplumber extraction failed for %s; trying PyPDF2 fallback", path.name)
+
+    if texts:
+        return "\n\n".join(texts)
+
+    try:
+        from PyPDF2 import PdfReader  # type: ignore
+
+        reader = PdfReader(str(path))
+        for page in reader.pages:
+            text = str(page.extract_text() or "").strip()
+            if text:
+                texts.append(text)
+    except Exception:  # noqa: BLE001
+        logger.warning("PyPDF2 extraction failed for %s; trying PyMuPDF fallback", path.name)
+
+    if texts:
+        return "\n\n".join(texts)
+
+    try:
         import fitz  # type: ignore
 
         with fitz.open(path) as doc:
@@ -96,6 +126,12 @@ def _extract_pdf(path: Path) -> str:
         logger.warning("pdfminer extraction failed for %s", path.name)
         return ""
 
+
+
+
+def _extract_doc(path: Path) -> str:
+    logger.warning("DOC extraction not supported for %s; skipping", path.name)
+    return ""
 
 def _extract_docx(path: Path) -> str:
     try:

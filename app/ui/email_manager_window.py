@@ -1761,6 +1761,7 @@ class EmailManagerWindow(tk.Toplevel):
             return
 
         attachments = self._build_email_attachments(gmail_id)
+        logger.info("Attachments detected: %s", attachments)
         useful_attachments = [item for item in attachments if self._is_summarizable_attachment(item)]
         if not useful_attachments:
             messagebox.showinfo("Adjuntos", "No se encontró contenido resumible en los adjuntos")
@@ -1770,6 +1771,7 @@ class EmailManagerWindow(tk.Toplevel):
         prepared_attachments: list[dict[str, str]] = []
         attachment_types: list[str] = []
         for attachment in useful_attachments:
+            logger.info("Attachment candidate: %s", attachment)
             filename = self._extract_attachment_filename(str(attachment.get("filename") or "adjunto")) or "adjunto"
             try:
                 local_path = self.attachment_cache.ensure_downloaded(gmail_id, attachment)
@@ -1788,13 +1790,18 @@ class EmailManagerWindow(tk.Toplevel):
             except Exception as exc:  # noqa: BLE001
                 self.log(f"No se pudo leer adjunto {filename}: {exc}", level="WARNING")
 
+        if not prepared_attachments:
+            messagebox.showinfo("Adjuntos", "No se encontró contenido resumible en los adjuntos")
+            self.log("No se pudieron preparar adjuntos resumibles")
+            return
+
         extracted_text = extract_text_from_attachments(prepared_attachments)
         if len(extracted_text) > MAX_ATTACHMENT_TEXT:
             extracted_text = extracted_text[:MAX_ATTACHMENT_TEXT]
 
         if not extracted_text.strip():
-            messagebox.showinfo("Adjuntos", "No se encontró contenido resumible en los adjuntos")
-            self.log("No se encontró contenido resumible en los adjuntos")
+            messagebox.showinfo("Adjuntos", "No se pudo extraer texto de los adjuntos.")
+            self.log("No se pudo extraer texto de los adjuntos")
             return
 
         self.log("Generating attachment summary")
@@ -1814,24 +1821,50 @@ class EmailManagerWindow(tk.Toplevel):
     @staticmethod
     def _is_summarizable_attachment(attachment: dict[str, str]) -> bool:
         filename = EmailManagerWindow._extract_attachment_filename(str(attachment.get("filename") or ""))
-        if not filename:
+        mime_type = str(attachment.get("mime") or attachment.get("mime_type") or "").strip().lower()
+
+        allowed_ext = SUPPORTED_ATTACHMENT_EXTENSIONS | {".doc"}
+        ignored_image_ext = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
+        image_mime_prefixes = ("image/",)
+
+        if filename:
+            lowered_name = filename.lower()
+            suffix = Path(lowered_name).suffix
+            if lowered_name.startswith("~"):
+                return False
+            if suffix in ignored_image_ext:
+                return False
+
+            ignored_names = {"logo", "logos", "firma", "signature", "signatures"}
+            stem = Path(lowered_name).stem
+            if stem in ignored_names:
+                return False
+
+            ignored_tokens = ("firma", "signature")
+            if any(token in lowered_name for token in ignored_tokens):
+                return False
+
+            if suffix in allowed_ext:
+                return True
+            if mime_type == "application/octet-stream" and suffix in allowed_ext:
+                return True
+
+        if any(mime_type.startswith(prefix) for prefix in image_mime_prefixes):
             return False
 
-        lowered_name = filename.lower()
-        if lowered_name.startswith("~"):
-            return False
+        supported_mimes = {
+            "application/pdf",
+            "application/msword",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.ms-excel",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "text/csv",
+            "text/plain",
+        }
+        if mime_type in supported_mimes:
+            return True
 
-        ignored_names = {"logo", "logos", "firma", "signature", "signatures"}
-        stem = Path(lowered_name).stem
-        if stem in ignored_names:
-            return False
-
-        ignored_tokens = ("firma", "signature")
-        if any(token in lowered_name for token in ignored_tokens):
-            return False
-
-        allowed_ext = SUPPORTED_ATTACHMENT_EXTENSIONS
-        return Path(lowered_name).suffix in allowed_ext
+        return mime_type == "application/octet-stream" and bool(filename and Path(filename.lower()).suffix in allowed_ext)
 
     @staticmethod
     def _extract_attachment_filename(raw_label: str) -> str:
@@ -1839,8 +1872,11 @@ class EmailManagerWindow(tk.Toplevel):
         if not value:
             return ""
 
-        if "[" in value:
+        if "[" in value and "]" in value:
             value = value.split("[", 1)[0]
+
+        value = Path(value.strip()).name
+        value = value.strip().strip('"').strip("'")
 
         return value.strip()
 
