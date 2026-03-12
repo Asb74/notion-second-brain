@@ -9,6 +9,7 @@ MAX_ATTACHMENT_TEXT = 20_000
 MAX_CSV_CHARS = 12_000
 MAX_SPREADSHEET_ROWS = 2_000
 SUPPORTED_ATTACHMENT_EXTENSIONS = {".pdf", ".docx", ".txt", ".csv", ".xlsx", ".xls"}
+PDF_OCR_MIN_TEXT_LENGTH = 50
 
 logger = logging.getLogger(__name__)
 
@@ -120,10 +121,49 @@ def _extract_pdf(path: Path) -> str:
     try:
         from pdfminer.high_level import extract_text  # type: ignore
 
-        return str(extract_text(str(path)) or "").strip()
+        text = str(extract_text(str(path)) or "").strip()
+        if text:
+            texts.append(text)
     except Exception:  # noqa: BLE001
         logger.warning("pdfminer extraction failed for %s", path.name)
+
+    extracted_text = "\n\n".join(texts).strip()
+    if len(extracted_text) >= PDF_OCR_MIN_TEXT_LENGTH:
+        return extracted_text
+
+    logger.info("PDF contained no text, running OCR fallback")
+    ocr_text = _extract_pdf_with_ocr(path)
+    if not ocr_text:
+        return extracted_text
+    if extracted_text:
+        return f"{extracted_text}\n\n{ocr_text}".strip()
+    return ocr_text
+
+
+def _extract_pdf_with_ocr(path: Path) -> str:
+    try:
+        from pdf2image import convert_from_path  # type: ignore
+        import pytesseract  # type: ignore
+    except Exception:  # noqa: BLE001
+        logger.warning("OCR dependencies are not available for %s", path.name)
         return ""
+
+    try:
+        images = convert_from_path(str(path))
+    except Exception:  # noqa: BLE001
+        logger.warning("Failed to convert PDF to images for OCR: %s", path.name)
+        return ""
+
+    texts: list[str] = []
+    for image in images:
+        try:
+            text = str(pytesseract.image_to_string(image) or "").strip()
+        except Exception:  # noqa: BLE001
+            logger.warning("OCR page extraction failed for %s", path.name)
+            continue
+        if text:
+            texts.append(text)
+    return "\n\n".join(texts).strip()
 
 
 def _detect_extension(filename: str, file_path: str) -> str:

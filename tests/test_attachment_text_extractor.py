@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from app.utils import attachment_text_extractor as extractor
 
 
@@ -35,3 +37,103 @@ def test_extract_text_from_attachments_combines_and_truncates(monkeypatch) -> No
 
     assert len(text) == 20
     assert text.startswith("ATTACHMENT: a.txt")
+
+
+def test_extract_pdf_runs_ocr_when_text_is_too_short(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(extractor, "PDF_OCR_MIN_TEXT_LENGTH", 50)
+
+    class _ReaderPage:
+        def extract_text(self) -> str:
+            return ""
+
+    class _Reader:
+        pages = [_ReaderPage()]
+
+    class _PdfPlumberPage:
+        def extract_text(self) -> str:
+            return ""
+
+    class _PdfPlumberDoc:
+        pages = [_PdfPlumberPage()]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    class _FitzDoc:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def __iter__(self):
+            return iter([])
+
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "pdfplumber",
+        type("_PdfPlumberModule", (), {"open": lambda *_args, **_kwargs: _PdfPlumberDoc()})(),
+    )
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "PyPDF2",
+        type("_PyPdf2Module", (), {"PdfReader": lambda *_args, **_kwargs: _Reader()})(),
+    )
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "fitz",
+        type("_FitzModule", (), {"open": lambda *_args, **_kwargs: _FitzDoc()})(),
+    )
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "pdfminer.high_level",
+        type("_PdfMinerModule", (), {"extract_text": lambda *_args, **_kwargs: "tiny"})(),
+    )
+    monkeypatch.setattr(extractor, "_extract_pdf_with_ocr", lambda _path: "ocr extracted text")
+
+    caplog.set_level("INFO")
+    text = extractor._extract_pdf(Path("dummy.pdf"))
+
+    assert text == "tiny\n\nocr extracted text"
+    assert "PDF contained no text, running OCR fallback" in caplog.text
+
+
+def test_extract_pdf_skips_ocr_when_text_is_sufficient(monkeypatch) -> None:
+    monkeypatch.setattr(extractor, "PDF_OCR_MIN_TEXT_LENGTH", 50)
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "pdfplumber",
+        type(
+            "_PdfPlumberModule",
+            (),
+            {
+                "open": lambda *_args, **_kwargs: type(
+                    "_PdfPlumberDoc",
+                    (),
+                    {
+                        "pages": [
+                            type("_PdfPlumberPage", (), {"extract_text": lambda *_a, **_k: "x" * 60})()
+                        ],
+                        "__enter__": lambda self: self,
+                        "__exit__": lambda self, *_args: None,
+                    },
+                )()
+            },
+        )(),
+    )
+
+    called = {"ocr": False}
+
+    def _ocr(_path):
+        called["ocr"] = True
+        return "ocr"
+
+    monkeypatch.setattr(extractor, "_extract_pdf_with_ocr", _ocr)
+
+    text = extractor._extract_pdf(Path("dummy.pdf"))
+
+    assert len(text) >= 60
+    assert called["ocr"] is False
