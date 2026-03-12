@@ -12,6 +12,16 @@ from app.services.voice_dictation import VoiceDictationError, VoiceDictationServ
 logger = logging.getLogger(__name__)
 
 
+def _sanitize_tk_color(color: str | None, fallback: str = "#000000") -> str:
+    """Return a Tkinter-safe color value for known invalid system color aliases."""
+    value = str(color or "").strip()
+    if not value:
+        return fallback
+    if value.lower() == "windowtext":
+        return fallback
+    return value
+
+
 def _es_widget_texto(widget: tk.Widget | object) -> bool:
     return isinstance(widget, (tk.Entry, ttk.Entry, tk.Text, ScrolledText)) or all(
         hasattr(widget, attr) for attr in ("insert",)
@@ -25,11 +35,15 @@ def attach_dictation(widget: tk.Widget, parent_frame: tk.Misc) -> ttk.Frame:
 
     controls = ttk.Frame(parent_frame)
     style = ttk.Style(controls)
-    style.configure("DictationRecording.TButton", foreground="#ffffff", background="#dc2626")
+    style.configure(
+        "DictationRecording.TButton",
+        foreground=_sanitize_tk_color("#ffffff"),
+        background=_sanitize_tk_color("#dc2626"),
+    )
 
     mic_button = ttk.Button(controls, text="🎙", width=3)
     mic_button.pack(side="left")
-    indicator = ttk.Label(controls, text="", foreground="#B91C1C")
+    indicator = ttk.Label(controls, text="", foreground=_sanitize_tk_color("#B91C1C"))
     indicator.pack(side="left", padx=(6, 0))
 
     def _set_status(text: str) -> None:
