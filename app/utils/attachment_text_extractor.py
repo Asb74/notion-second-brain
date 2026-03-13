@@ -17,6 +17,7 @@ MAX_CSV_CHARS = 12_000
 MAX_SPREADSHEET_ROWS = 2_000
 SUPPORTED_ATTACHMENT_EXTENSIONS = {".pdf", ".docx", ".txt", ".csv", ".xlsx", ".xls"}
 PDF_OCR_MIN_TEXT_LENGTH = 50
+POPPLER_PATH = r"C:\poppler\Library\bin"
 
 logger = logging.getLogger(__name__)
 
@@ -175,7 +176,7 @@ def _extract_pdf(path: Path) -> str:
 
 def _extract_pdf_with_ocr(path: Path) -> str:
     try:
-        from pdf2image import convert_from_path  # type: ignore
+        from pdf2image import convert_from_bytes  # type: ignore
     except Exception:  # noqa: BLE001
         logger.warning("OCR dependencies are not available for %s", path.name)
         return ""
@@ -187,9 +188,10 @@ def _extract_pdf_with_ocr(path: Path) -> str:
     logger.info("OCR fallback started")
 
     try:
-        images = convert_from_path(str(path))
-    except Exception:  # noqa: BLE001
-        logger.warning("Failed to convert PDF to images for OCR: %s", path.name)
+        pdf_bytes = path.read_bytes()
+        images = convert_from_bytes(pdf_bytes, dpi=300, poppler_path=POPPLER_PATH)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to convert PDF to images for OCR: %s", exc)
         return ""
 
     texts: list[str] = []
