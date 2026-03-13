@@ -59,6 +59,22 @@ def _sanitize_tk_color(color: str | None, fallback: str = "#000000") -> str:
     return value
 
 
+def _sanitize_html_colors(html_content: str) -> str:
+    """Replace Tk-unsupported HTML system color names with safe equivalents."""
+    sanitized = html_content or ""
+    replacements = {
+        "windowtext": "black",
+        "window": "white",
+        "buttontext": "black",
+        "buttonface": "lightgray",
+    }
+
+    for source, target in replacements.items():
+        sanitized = re.sub(rf"\\b{re.escape(source)}\\b", target, sanitized, flags=re.IGNORECASE)
+
+    return sanitized
+
+
 ATTACHMENT_SUMMARY_REQUEST = (
     "Analiza el contenido consolidado de adjuntos y devuelve un resumen accionable en español.\n"
     "Reglas:\n"
@@ -1258,6 +1274,8 @@ class EmailManagerWindow(tk.Toplevel):
             clean_text = clean_outlook_content(text_body)
             clean_text = html.escape(clean_text)
             preview_content = f"<pre>{clean_text}</pre>"
+
+        preview_content = _sanitize_html_colors(preview_content)
 
         if self.preview_html is not None:
             self.preview_html.set_html(preview_content)
