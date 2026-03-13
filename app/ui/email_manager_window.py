@@ -962,6 +962,9 @@ class EmailManagerWindow(tk.Toplevel):
             if row is None:
                 skipped_count += 1
                 continue
+            if (row["status"] or "") == "converted_to_event":
+                skipped_count += 1
+                continue
 
             prepared_context = self._get_prepared_context_for_gmail_id(gmail_id)
             if prepared_context is None:
@@ -998,6 +1001,9 @@ class EmailManagerWindow(tk.Toplevel):
             if note_id is None:
                 skipped_count += 1
                 continue
+
+            self.email_repo.update_status(gmail_id, "converted_to_event")
+            logger.info(f"Email {gmail_id} marked as converted_to_event")
 
             self.log("Evento creado desde email")
             if merged_content:
