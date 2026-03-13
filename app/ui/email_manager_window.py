@@ -227,6 +227,7 @@ class EmailManagerWindow(tk.Toplevel):
         default_label = self._categories[0]["display_name"] if self._categories else "Otros"
         self._tab_to_types = {item["display_name"]: [item["name"]] for item in self._categories}
         self._move_label_to_type = {item["display_name"]: item["name"] for item in self._categories}
+        self._category_counts_by_type: dict[str, int] = {}
         self.move_target_var = tk.StringVar(value=default_label)
         self.columns = ("gmail_id", "subject", "real_sender", "type", "received_at", "status")
         self.column_titles = {
@@ -506,13 +507,24 @@ class EmailManagerWindow(tk.Toplevel):
         if self.move_target_var.get() not in labels and labels:
             self.move_target_var.set(labels[0])
 
+    def _tab_label_with_count(self, category: dict[str, object]) -> str:
+        category_name = str(category["name"])
+        display_name = str(category["display_name"])
+        count = self._category_counts_by_type.get(category_name, 0)
+        return f"{display_name} ({count})"
+
+    def _refresh_tab_counts(self) -> None:
+        self._category_counts_by_type = self.email_repo.get_new_email_counts_by_type()
+        for tab_index, category in enumerate(self._categories):
+            self.notebook.tab(tab_index, text=self._tab_label_with_count(category))
+
     def _rebuild_tabs(self) -> None:
         labels = [item["display_name"] for item in self._categories]
         current = self._current_tab if self._current_tab in labels else (labels[0] if labels else "")
         for tab_id in self.notebook.tabs():
             self.notebook.forget(tab_id)
-        for tab_name in labels:
-            self.notebook.add(ttk.Frame(self.notebook), text=tab_name)
+        for category in self._categories:
+            self.notebook.add(ttk.Frame(self.notebook), text=self._tab_label_with_count(category))
         if current and labels:
             tab_index = labels.index(current)
             self.notebook.select(tab_index)
@@ -528,7 +540,8 @@ class EmailManagerWindow(tk.Toplevel):
         except tk.TclError:
             return
         self.notebook.select(tab_index)
-        self._current_tab = self.notebook.tab(self.notebook.select(), "text")
+        if tab_index < len(self._categories):
+            self._current_tab = str(self._categories[tab_index]["display_name"])
         category = self._current_category()
         if not category or bool(category["is_base"]):
             return
@@ -591,7 +604,9 @@ class EmailManagerWindow(tk.Toplevel):
             messagebox.showwarning("Atención", str(exc))
 
     def _on_tab_changed(self, _event: tk.Event) -> None:
-        self._current_tab = self.notebook.tab(self.notebook.select(), "text")
+        selected_index = self.notebook.index(self.notebook.select())
+        if selected_index < len(self._categories):
+            self._current_tab = str(self._categories[selected_index]["display_name"])
         self.refresh_emails()
 
     def _clear_filters(self) -> None:
@@ -687,6 +702,7 @@ class EmailManagerWindow(tk.Toplevel):
             self._rows_by_id[str(row["gmail_id"])] = normalized
 
         self.excel_filter.apply()
+        self._refresh_tab_counts()
         self.classifier.examples_count = self.email_repo.count_labeled_examples()
         self.model_var.set(self.classifier.model_status())
         self.status_var.set(f"Correos cargados ({self._current_tab}): {len(rows)}")

@@ -179,6 +179,17 @@ class EmailRepository:
             tuple(types),
         ).fetchall()
 
+    def get_new_email_counts_by_type(self) -> dict[str, int]:
+        rows = self.conn.execute(
+            """
+            SELECT type, COUNT(*) AS total
+            FROM emails
+            WHERE status = 'new'
+            GROUP BY type
+            """
+        ).fetchall()
+        return {str(row["type"] or "other"): int(row["total"] or 0) for row in rows}
+
     def get_email_content(self, gmail_id: str) -> sqlite3.Row | None:
         return self.conn.execute(
             """
