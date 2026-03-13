@@ -546,3 +546,81 @@ def test_is_summarizable_attachment_rejects_images() -> None:
     }
 
     assert EmailManagerWindow._is_summarizable_attachment(attachment) is False
+
+def test_build_prepared_context_content_respects_order_and_omits_empty_blocks() -> None:
+    merged = EmailManagerWindow._build_prepared_context_content(
+        email_summary="• resumen email",
+        attachment_summary="• resumen adjuntos",
+        email_original="texto original",
+    )
+
+    assert merged.index("RESUMEN DEL EMAIL") < merged.index("RESUMEN DE ADJUNTOS") < merged.index("EMAIL ORIGINAL")
+    assert "• resumen email" in merged
+    assert "• resumen adjuntos" in merged
+    assert merged.endswith("texto original")
+
+    merged_without_attachment = EmailManagerWindow._build_prepared_context_content(
+        email_summary="• resumen email",
+        attachment_summary="",
+        email_original="texto original",
+    )
+    assert "RESUMEN DE ADJUNTOS" not in merged_without_attachment
+
+
+def test_build_event_body_from_prepared_context_prioritizes_summary_when_truncating() -> None:
+    merged = (
+        "RESUMEN DEL EMAIL\n-----------------\n• punto 1\n\n"
+        "RESUMEN DE ADJUNTOS\n-------------------\n• adjunto\n\n"
+        "EMAIL ORIGINAL\n--------------\n" + ("x" * 5000)
+    )
+
+    compact = EmailManagerWindow._build_event_body_from_prepared_context(merged)
+
+    assert len(compact) <= 3500
+    assert "RESUMEN DEL EMAIL" in compact
+    assert "RESUMEN DE ADJUNTOS" in compact
+    assert "EMAIL ORIGINAL" in compact
+
+
+def test_build_note_request_prioritizes_prepared_context_over_quick_summary() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        CREATE TABLE emails (
+            gmail_id TEXT PRIMARY KEY,
+            subject TEXT,
+            sender TEXT,
+            real_sender TEXT,
+            original_from TEXT,
+            received_at TEXT,
+            body_text TEXT,
+            body_html TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO emails (gmail_id, subject, sender, real_sender, original_from, received_at, body_text, body_html)
+        VALUES ('id-10', 'Asunto original', 'sender@example.com', 'real@example.com', '', '2024-01-01T00:00:00+00:00', 'hola', '')
+        """
+    )
+    row = conn.execute("SELECT * FROM emails WHERE gmail_id = 'id-10'").fetchone()
+    assert row is not None
+
+    window = EmailManagerWindow.__new__(EmailManagerWindow)
+    window._compose_note_text = lambda subject, sender, body_text, body_html: f"{subject}|{sender}|{body_text}|{body_html}"
+    window._resolve_default_value = lambda *_args: "valor"
+    window._resolve_note_date = lambda _value: "2024-01-01"
+
+    request = EmailManagerWindow._build_note_request_from_row(
+        window,
+        row,
+        "Título",
+        summary_text="• quick",
+        include_summary=True,
+        prepared_merged_content="RESUMEN DEL EMAIL\n---\ncontenido",
+    )
+
+    assert "RESUMEN DEL EMAIL" in request.raw_text
+    assert "RESUMEN RÁPIDO" not in request.raw_text

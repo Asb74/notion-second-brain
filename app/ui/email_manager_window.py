@@ -257,6 +257,7 @@ class EmailManagerWindow(tk.Toplevel):
         self.detected_persona_var = tk.StringVar(value="")
         self.detected_accion_var = tk.StringVar(value="")
         self._pending_note_id_by_gmail_id: dict[str, int] = {}
+        self._prepared_context_by_gmail_id: dict[str, dict[str, str]] = {}
         self.calendar_refresh_callback: Callable[[], None] | None = None
 
         self._build_layout()
@@ -437,7 +438,7 @@ class EmailManagerWindow(tk.Toplevel):
         ttk.Label(entities_frame, text="Acción:").grid(row=3, column=0, sticky="w", padx=4, pady=2)
         ttk.Label(entities_frame, textvariable=self.detected_accion_var).grid(row=3, column=1, sticky="w", padx=4, pady=2)
 
-        response_frame = ttk.LabelFrame(lower_panel, text="Respuesta")
+        response_frame = ttk.LabelFrame(lower_panel, text="Respuesta / Resumen / Contenido preparado")
         self.response_text = tk.Text(response_frame, wrap="word", height=12)
         response_scroll = ttk.Scrollbar(response_frame, orient="vertical", command=self.response_text.yview)
         self.response_text.configure(yscrollcommand=response_scroll.set)
@@ -453,6 +454,7 @@ class EmailManagerWindow(tk.Toplevel):
         ttk.Button(response_actions, text="Reenviar", command=self._forward_email).pack(side="left", padx=(6, 0))
         ttk.Button(response_actions, text="Resumir", command=self._summarize_email).pack(side="left", padx=(6, 0))
         ttk.Button(response_actions, text="Resumir adjuntos", command=self._summarize_attachments).pack(side="left", padx=(6, 0))
+        ttk.Button(response_actions, text="Preparar contexto", command=self._prepare_context_for_selected_email).pack(side="left", padx=(6, 0))
 
         lower_panel.add(preview_frame, weight=1)
         lower_panel.add(response_frame, weight=1)
@@ -891,12 +893,23 @@ class EmailManagerWindow(tk.Toplevel):
                 continue
 
             try:
+                prepared_context = self._get_prepared_context_for_gmail_id(gmail_id)
+                if prepared_context is None:
+                    prepared_context = self._prompt_prepare_context_if_missing(gmail_id, row)
+                merged_content = (prepared_context or {}).get("merged_content", "").strip()
+
                 title = self._prompt_note_title(subject)
                 if title is None:
                     skipped_count += 1
                     continue
 
-                req = self._build_note_request_from_row(row, title, summary_text=summary_text, include_summary=include_summary)
+                req = self._build_note_request_from_row(
+                    row,
+                    title,
+                    summary_text=summary_text,
+                    include_summary=include_summary,
+                    prepared_merged_content=merged_content,
+                )
                 self.system_log(f"Analizando nota para email {gmail_id}")
                 note_id, _message = self.note_service.create_note(req)
                 if note_id is None:
@@ -908,6 +921,10 @@ class EmailManagerWindow(tk.Toplevel):
                 self.system_log(f"Tareas detectadas: {tasks_count}")
                 self.system_log(f"Tareas creadas: {tasks_count}")
                 self.email_repo.update_status(gmail_id, "converted_to_note")
+                if merged_content:
+                    self.system_log("Creando nota desde contexto preparado")
+                else:
+                    self.system_log("No existe contexto preparado; usando flujo actual")
                 if include_summary:
                     self.log("Resumen integrado en la nota creada desde email")
                 created_count += 1
@@ -946,12 +963,22 @@ class EmailManagerWindow(tk.Toplevel):
                 skipped_count += 1
                 continue
 
+            prepared_context = self._get_prepared_context_for_gmail_id(gmail_id)
+            if prepared_context is None:
+                prepared_context = self._prompt_prepare_context_if_missing(gmail_id, row)
+            merged_content = (prepared_context or {}).get("merged_content", "").strip()
+
             payload = self._prompt_event_creation_data(row)
             if payload is None:
                 skipped_count += 1
                 continue
 
-            event_body = self._compose_event_body_from_email(row, summary_text, include_summary)
+            event_body = self._compose_event_body_from_email(
+                row,
+                summary_text,
+                include_summary,
+                merged_content=merged_content,
+            )
             event_request = NoteCreateRequest(
                 title=payload["title"],
                 raw_text=event_body,
@@ -973,6 +1000,10 @@ class EmailManagerWindow(tk.Toplevel):
                 continue
 
             self.log("Evento creado desde email")
+            if merged_content:
+                self.system_log("Creando evento desde contexto preparado")
+            else:
+                self.system_log("No existe contexto preparado; usando flujo actual")
             if include_summary and summary_text:
                 self.log("Resumen rápido integrado en evento")
             created_count += 1
@@ -1058,7 +1089,15 @@ class EmailManagerWindow(tk.Toplevel):
         self.wait_window(dialog)
         return result or None
 
-    def _compose_event_body_from_email(self, row: sqlite3.Row, summary_text: str, include_summary: bool) -> str:
+    def _compose_event_body_from_email(
+        self,
+        row: sqlite3.Row,
+        summary_text: str,
+        include_summary: bool,
+        merged_content: str = "",
+    ) -> str:
+        if merged_content.strip():
+            return self._build_event_body_from_prepared_context(merged_content)
         email_text = self._get_email_text_for_note(row)
         if include_summary and summary_text:
             return (
@@ -1073,6 +1112,34 @@ class EmailManagerWindow(tk.Toplevel):
             f"ASUNTO DEL EMAIL\n--------------\n{(row['subject'] or '').strip()}\n\n"
             f"EMAIL ORIGINAL\n--------------\n{email_text.strip()}"
         ).strip()
+
+    @staticmethod
+    def _build_event_body_from_prepared_context(merged_content: str) -> str:
+        text = (merged_content or "").strip()
+        if not text:
+            return ""
+
+        max_chars = 3500
+        if len(text) <= max_chars:
+            return text
+
+        blocks = [block.strip() for block in text.split("\n\n") if block.strip()]
+        compact_sections: list[str] = []
+        original_block = ""
+        for block in blocks:
+            if block.upper().startswith("EMAIL ORIGINAL"):
+                original_block = block
+                continue
+            compact_sections.append(block)
+
+        compact = "\n\n".join(compact_sections).strip()
+        remaining = max_chars - len(compact) - 2
+        if remaining > 80 and original_block:
+            compact_original = original_block[:remaining].rstrip()
+            if len(compact_original) < len(original_block):
+                compact_original = f"{compact_original}\n[...]"
+            compact = f"{compact}\n\n{compact_original}".strip()
+        return compact[:max_chars].strip()
 
     def _suggest_event_date_from_email(self, row: sqlite3.Row) -> datetime.date:
         email_text = "\n".join(
@@ -1148,11 +1215,12 @@ class EmailManagerWindow(tk.Toplevel):
         title: str | None = None,
         summary_text: str | None = None,
         include_summary: bool = False,
+        prepared_merged_content: str = "",
     ) -> NoteCreateRequest:
         sender_for_note = row["original_from"] or row["real_sender"] or row["sender"] or ""
         note_title = (title if title is not None else (row["subject"] or "")).strip()
-        email_text = self._get_email_text_for_note(row)
-        if include_summary and summary_text:
+        email_text = prepared_merged_content.strip() or self._get_email_text_for_note(row)
+        if not prepared_merged_content.strip() and include_summary and summary_text:
             email_text = self._compose_note_body_with_summary(email_text, summary_text)
         return NoteCreateRequest(
             title=note_title,
@@ -1749,7 +1817,7 @@ class EmailManagerWindow(tk.Toplevel):
 
         preview_body = self._html_to_text(self._current_html_content).strip() if self._current_html_content else ""
         if not preview_body:
-            preview_body = (row.get("body_text") or "").strip()
+            preview_body = self._get_email_original_text(row)
         if not preview_body:
             messagebox.showwarning("Atención", "El correo seleccionado no tiene contenido para resumir.")
             return
@@ -2080,6 +2148,7 @@ class EmailManagerWindow(tk.Toplevel):
         def confirm_summary() -> None:
             self.response_text.delete("1.0", "end")
             self.response_text.insert("1.0", f"Resumen rápido:\n\n{ai_summary}\n")
+            self._update_prepared_context_summary(row=row, summary_source=summary_source, summary_value=ai_summary)
             self._save_email_summary_feedback_async(
                 row=row,
                 output_text=ai_summary,
@@ -2097,6 +2166,7 @@ class EmailManagerWindow(tk.Toplevel):
                 return
             self.response_text.delete("1.0", "end")
             self.response_text.insert("1.0", f"Resumen rápido:\n\n{edited_summary}\n")
+            self._update_prepared_context_summary(row=row, summary_source=summary_source, summary_value=edited_summary)
             self._save_email_summary_feedback_async(
                 row=row,
                 output_text=edited_summary,
@@ -2419,4 +2489,195 @@ class EmailManagerWindow(tk.Toplevel):
         ).strip()
 
     def _get_email_text_for_note(self, row: sqlite3.Row) -> str:
-        return (row["body_text"] or "").strip() or self._html_to_text((row["body_html"] or "").strip())
+        return self._get_email_original_text(row)
+
+    def _prepare_context_for_selected_email(self) -> None:
+        selection = self.tree.selection()
+        if len(selection) != 1:
+            messagebox.showwarning("Atención", "Selecciona un solo correo para preparar contexto.")
+            return
+
+        row = self._rows_by_id.get(str(selection[0]))
+        if not row:
+            return
+        merged_content = self._prepare_context_for_row(row)
+        if not merged_content:
+            messagebox.showwarning("Atención", "No se pudo preparar contexto para el correo seleccionado.")
+            return
+        self.response_text.delete("1.0", "end")
+        self.response_text.insert("1.0", merged_content)
+
+    def _prepare_context_for_row(self, row: sqlite3.Row | dict[str, str]) -> str:
+        gmail_id = str((row.get("gmail_id") if hasattr(row, "get") else row["gmail_id"]) or "").strip()
+        if not gmail_id:
+            return ""
+
+        self.system_log(f"Preparando contexto para email: {gmail_id}")
+        context = self._get_or_create_prepared_context(gmail_id)
+
+        email_summary = context.get("email_summary", "").strip()
+        if not email_summary:
+            email_summary = self._generate_email_summary_for_context(row)
+            if email_summary:
+                self.system_log("Resumen de email generado para contexto")
+
+        attachment_summary = context.get("attachment_summary", "").strip()
+        if not attachment_summary:
+            attachment_summary = self._generate_attachment_summary_for_context(row)
+            if attachment_summary:
+                self.system_log("Resumen de adjuntos generado para contexto")
+
+        email_original = self._get_email_original_text(row)
+        merged_content = self._build_prepared_context_content(
+            email_summary=email_summary,
+            attachment_summary=attachment_summary,
+            email_original=email_original,
+        )
+
+        self._prepared_context_by_gmail_id[gmail_id] = {
+            "email_summary": email_summary,
+            "attachment_summary": attachment_summary,
+            "email_original": email_original,
+            "merged_content": merged_content,
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+        self.system_log("Contexto preparado actualizado")
+        return merged_content
+
+    @staticmethod
+    def _build_prepared_context_content(
+        email_summary: str = "",
+        attachment_summary: str = "",
+        email_original: str = "",
+    ) -> str:
+        sections: list[str] = []
+        if email_summary.strip():
+            sections.append(f"RESUMEN DEL EMAIL\n-----------------\n{email_summary.strip()}")
+        if attachment_summary.strip():
+            sections.append(f"RESUMEN DE ADJUNTOS\n-------------------\n{attachment_summary.strip()}")
+        if email_original.strip():
+            sections.append(f"EMAIL ORIGINAL\n--------------\n{email_original.strip()}")
+        return "\n\n".join(sections).strip()
+
+    def _get_or_create_prepared_context(self, gmail_id: str) -> dict[str, str]:
+        context = self._prepared_context_by_gmail_id.get(gmail_id)
+        if context is None:
+            context = {
+                "email_summary": "",
+                "attachment_summary": "",
+                "email_original": "",
+                "merged_content": "",
+                "updated_at": "",
+            }
+            self._prepared_context_by_gmail_id[gmail_id] = context
+        return context
+
+    def _get_prepared_context_for_gmail_id(self, gmail_id: str) -> dict[str, str] | None:
+        context = self._prepared_context_by_gmail_id.get(str(gmail_id or "").strip())
+        if not context:
+            return None
+        if not (context.get("merged_content") or "").strip():
+            return None
+        return context
+
+    def _prompt_prepare_context_if_missing(self, gmail_id: str, row: sqlite3.Row) -> dict[str, str] | None:
+        context = self._get_prepared_context_for_gmail_id(gmail_id)
+        if context is not None:
+            return context
+
+        should_prepare = messagebox.askyesno(
+            "Preparar contexto",
+            "¿Deseas preparar automáticamente el contexto (resumen email + adjuntos + original) antes de continuar?",
+        )
+        if not should_prepare:
+            self.system_log("No existe contexto preparado; usando flujo actual")
+            return None
+        self._prepare_context_for_row(row)
+        return self._get_prepared_context_for_gmail_id(gmail_id)
+
+    def _get_email_original_text(self, row: sqlite3.Row | dict[str, str]) -> str:
+        body_text = str(row.get("body_text") if hasattr(row, "get") else row["body_text"] or "").strip()
+        if body_text:
+            return body_text
+        body_html = str(row.get("body_html") if hasattr(row, "get") else row["body_html"] or "").strip()
+        return self._html_to_text(body_html)
+
+    def _generate_email_summary_for_context(self, row: sqlite3.Row | dict[str, str]) -> str:
+        preview_body = self._get_email_original_text(row)
+        if not preview_body:
+            return ""
+        prompt = (
+            "Analiza el siguiente email y extrae únicamente las ideas principales.\n\n"
+            "Devuelve un resumen visual para lectura rápida.\n\n"
+            "Reglas:\n"
+            "- máximo 6 líneas\n"
+            "- cada línea una idea independiente\n"
+            "- usar viñetas (•)\n"
+            "- frases muy cortas\n"
+            "- no incluir saludos ni despedidas\n"
+            "- no copiar frases completas del email\n"
+            "- lenguaje claro y directo\n\n"
+            "El objetivo es que el contenido del email se entienda en menos de 5 segundos.\n\n"
+            f"Email:\n{preview_body}"
+        )
+        try:
+            client = build_openai_client()
+            response = client.responses.create(model="gpt-4.1-mini", input=prompt)
+            return str(response.output_text or "").strip()
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"No se pudo generar resumen de email para contexto: {exc}", level="WARNING")
+            return ""
+
+    def _generate_attachment_summary_for_context(self, row: sqlite3.Row | dict[str, str]) -> str:
+        gmail_id = str((row.get("gmail_id") if hasattr(row, "get") else row["gmail_id"]) or "").strip()
+        if not gmail_id:
+            return ""
+        attachments = self._build_email_attachments(gmail_id)
+        useful_attachments = [item for item in attachments if self._is_summarizable_attachment(item)]
+        if not useful_attachments:
+            return ""
+
+        prepared_attachments: list[dict[str, str]] = []
+        for attachment in useful_attachments:
+            filename = self._extract_attachment_filename(str(attachment.get("filename") or "adjunto")) or "adjunto"
+            try:
+                local_path = self.attachment_cache.ensure_downloaded(gmail_id, attachment)
+                attachment["local_path"] = local_path
+                prepared_attachments.append(
+                    {
+                        "file_path": local_path,
+                        "local_path": local_path,
+                        "filename": filename,
+                        "mime_type": str(attachment.get("mime") or attachment.get("mime_type") or ""),
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.log(f"No se pudo leer adjunto {filename}: {exc}", level="WARNING")
+
+        if not prepared_attachments:
+            return ""
+        extracted_text = extract_text_from_attachments(prepared_attachments)
+        if len(extracted_text) > MAX_ATTACHMENT_TEXT:
+            extracted_text = extracted_text[:MAX_ATTACHMENT_TEXT]
+        if not extracted_text.strip():
+            return ""
+        return self._summarize_attachments_content(row=dict(row), extracted_text=extracted_text)
+
+    def _update_prepared_context_summary(self, row: dict[str, str], summary_source: str, summary_value: str) -> None:
+        gmail_id = str(row.get("gmail_id") or "").strip()
+        if not gmail_id:
+            return
+        context = self._get_or_create_prepared_context(gmail_id)
+        if summary_source == "attachment":
+            context["attachment_summary"] = (summary_value or "").strip()
+        else:
+            context["email_summary"] = (summary_value or "").strip()
+        email_original = context.get("email_original") or self._get_email_original_text(row)
+        context["email_original"] = email_original
+        context["merged_content"] = self._build_prepared_context_content(
+            email_summary=context.get("email_summary", ""),
+            attachment_summary=context.get("attachment_summary", ""),
+            email_original=email_original,
+        )
+        context["updated_at"] = datetime.utcnow().isoformat()
+        self.system_log("Contexto preparado actualizado")
