@@ -837,7 +837,7 @@ class EmailManagerWindow(tk.Toplevel):
                     input_text=f"{subject}\n{body_text}".strip(),
                     output_text=target_type,
                     metadata={
-                        "email_id": str(row.get("gmail_id", "") or "").strip(),
+                        "email_id": str(row["gmail_id"]) if "gmail_id" in row.keys() else "",
                         "event": "user_category_change",
                     },
                 )
