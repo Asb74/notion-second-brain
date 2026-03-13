@@ -7,11 +7,11 @@ from typing import Sequence
 
 try:
     import joblib
-    from sklearn.feature_extraction.text import HashingVectorizer
+    from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.linear_model import SGDClassifier
 except Exception:  # noqa: BLE001
     joblib = None
-    HashingVectorizer = None
+    TfidfVectorizer = None
     SGDClassifier = None
 
 
@@ -22,20 +22,23 @@ class MLEmailModel:
 
     def __init__(self, model_path: str | Path):
         self.model_path = Path(model_path)
-        self.is_available = bool(joblib and HashingVectorizer and SGDClassifier)
+        self.is_available = bool(joblib and TfidfVectorizer and SGDClassifier)
         self.is_trained = False
         self.last_warning: str | None = None
-        if self.is_available:
-            self.vectorizer = HashingVectorizer(
-                n_features=2**18,
-                alternate_sign=False,
-                norm="l2",
-                ngram_range=(1, 2),
-            )
+        self.vectorizer = None
+        self.classifier = None
+
+    def _ensure_model_components(self) -> bool:
+        if not self.is_available:
+            return False
+        if self.classifier is None:
             self.classifier = SGDClassifier(loss="log_loss", random_state=42)
+        if self.vectorizer is None:
+            self.vectorizer = TfidfVectorizer(ngram_range=(1, 2))
+        return True
 
     def fit(self, texts: Sequence[str], labels: Sequence[str], classes: Sequence[str] | None = None) -> None:
-        if not self.is_available or not texts:
+        if not texts or not self._ensure_model_components():
             self.is_trained = False
             return
         unique_labels = {str(label) for label in labels}
@@ -43,14 +46,13 @@ class MLEmailModel:
             self.last_warning = "Entrenamiento insuficiente: solo una categoría detectada."
             return
 
-        features = self.vectorizer.transform(texts)
-        model_classes = list(classes or self.DEFAULT_CLASSES)
-        self.classifier.partial_fit(features, labels, classes=model_classes)
+        features = self.vectorizer.fit_transform(texts)
+        self.classifier.fit(features, labels)
         self.is_trained = True
         self.last_warning = None
 
     def partial_fit(self, texts: Sequence[str], labels: Sequence[str], classes: Sequence[str] | None = None) -> None:
-        if not self.is_available or not texts:
+        if not texts or not self._ensure_model_components():
             return
 
         unique_labels = {str(label) for label in labels}
@@ -58,7 +60,8 @@ class MLEmailModel:
             self.last_warning = "Entrenamiento insuficiente: solo una categoría detectada."
             return
 
-        features = self.vectorizer.transform(texts)
+        vectorizer_ready = hasattr(self.vectorizer, "vocabulary_") and bool(self.vectorizer.vocabulary_)
+        features = self.vectorizer.transform(texts) if vectorizer_ready else self.vectorizer.fit_transform(texts)
         model_classes = list(classes or self.DEFAULT_CLASSES)
         if self.is_trained:
             self.classifier.partial_fit(features, labels)
@@ -70,11 +73,15 @@ class MLEmailModel:
     def predict(self, text: str) -> str | None:
         if not self.is_available or not self.is_trained:
             return None
+        if self.vectorizer is None or self.classifier is None:
+            return None
         features = self.vectorizer.transform([text])
         return str(self.classifier.predict(features)[0])
 
     def predict_with_confidence(self, text: str) -> tuple[str | None, float]:
         if not self.is_available or not self.is_trained:
+            return None, 0.0
+        if self.vectorizer is None or self.classifier is None:
             return None, 0.0
 
         features = self.vectorizer.transform([text])
@@ -87,16 +94,22 @@ class MLEmailModel:
         return prediction, confidence
 
     def save(self) -> None:
-        if not self.is_available:
+        if not self.is_available or self.classifier is None or self.vectorizer is None:
             return
         self.model_path.parent.mkdir(parents=True, exist_ok=True)
-        joblib.dump({"classifier": self.classifier, "is_trained": self.is_trained}, self.model_path)
+        joblib.dump(
+            {"classifier": self.classifier, "vectorizer": self.vectorizer, "is_trained": self.is_trained},
+            self.model_path,
+        )
 
     def load(self) -> bool:
         if not self.is_available or not self.model_path.exists():
             return False
         payload = joblib.load(self.model_path)
         self.classifier = payload["classifier"]
+        self.vectorizer = payload.get("vectorizer")
+        if self.vectorizer is None:
+            self.vectorizer = TfidfVectorizer(ngram_range=(1, 2))
         self.is_trained = bool(payload.get("is_trained", True))
         return self.is_trained
 
