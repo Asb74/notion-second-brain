@@ -110,6 +110,19 @@ class Database:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS refinement_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    dataset TEXT NOT NULL,
+                    input_original TEXT NOT NULL,
+                    output_original TEXT NOT NULL,
+                    user_instruction TEXT NOT NULL,
+                    refined_output TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS actions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     note_id INTEGER NOT NULL,

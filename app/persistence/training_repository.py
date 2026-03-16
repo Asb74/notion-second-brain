@@ -40,7 +40,70 @@ class TrainingRepository:
             )
             """
         )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS refinement_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dataset TEXT NOT NULL,
+                input_original TEXT NOT NULL,
+                output_original TEXT NOT NULL,
+                user_instruction TEXT NOT NULL,
+                refined_output TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
         self.conn.commit()
+
+    def save_refinement_history(
+        self,
+        *,
+        dataset: str,
+        input_original: str,
+        output_original: str,
+        user_instruction: str,
+        refined_output: str,
+    ) -> int:
+        normalized_dataset = (dataset or "").strip()
+        if normalized_dataset not in {"email_response", "email_summary"}:
+            raise ValueError(f"Dataset de refinamiento no soportado: {normalized_dataset}")
+
+        cursor = self.conn.execute(
+            """
+            INSERT INTO refinement_history (
+                dataset,
+                input_original,
+                output_original,
+                user_instruction,
+                refined_output
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                normalized_dataset,
+                (input_original or "").strip(),
+                (output_original or "").strip(),
+                (user_instruction or "").strip(),
+                (refined_output or "").strip(),
+            ),
+        )
+        self.conn.commit()
+        return int(cursor.lastrowid)
+
+    def list_refinement_history(self, dataset: str, input_original: str, limit: int = 10) -> list[sqlite3.Row]:
+        max_items = max(0, int(limit))
+        if max_items == 0:
+            return []
+        return self.conn.execute(
+            """
+            SELECT id, dataset, input_original, output_original, user_instruction, refined_output, created_at
+            FROM refinement_history
+            WHERE dataset = ? AND input_original = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            ((dataset or "").strip(), (input_original or "").strip(), max_items),
+        ).fetchall()
 
     def save_training_example(
         self,
