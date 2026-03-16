@@ -1,16 +1,10 @@
 import base64
-from pathlib import Path
-import os
 from typing import List
 import logging
-from tkinter import messagebox
 
 from app.config.config_paths import GMAIL_CREDENTIALS, GMAIL_TOKEN
+from app.core.google.google_auth_manager import GoogleAuthManager
 
-from google.auth.transport.requests import Request
-from google.auth.exceptions import RefreshError
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
@@ -31,69 +25,22 @@ class GmailClient:
         self.service = self._authenticate()
 
     def _authenticate(self):
-        creds = None
-
-        # Si ya existe token guardado
-        if os.path.exists(self.token_path):
-            creds = Credentials.from_authorized_user_file(
-                self.token_path, SCOPES
-            )
-
-        # Si no hay credenciales válidas
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                logger.info("Intentando refrescar token Gmail")
-                try:
-                    creds.refresh(Request())
-                except Exception as exc:  # noqa: BLE001
-                    if self._is_invalid_grant_error(exc):
-                        logger.info("Token Gmail expirado o revocado. Reautenticando...")
-                        logger.info("Token revocado, iniciando reautenticación OAuth")
-                        creds = self._reauthenticate_oauth()
-                    else:
-                        raise
-            else:
-                creds = self._run_installed_app_flow()
-
-            Path(self.token_path).parent.mkdir(parents=True, exist_ok=True)
-            with open(self.token_path, "w") as token:
-                token.write(creds.to_json())
-
+        auth = GoogleAuthManager(
+            credentials_path=self.credentials_path,
+            token_path=self.token_path,
+            scopes=SCOPES,
+        )
+        creds = auth.get_credentials()
         return build("gmail", "v1", credentials=creds)
 
-    def _run_installed_app_flow(self):
-        flow = InstalledAppFlow.from_client_secrets_file(
-            self.credentials_path,
-            SCOPES,
-        )
-        return flow.run_local_server(port=0)
-
     def _is_invalid_grant_error(self, exc: Exception) -> bool:
-        if isinstance(exc, RefreshError):
-            return True
         if isinstance(exc, HttpError) and "invalid_grant" in str(exc):
             return True
         return False
 
     def _reauthenticate_oauth(self):
-        try:
-            if os.path.exists(self.token_path):
-                os.remove(self.token_path)
-
-            creds = self._run_installed_app_flow()
-            Path(self.token_path).parent.mkdir(parents=True, exist_ok=True)
-            with open(self.token_path, "w") as token:
-                token.write(creds.to_json())
-
-            logger.info("Autenticación Gmail completada correctamente")
-            self.service = build("gmail", "v1", credentials=creds)
-            return creds
-        except Exception as exc:  # noqa: BLE001
-            messagebox.showerror(
-                "Autenticación Gmail",
-                "No se pudo renovar el acceso a Gmail. Debes autenticar nuevamente.",
-            )
-            raise exc
+        logger.info("Token revocado, iniciando reautenticación OAuth")
+        self.service = self._authenticate()
 
     def _execute_with_reauth(self, operation):
         try:
