@@ -5,8 +5,10 @@ from __future__ import annotations
 import logging
 import sqlite3
 import tkinter as tk
+from datetime import datetime, timedelta, timezone
 from tkinter import messagebox, ttk
 
+from app.ml.retraining_service import AUTO_TRAIN_THRESHOLDS, MIN_TRAIN_INTERVAL_HOURS
 from app.persistence.email_repository import EmailRepository
 from app.persistence.ml_training_repository import MLTrainingRepository
 from app.ml.retraining_service import DatasetRetrainingService
@@ -94,12 +96,19 @@ class MLManagerWindow(tk.Toplevel):
 
         summary_frame = ttk.LabelFrame(wrapper, text="Resumen datasets")
         summary_frame.pack(fill="x")
-        self.dataset_tree = ttk.Treeview(summary_frame, columns=("dataset", "total", "last_updated", "state"), show="headings", height=5)
+        self.dataset_tree = ttk.Treeview(
+            summary_frame,
+            columns=("dataset", "estado_modelo", "pending_examples", "ultimo_entrenamiento", "auto_train_threshold", "proximo_entrenamiento_estimado"),
+            show="headings",
+            height=6,
+        )
         for column, label, width in [
             ("dataset", "dataset", 220),
-            ("total", "total ejemplos", 110),
-            ("last_updated", "última actualización", 190),
-            ("state", "estado aprendizaje", 420),
+            ("estado_modelo", "estado_modelo", 170),
+            ("pending_examples", "pending_examples", 140),
+            ("ultimo_entrenamiento", "ultimo_entrenamiento", 190),
+            ("auto_train_threshold", "auto_train_threshold", 150),
+            ("proximo_entrenamiento_estimado", "proximo_entrenamiento_estimado", 260),
         ]:
             self.dataset_tree.heading(column, text=label)
             self.dataset_tree.column(column, width=width, anchor="w")
@@ -195,18 +204,21 @@ class MLManagerWindow(tk.Toplevel):
             dataset = str(row["dataset"])
             state = self.dataset_state_service.get_state(dataset)
             if state is None:
-                state_text = "sin estado"
+                model_status = "sin estado"
+                pending = 0
+                last_trained = "-"
+                threshold = int(AUTO_TRAIN_THRESHOLDS.get(dataset, 0) or 0)
+                next_estimated = "-"
             else:
-                dirty_text = "dirty" if bool(state["dirty"]) else "clean"
+                model_status = str(state["model_status"] or "dirty")
                 pending = int(state["pending_examples_count"] or 0)
-                error = str(state["last_error"] or "").strip()
-                state_text = f"{dirty_text} | pending={pending}"
-                if error:
-                    state_text += f" | error={error[:80]}"
+                threshold = int(AUTO_TRAIN_THRESHOLDS.get(dataset, 0) or 0)
+                last_trained = str(state["last_trained_at"] or "-")
+                next_estimated = self._estimate_next_training(dataset, state, pending, threshold)
             item = self.dataset_tree.insert(
                 "",
                 "end",
-                values=(dataset, row["total"], row["last_updated"] or "", state_text),
+                values=(dataset, model_status, pending, last_trained, threshold or "-", next_estimated),
             )
             self._dataset_by_item[item] = dataset
 
@@ -361,6 +373,28 @@ class MLManagerWindow(tk.Toplevel):
         result = self._trigger_retrain(dataset)
         logger.info("Reentrenamiento lanzado para dataset: %s", dataset)
         messagebox.showinfo("ML Manager", result)
+
+    @staticmethod
+    def _estimate_next_training(dataset: str, state: sqlite3.Row, pending: int, threshold: int) -> str:
+        if threshold <= 0:
+            return "sin autoentrenamiento"
+        if pending < threshold:
+            return f"cuando pending >= {threshold}"
+
+        last_trained_at = str(state["last_trained_at"] or "")
+        if not last_trained_at:
+            return "inmediato"
+        try:
+            last_dt = datetime.fromisoformat(last_trained_at)
+        except ValueError:
+            return "inmediato"
+        if last_dt.tzinfo is None:
+            last_dt = last_dt.replace(tzinfo=timezone.utc)
+        next_dt = last_dt + timedelta(hours=MIN_TRAIN_INTERVAL_HOURS)
+        now = datetime.now(timezone.utc)
+        if now >= next_dt:
+            return "inmediato"
+        return next_dt.isoformat(timespec="seconds")
 
     def _trigger_retrain(self, dataset: str) -> str:
         result = self.retraining_service.check_and_retrain_dataset(dataset, auto=False)

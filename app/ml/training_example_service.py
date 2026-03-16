@@ -12,6 +12,12 @@ from app.ml.training_validation import build_dedupe_signature, is_near_duplicate
 
 logger = logging.getLogger(__name__)
 
+PENDING_TRACKED_SOURCES = {
+    "interactive_summary_review",
+    "interactive_response_review",
+    "user_category_change",
+}
+
 
 class TrainingExampleService:
     def __init__(self, conn: sqlite3.Connection):
@@ -55,7 +61,10 @@ class TrainingExampleService:
         )
         self.conn.commit()
         examples_count = self._count_examples(normalized_dataset)
-        self.dataset_state_service.mark_example_added(normalized_dataset)
+        self.dataset_state_service.mark_example_added(
+            normalized_dataset,
+            count_as_pending=source in PENDING_TRACKED_SOURCES,
+        )
         self.dataset_state_service.set_examples_count(normalized_dataset, examples_count)
         logger.info("Nuevo ejemplo añadido a %s", normalized_dataset)
         logger.info("Dataset %s marcado como dirty", normalized_dataset)

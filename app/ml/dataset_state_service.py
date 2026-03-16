@@ -5,6 +5,12 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timezone
 
+MODEL_STATE_TRAINED = "trained"
+MODEL_STATE_DIRTY = "dirty"
+MODEL_STATE_AUTO_SCHEDULED = "auto-training-scheduled"
+MODEL_STATE_TRAINING = "training"
+MODEL_STATE_ERROR = "error"
+
 
 class DatasetStateService:
     def __init__(self, conn: sqlite3.Connection):
@@ -24,7 +30,12 @@ class DatasetStateService:
                 last_error TEXT,
                 auto_learning_enabled INTEGER NOT NULL DEFAULT 1,
                 updated_at TEXT NOT NULL,
-                last_trained_examples_count INTEGER NOT NULL DEFAULT 0
+                last_trained_examples_count INTEGER NOT NULL DEFAULT 0,
+                model_status TEXT NOT NULL DEFAULT 'trained',
+                training_in_progress INTEGER NOT NULL DEFAULT 0,
+                last_auto_train_scheduled_at TEXT,
+                last_training_duration_seconds REAL,
+                last_precision REAL
             )
             """
         )
@@ -36,6 +47,11 @@ class DatasetStateService:
         self._ensure_column("auto_learning_enabled", "INTEGER NOT NULL DEFAULT 1")
         self._ensure_column("updated_at", "TEXT")
         self._ensure_column("last_trained_examples_count", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("model_status", "TEXT NOT NULL DEFAULT 'trained'")
+        self._ensure_column("training_in_progress", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("last_auto_train_scheduled_at", "TEXT")
+        self._ensure_column("last_training_duration_seconds", "REAL")
+        self._ensure_column("last_precision", "REAL")
         now = datetime.now(timezone.utc).isoformat()
         self.conn.execute("UPDATE ml_dataset_state SET updated_at = COALESCE(updated_at, ?)", (now,))
         self.conn.commit()
@@ -50,30 +66,86 @@ class DatasetStateService:
         now = datetime.now(timezone.utc).isoformat()
         self.conn.execute(
             """
-            INSERT INTO ml_dataset_state (dataset, dirty, updated_at)
-            VALUES (?, 1, ?)
+            INSERT INTO ml_dataset_state (dataset, dirty, updated_at, model_status)
+            VALUES (?, 1, ?, ?)
             ON CONFLICT(dataset) DO UPDATE SET
                 dirty = 1,
-                updated_at = excluded.updated_at
+                updated_at = excluded.updated_at,
+                model_status = excluded.model_status
             """,
-            (dataset, now),
+            (dataset, now, MODEL_STATE_DIRTY),
         )
         self.conn.commit()
 
-    def mark_example_added(self, dataset: str) -> None:
+    def mark_example_added(self, dataset: str, count_as_pending: bool = True) -> None:
         now = datetime.now(timezone.utc).isoformat()
         self.conn.execute(
             """
-            INSERT INTO ml_dataset_state (dataset, dirty, examples_count, pending_examples_count, updated_at, last_error)
-            VALUES (?, 1, 1, 1, ?, NULL)
+            INSERT INTO ml_dataset_state (dataset, dirty, examples_count, pending_examples_count, updated_at, last_error, model_status)
+            VALUES (?, 1, 1, ?, ?, NULL, ?)
             ON CONFLICT(dataset) DO UPDATE SET
                 dirty = 1,
                 examples_count = ml_dataset_state.examples_count + 1,
-                pending_examples_count = ml_dataset_state.pending_examples_count + 1,
+                pending_examples_count = ml_dataset_state.pending_examples_count + ?,
                 updated_at = excluded.updated_at,
+                last_error = NULL,
+                model_status = CASE
+                    WHEN ml_dataset_state.training_in_progress = 1 THEN ?
+                    ELSE ?
+                END
+            """,
+            (
+                dataset,
+                1 if count_as_pending else 0,
+                now,
+                MODEL_STATE_DIRTY,
+                1 if count_as_pending else 0,
+                MODEL_STATE_TRAINING,
+                MODEL_STATE_DIRTY,
+            ),
+        )
+        self.conn.commit()
+
+    def mark_auto_training_scheduled(self, dataset: str) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        self.conn.execute(
+            """
+            INSERT INTO ml_dataset_state (dataset, dirty, updated_at, model_status, last_auto_train_scheduled_at)
+            VALUES (?, 1, ?, ?, ?)
+            ON CONFLICT(dataset) DO UPDATE SET
+                dirty = 1,
+                updated_at = excluded.updated_at,
+                model_status = CASE
+                    WHEN ml_dataset_state.training_in_progress = 1 THEN ?
+                    ELSE ?
+                END,
+                last_auto_train_scheduled_at = excluded.last_auto_train_scheduled_at
+            """,
+            (
+                dataset,
+                now,
+                MODEL_STATE_AUTO_SCHEDULED,
+                now,
+                MODEL_STATE_TRAINING,
+                MODEL_STATE_AUTO_SCHEDULED,
+            ),
+        )
+        self.conn.commit()
+
+    def mark_training_started(self, dataset: str) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        self.conn.execute(
+            """
+            INSERT INTO ml_dataset_state (dataset, dirty, training_in_progress, updated_at, model_status)
+            VALUES (?, 1, 1, ?, ?)
+            ON CONFLICT(dataset) DO UPDATE SET
+                dirty = 1,
+                training_in_progress = 1,
+                updated_at = excluded.updated_at,
+                model_status = excluded.model_status,
                 last_error = NULL
             """,
-            (dataset, now),
+            (dataset, now, MODEL_STATE_TRAINING),
         )
         self.conn.commit()
 
@@ -112,9 +184,13 @@ class DatasetStateService:
                 last_trained_at,
                 updated_at,
                 last_error,
-                last_trained_examples_count
+                last_trained_examples_count,
+                model_status,
+                training_in_progress,
+                last_training_duration_seconds,
+                last_precision
             )
-            VALUES (?, 0, ?, 0, ?, ?, NULL, ?)
+            VALUES (?, 0, ?, 0, ?, ?, NULL, ?, ?, 0, ?, ?)
             ON CONFLICT(dataset) DO UPDATE SET
                 dirty = 0,
                 examples_count = excluded.examples_count,
@@ -122,9 +198,51 @@ class DatasetStateService:
                 last_trained_at = excluded.last_trained_at,
                 updated_at = excluded.updated_at,
                 last_error = NULL,
-                last_trained_examples_count = excluded.last_trained_examples_count
+                last_trained_examples_count = excluded.last_trained_examples_count,
+                model_status = excluded.model_status,
+                training_in_progress = 0,
+                last_training_duration_seconds = excluded.last_training_duration_seconds,
+                last_precision = excluded.last_precision
             """,
-            (dataset, self._count_examples(dataset), now, now, self._count_examples(dataset)),
+            (
+                dataset,
+                self._count_examples(dataset),
+                now,
+                now,
+                self._count_examples(dataset),
+                MODEL_STATE_TRAINED,
+                None,
+                None,
+            ),
+        )
+        self.conn.commit()
+
+    def update_training_metrics(
+        self,
+        dataset: str,
+        *,
+        duration_seconds: float | None,
+        trained_examples: int,
+        precision: float | None = None,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        self.conn.execute(
+            """
+            INSERT INTO ml_dataset_state (
+                dataset,
+                updated_at,
+                last_training_duration_seconds,
+                last_trained_examples_count,
+                last_precision
+            )
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(dataset) DO UPDATE SET
+                updated_at = excluded.updated_at,
+                last_training_duration_seconds = excluded.last_training_duration_seconds,
+                last_trained_examples_count = excluded.last_trained_examples_count,
+                last_precision = excluded.last_precision
+            """,
+            (dataset, now, duration_seconds, max(0, int(trained_examples)), precision),
         )
         self.conn.commit()
 
@@ -132,14 +250,16 @@ class DatasetStateService:
         now = datetime.now(timezone.utc).isoformat()
         self.conn.execute(
             """
-            INSERT INTO ml_dataset_state (dataset, dirty, last_error, updated_at)
-            VALUES (?, 1, ?, ?)
+            INSERT INTO ml_dataset_state (dataset, dirty, last_error, updated_at, model_status, training_in_progress)
+            VALUES (?, 1, ?, ?, ?, 0)
             ON CONFLICT(dataset) DO UPDATE SET
                 dirty = 1,
                 last_error = excluded.last_error,
-                updated_at = excluded.updated_at
+                updated_at = excluded.updated_at,
+                model_status = ?,
+                training_in_progress = 0
             """,
-            (dataset, error, now),
+            (dataset, error, now, MODEL_STATE_ERROR, MODEL_STATE_ERROR),
         )
         self.conn.commit()
 
@@ -147,14 +267,14 @@ class DatasetStateService:
         now = datetime.now(timezone.utc).isoformat()
         self.conn.execute(
             """
-            INSERT INTO ml_dataset_state (dataset, dirty, pending_examples_count, updated_at)
-            VALUES (?, 0, 0, ?)
+            INSERT INTO ml_dataset_state (dataset, dirty, pending_examples_count, updated_at, model_status, training_in_progress)
+            VALUES (?, 0, 0, ?, ?, 0)
             ON CONFLICT(dataset) DO UPDATE SET
                 dirty = 0,
                 pending_examples_count = 0,
                 updated_at = excluded.updated_at
             """,
-            (dataset, now),
+            (dataset, now, MODEL_STATE_TRAINED),
         )
         self.conn.commit()
 
