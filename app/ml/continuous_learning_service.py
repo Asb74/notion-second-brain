@@ -9,6 +9,7 @@ from typing import Any
 
 from app.core.email.email_classifier import EmailClassifier
 from app.ml.dataset_state_service import DatasetStateService
+from app.ml.retraining_service import AUTO_TRAIN_THRESHOLDS, DatasetRetrainingService, MIN_TRAIN_INTERVAL_HOURS
 from app.ml.training_example_service import TrainingExampleService
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,7 @@ class ContinuousLearningService:
         self.dataset_state_service = DatasetStateService(db_connection)
         self.example_service = TrainingExampleService(db_connection)
         self.email_classifier = email_classifier
+        self.retraining_service = DatasetRetrainingService(db_connection, getattr(email_classifier, "email_repo", None))
 
     def on_new_training_example(
         self,
@@ -61,6 +63,10 @@ class ContinuousLearningService:
                 "full_retrain": {"trained": False, "reason": "skip_duplicate"},
             }
 
+        state_after_insert = self.dataset_state_service.get_state(dataset_name)
+        pending_examples = int(state_after_insert["pending_examples_count"] or 0) if state_after_insert is not None else 0
+        auto_threshold = int(AUTO_TRAIN_THRESHOLDS.get(dataset_name, 0) or 0)
+
         incremental_result = {"trained": False, "reason": "not_applicable"}
         if dataset_name == "email_classification":
             incremental_result = self.maybe_incremental_train_email_classification(label=label, input_text=input_text)
@@ -74,6 +80,8 @@ class ContinuousLearningService:
             "dataset": dataset_name,
             "inserted": True,
             "reason": str(save_result.get("reason") or "inserted"),
+            "pending_examples": pending_examples,
+            "auto_train_threshold": auto_threshold,
             "incremental": incremental_result,
             "full_retrain": full_retrain_result,
         }
@@ -110,7 +118,7 @@ class ContinuousLearningService:
     def maybe_full_retrain(self, dataset: str, force: bool = False) -> dict[str, Any]:
         dataset_name = (dataset or "").strip()
         rules = AUTO_FULL_RETRAIN_RULES.get(dataset_name)
-        if not rules:
+        if not rules and dataset_name not in AUTO_TRAIN_THRESHOLDS:
             return {"trained": False, "reason": "dataset_without_auto_rules"}
 
         state = self.dataset_state_service.get_state(dataset_name)
@@ -126,39 +134,40 @@ class ContinuousLearningService:
         pending = int(state["pending_examples_count"] or 0)
         distinct_labels = self._count_distinct_labels(dataset_name)
 
-        if examples_count < int(rules["min_examples"]):
-            logger.info("Full retrain omitido: ejemplos insuficientes")
-            return {"trained": False, "reason": "insufficient_examples"}
-        if distinct_labels < int(rules["min_distinct_labels"]):
-            logger.info("Full retrain omitido: etiquetas insuficientes")
-            return {"trained": False, "reason": "insufficient_labels"}
+        if rules:
+            if examples_count < int(rules["min_examples"]):
+                logger.info("Full retrain omitido: ejemplos insuficientes")
+                return {"trained": False, "reason": "insufficient_examples"}
+            if distinct_labels < int(rules["min_distinct_labels"]):
+                logger.info("Full retrain omitido: etiquetas insuficientes")
+                return {"trained": False, "reason": "insufficient_labels"}
 
+        pending_threshold = int(AUTO_TRAIN_THRESHOLDS.get(dataset_name, int(rules["pending_examples_threshold"] if rules else 0)))
         if not force:
-            if pending < int(rules["pending_examples_threshold"]):
+            if pending < pending_threshold:
                 logger.info("Full retrain omitido: threshold pendiente no alcanzado")
                 return {"trained": False, "reason": "pending_threshold_not_reached"}
-            if self._is_cooldown_active(str(state["last_trained_at"] or ""), int(rules["cooldown_minutes"])):
+            if self._is_cooldown_active(str(state["last_trained_at"] or ""), MIN_TRAIN_INTERVAL_HOURS * 60):
                 logger.info("Full retrain omitido: cooldown activo")
                 return {"trained": False, "reason": "cooldown_active"}
 
-        if dataset_name != "email_classification" or self.email_classifier is None:
-            return {"trained": False, "reason": "classifier_not_available"}
+        if not force:
+            self.dataset_state_service.mark_auto_training_scheduled(dataset_name)
+            scheduled = self.retraining_service.start_auto_training_in_background(dataset_name, classifier=self.email_classifier)
+            return {
+                "trained": False,
+                "reason": str(scheduled.get("reason") or "auto_training_not_scheduled"),
+                "scheduled": bool(scheduled.get("scheduled")),
+                "pending_examples": pending,
+                "auto_train_threshold": pending_threshold,
+            }
 
-        try:
-            trained = self.email_classifier.retrain_if_possible(force=force)
-            if not trained:
-                reason = self.email_classifier.last_training_warning or "full_retrain_failed"
-                self.dataset_state_service.mark_error(dataset_name, reason)
-                logger.warning("Full retrain fallido: %s", reason)
-                return {"trained": False, "reason": reason}
-
-            self.dataset_state_service.mark_full_train_success(dataset_name)
-            logger.info("Full retrain ejecutado correctamente")
-            return {"trained": True, "reason": "full_retrain_ok"}
-        except Exception as exc:  # noqa: BLE001
-            self.dataset_state_service.mark_error(dataset_name, str(exc))
-            logger.exception("Full retrain fallido: %s", exc)
-            return {"trained": False, "reason": str(exc)}
+        result = self.retraining_service.check_and_retrain_dataset(dataset_name, auto=False, classifier=self.email_classifier)
+        return {
+            "trained": bool(result.get("trained")),
+            "reason": str(result.get("reason") or "full_retrain_failed"),
+            "scheduled": False,
+        }
 
     def _count_distinct_labels(self, dataset: str) -> int:
         row = self.conn.execute(

@@ -2356,6 +2356,21 @@ class EmailManagerWindow(tk.Toplevel):
                 logger.info("Dataset %s marked dirty", dataset)
                 self.after(0, lambda: self.system_log(f"Training example saved for {dataset}"))
                 self.after(0, lambda: self.system_log(f"Dataset {dataset} marked dirty"))
+
+                state_message = f"Dataset actualizado. {result.get('pending_examples', 'N/A')} nuevos ejemplos pendientes de entrenamiento."
+                self.after(0, lambda: self.system_log(state_message))
+
+                full_retrain = result.get("full_retrain", {})
+                if bool(full_retrain.get("scheduled")):
+                    self.after(
+                        0,
+                        lambda: self.system_log(
+                            "Se han acumulado suficientes ejemplos. El sistema entrenará automáticamente el modelo."
+                        ),
+                    )
+                    self.after(0, lambda: self.system_log("Entrenamiento automático iniciado…"))
+                if str(full_retrain.get("reason") or "") == "training_in_progress":
+                    self.after(0, lambda: self.system_log("Entrenamiento automático ya en curso."))
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Error saving training example in background: %s", exc)
 
