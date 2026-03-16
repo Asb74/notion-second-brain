@@ -31,16 +31,22 @@ def _es_widget_texto(widget: tk.Widget | object) -> bool:
     )
 
 
-def attach_dictation(widget: tk.Widget, parent_frame: tk.Misc) -> ttk.Frame:
-    """Attach toggle dictation controls for Entry/Text/ScrolledText widgets."""
-    if not _es_widget_texto(widget):
-        raise ValueError("Dictado soporta solo Entry, Text y Textbox.")
+def register_dictation_focus(widget: tk.Widget) -> None:
+    """Registra un widget para que sea considerado destino de dictado cuando reciba foco."""
 
     def _remember_focus(event: tk.Event) -> None:
         global _last_focused_widget
         _last_focused_widget = event.widget
 
     widget.bind("<FocusIn>", _remember_focus, add="+")
+
+
+def attach_dictation(widget: tk.Widget, parent_frame: tk.Misc) -> ttk.Frame:
+    """Attach toggle dictation controls for Entry/Text/ScrolledText widgets."""
+    if not _es_widget_texto(widget):
+        raise ValueError("Dictado soporta solo Entry, Text y Textbox.")
+
+    register_dictation_focus(widget)
 
     controls = ttk.Frame(parent_frame)
     style = ttk.Style(controls)
@@ -60,6 +66,7 @@ def attach_dictation(widget: tk.Widget, parent_frame: tk.Misc) -> ttk.Frame:
 
     def _set_button_state(recording: bool) -> None:
         mic_button.configure(style="DictationRecording.TButton" if recording else "TButton")
+        mic_button.configure(text="⏹" if recording else "🎙")
 
     def _show_error(msg: str) -> None:
         messagebox.showwarning("Dictado", msg, parent=controls.winfo_toplevel())

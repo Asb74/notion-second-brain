@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import logging
+import re
 import tempfile
 import threading
 import time
@@ -12,6 +13,7 @@ import tkinter as tk
 import wave
 from collections.abc import Callable
 from pathlib import Path
+from tkinter import ttk
 from tkinter.scrolledtext import ScrolledText
 from typing import Any
 
@@ -37,6 +39,18 @@ class VoiceDictationService:
     MODEL = "gpt-4o-mini-transcribe"
     MAX_AUDIO_FILE_SIZE = 5 * 1024 * 1024
     PHRASE_WINDOW_SECONDS = 3
+    _VOICE_COMMAND_DELETE_LAST = "borrar último fragmento"
+    _VOICE_COMMAND_PATTERNS: tuple[tuple[str, str], ...] = (
+        ("punto y coma", ";"),
+        ("dos puntos", ":"),
+        ("nueva línea", "\n"),
+        ("salto de línea", "\n"),
+        ("abrir paréntesis", "("),
+        ("cerrar paréntesis", ")"),
+        ("punto", "."),
+        ("coma", ","),
+    )
+    _PUNCTUATION_NO_LEADING_SPACE = tuple(".,:;)!?")
 
     def __init__(
         self,
@@ -59,6 +73,7 @@ class VoiceDictationService:
         self._audio_path: str | None = None
         self._lock = threading.Lock()
         self._recognition_thread: threading.Thread | None = None
+        self._dictation_history: dict[int, list[str]] = {}
 
     def toggle_recording(self) -> None:
         """Alterna estado del botón micrófono (iniciar/detener)."""
@@ -135,6 +150,8 @@ class VoiceDictationService:
             self._recognition_thread = threading.Thread(target=self._recognition_loop, daemon=True)
             self._recognition_thread.start()
 
+        logger.info("Dictado iniciado")
+        logger.info("Widget destino de dictado: %s", type(target_widget).__name__)
         self._set_status("🎙 Grabando...")
         self._set_button_recording_state(True)
 
@@ -162,6 +179,7 @@ class VoiceDictationService:
 
         self._set_button_recording_state(False)
         self._set_status("Listo")
+        logger.info("Dictado detenido")
 
     def _recognition_loop(self) -> None:
         """Transcribe segmentos consecutivos sin bloquear la UI."""
@@ -180,9 +198,11 @@ class VoiceDictationService:
                 break
 
             try:
+                self.root.after(0, lambda: self._set_status("⏳ Transcribiendo..."))
                 text = self._transcribe_chunks(chunks)
                 if text:
-                    self.root.after(0, lambda value=text: self._insert_text(value))
+                    logger.info("Fragmento transcrito: %s", text)
+                    self.root.after(0, lambda value=text: self._apply_transcribed_fragment(value))
                 if recording:
                     self.root.after(0, lambda: self._set_status("🎙 Escuchando..."))
             except Exception:  # noqa: BLE001
@@ -192,6 +212,8 @@ class VoiceDictationService:
 
             if not recording:
                 break
+
+        self.root.after(0, lambda: self._set_status("Listo"))
 
     def _transcribe_chunks(self, chunks: list[Any]) -> str:
         np = importlib.import_module("numpy")
@@ -293,40 +315,119 @@ class VoiceDictationService:
         except OSError:
             logger.debug("No se pudo eliminar temporal de dictado: %s", audio_path)
 
+    def _apply_transcribed_fragment(self, text: str) -> None:
+        clean_text = text.strip()
+        if not clean_text:
+            return
+
+        if clean_text.casefold() == self._VOICE_COMMAND_DELETE_LAST:
+            self._delete_last_fragment()
+            return
+
+        processed_text = self._apply_voice_commands(clean_text)
+        self._insert_text(processed_text)
+
+    def _apply_voice_commands(self, text: str) -> str:
+        """Aplica comandos de voz básicos antes de insertar el texto."""
+        updated = f" {text} "
+        commands_applied = False
+
+        for command, replacement in self._VOICE_COMMAND_PATTERNS:
+            pattern = re.compile(rf"(?<!\\w){re.escape(command)}(?!\\w)", flags=re.IGNORECASE)
+            updated, count = pattern.subn(replacement, updated)
+            if count:
+                commands_applied = True
+
+        updated = re.sub(r"\s+([\.,:;\)])", r"\1", updated)
+        updated = re.sub(r"\(\s+", "(", updated)
+        updated = re.sub(r" *\n *", "\n", updated)
+        updated = re.sub(r" {2,}", " ", updated)
+        updated = updated.strip()
+
+        if commands_applied:
+            logger.info("Comandos de voz aplicados")
+        return updated
+
     def _insert_text(self, text: str) -> None:
         widget = self._target_widget
         if widget is None or not self._is_text_widget(widget):
             return
 
-        clean_text = text.strip()
-        if not clean_text:
+        if not text:
             return
 
         try:
-            if isinstance(widget, tk.Entry):
+            if isinstance(widget, (tk.Entry, ttk.Entry)):
                 current_text = widget.get()
-                value = clean_text if not str(current_text).strip() else f" {clean_text}"
+                fragment = text.replace("\n", " ")
+                value = self._merge_text(str(current_text), fragment)
                 widget.insert(tk.END, value)
             elif isinstance(widget, (tk.Text, ScrolledText)):
                 current_text = widget.get("1.0", "end-1c")
-                value = clean_text if not str(current_text).strip() else f" {clean_text}"
+                value = self._merge_text(str(current_text), text)
                 widget.insert("end", value)
+                self._append_history(widget, value)
             else:
-                value = clean_text
+                value = text
                 if hasattr(widget, "get"):
                     try:
                         current_text = widget.get()
-                        if str(current_text).strip():
-                            value = f" {clean_text}"
+                        value = self._merge_text(str(current_text), text)
                     except Exception:  # noqa: BLE001
                         logger.debug("No se pudo consultar contenido previo en widget personalizado")
                 widget.insert("end", value)
+            logger.info("Fragmento insertado correctamente")
         except Exception:  # noqa: BLE001
             logger.exception("No se pudo insertar texto transcrito")
 
+    def _delete_last_fragment(self) -> None:
+        widget = self._target_widget
+        if not isinstance(widget, (tk.Text, ScrolledText)):
+            logger.debug("Comando borrar último fragmento omitido: widget no soportado")
+            return
+
+        history = self._dictation_history.get(id(widget), [])
+        if not history:
+            return
+
+        last_fragment = history.pop()
+        if not last_fragment:
+            return
+
+        try:
+            end_index = widget.index("end-1c")
+            start_index = widget.index(f"{end_index}-{len(last_fragment)}c")
+            existing = widget.get(start_index, end_index)
+            if existing == last_fragment:
+                widget.delete(start_index, end_index)
+                logger.info("Borrado último fragmento")
+        except Exception:  # noqa: BLE001
+            logger.exception("No se pudo borrar el último fragmento dictado")
+
+    def _append_history(self, widget: tk.Widget, inserted_text: str) -> None:
+        key = id(widget)
+        if key not in self._dictation_history:
+            self._dictation_history[key] = []
+        self._dictation_history[key].append(inserted_text)
+
+    def _merge_text(self, current_text: str, new_fragment: str) -> str:
+        if not current_text:
+            return new_fragment
+
+        if not new_fragment:
+            return ""
+
+        if current_text.endswith(("\n", " ", "\t")):
+            return new_fragment
+
+        if new_fragment.startswith(("\n", *self._PUNCTUATION_NO_LEADING_SPACE)):
+            return new_fragment
+
+        return f" {new_fragment}"
+
     @staticmethod
     def _is_text_widget(widget: tk.Widget | object) -> bool:
-        return isinstance(widget, (tk.Entry, tk.Text, ScrolledText)) or hasattr(widget, "insert")
+        return isinstance(widget, (tk.Entry, ttk.Entry, tk.Text, ScrolledText)) or hasattr(widget, "insert")
 
     def _set_status(self, text: str) -> None:
         if self._status_callback:
