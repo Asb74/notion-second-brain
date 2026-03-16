@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 
 from app.ml.dataset_rules import get_dataset_rule
+from app.ml.training_validation import content_hash, normalize_text
 
 
 class MLTrainingRepository:
@@ -167,25 +168,53 @@ class MLTrainingRepository:
         ).fetchone()
 
     def count_duplicate_examples(self, dataset: str) -> int:
-        rule = get_dataset_rule(dataset)
-        group_fields = [field for field in rule.dedupe_on if field in {"dataset", "input_text", "output_text", "label"}]
-        if not group_fields:
-            return 0
-        group_sql = ", ".join(f"COALESCE({field}, '')" for field in group_fields)
-        row = self.conn.execute(
-            f"""
-            SELECT COALESCE(SUM(group_total - 1), 0) AS duplicates
-            FROM (
-                SELECT COUNT(*) AS group_total
-                FROM ml_training_examples
-                WHERE dataset = ?
-                GROUP BY {group_sql}
-                HAVING COUNT(*) > 1
-            )
+        return len(self.list_duplicate_examples(dataset))
+
+    def list_duplicate_examples(self, dataset: str) -> list[dict[str, int | str]]:
+        rows = self.conn.execute(
+            """
+            SELECT id, input_text, output_text, label
+            FROM ml_training_examples
+            WHERE dataset = ?
+            ORDER BY id ASC
             """,
             (dataset,),
-        ).fetchone()
-        return int(row["duplicates"] if row else 0)
+        ).fetchall()
+
+        seen: dict[tuple[str, ...], int] = {}
+        duplicates: list[dict[str, int | str]] = []
+
+        for index, row in enumerate(rows, start=1):
+            key = self._duplicate_key(dataset, row)
+            if key in seen:
+                duplicates.append(
+                    {
+                        "label": str(row["label"] or ""),
+                        "text": str(row["input_text"] or ""),
+                        "original_index": seen[key],
+                        "duplicate_index": index,
+                        "original_id": int(rows[seen[key] - 1]["id"]),
+                        "duplicate_id": int(row["id"]),
+                    }
+                )
+                continue
+            seen[key] = index
+
+        return duplicates
+
+    def remove_duplicate_examples(self, dataset: str) -> int:
+        duplicates = self.list_duplicate_examples(dataset)
+        duplicate_ids = [int(item["duplicate_id"]) for item in duplicates]
+        if not duplicate_ids:
+            return 0
+
+        placeholders = ", ".join("?" for _ in duplicate_ids)
+        self.conn.execute(
+            f"DELETE FROM ml_training_examples WHERE id IN ({placeholders})",
+            duplicate_ids,
+        )
+        self.conn.commit()
+        return len(duplicate_ids)
 
     def get_quality_issues(self, dataset: str) -> list[str]:
         issues: list[str] = []
@@ -259,14 +288,29 @@ class MLTrainingRepository:
         ).fetchone()
         return int(row["total"] if row else 0)
 
-    @staticmethod
-    def _required_fields_for_dataset(dataset: str) -> set[str]:
+    def _required_fields_for_dataset(self, dataset: str) -> set[str]:
         rule = get_dataset_rule(dataset)
-        fields: set[str] = set()
+        required_fields: set[str] = set()
         if rule.required_input_text:
-            fields.add("input_text")
+            required_fields.add("input_text")
         if rule.required_output_text:
-            fields.add("output_text")
+            required_fields.add("output_text")
         if rule.required_label:
-            fields.add("label")
-        return fields or {"input_text", "label"}
+            required_fields.add("label")
+        if not rule.required_output_text and not rule.required_label:
+            required_fields.add("output_or_label")
+        return required_fields
+
+    @staticmethod
+    def _duplicate_key(dataset: str, row: sqlite3.Row) -> tuple[str, ...]:
+        if (dataset or "").strip() == "email_classification":
+            return (
+                content_hash(row["input_text"]),
+                normalize_text(row["label"]),
+            )
+
+        return (
+            content_hash(row["input_text"]),
+            content_hash(row["output_text"]),
+            normalize_text(row["label"]),
+        )

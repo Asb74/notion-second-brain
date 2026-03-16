@@ -143,10 +143,16 @@ class MLManagerWindow(tk.Toplevel):
         self.stats_label = ttk.Label(wrapper, text="")
         self.stats_label.pack(fill="x", pady=(8, 0))
 
+        duplicates_frame = ttk.LabelFrame(wrapper, text="Duplicados detectados")
+        duplicates_frame.pack(fill="both", expand=True, pady=(8, 0))
+        self.duplicates_text = tk.Text(duplicates_frame, height=5, wrap="word")
+        self.duplicates_text.pack(fill="both", expand=True, padx=6, pady=6)
+
         actions = ttk.Frame(wrapper)
         actions.pack(fill="x", pady=(8, 0))
         ttk.Button(actions, text="Eliminar ejemplo", command=self._delete_selected).pack(side="left")
         ttk.Button(actions, text="Reentrenar dataset", command=self._retrain_selected_dataset).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="Limpieza automática", command=self._auto_clean_duplicates).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="Refrescar", command=self.refresh_all).pack(side="left", padx=(8, 0))
 
     def _bind_events(self) -> None:
@@ -224,6 +230,7 @@ class MLManagerWindow(tk.Toplevel):
             self._example_id_by_item[item] = int(row["id"])
 
         self._refresh_stats(dataset)
+        self._refresh_duplicates_panel(dataset)
 
     def _refresh_stats(self, dataset: str | None) -> None:
         summaries = self.repo.list_datasets_summary()
@@ -256,6 +263,37 @@ class MLManagerWindow(tk.Toplevel):
                 )
 
         self.stats_label.configure(text=" | ".join(fragments))
+
+
+    def _refresh_duplicates_panel(self, dataset: str | None) -> None:
+        self.duplicates_text.delete("1.0", "end")
+        if not dataset:
+            self.duplicates_text.insert("1.0", "Selecciona un dataset para revisar duplicados.")
+            return
+
+        duplicates = self.repo.list_duplicate_examples(dataset)
+        if not duplicates:
+            self.duplicates_text.insert("1.0", "No se detectaron duplicados.")
+            return
+
+        lines = ["Duplicados detectados:"]
+        for duplicate in duplicates:
+            lines.append(
+                f"- índice {duplicate['duplicate_index']} duplica el ejemplo {duplicate['original_index']} "
+                f"(label: {duplicate['label'] or '-'})"
+            )
+        self.duplicates_text.insert("1.0", "\n".join(lines))
+
+    def _auto_clean_duplicates(self) -> None:
+        dataset = self.dataset_filter_var.get().strip() or self._dataset_selected
+        if not dataset:
+            messagebox.showinfo("ML Manager", "Selecciona un dataset para limpiar duplicados.")
+            return
+
+        removed = self.repo.remove_duplicate_examples(dataset)
+        logger.info("Limpieza automática de duplicados ejecutada en %s: %s eliminados", dataset, removed)
+        messagebox.showinfo("ML Manager", f"Limpieza automática completada. Duplicados eliminados: {removed}")
+        self.refresh_all()
 
     def _on_example_selected(self, _event: object) -> None:
         selected = self.examples_tree.selection()
