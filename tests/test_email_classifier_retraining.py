@@ -87,11 +87,26 @@ def test_retrain_propagates_detailed_fit_failure(monkeypatch) -> None:
     classifier.email_repo = _RepoMixedLabels()
 
     def _raise_fit(self, _texts, _labels, classes=None):
-        raise RuntimeError("Entrenamiento fallido: vectorizador generó 0 features")
+        raise RuntimeError("Training aborted: vectorizer produced 0 features (empty vocabulary)")
 
     monkeypatch.setattr("app.core.email.email_classifier.MLEmailModel.fit", _raise_fit)
 
     trained = classifier.retrain_if_possible(force=True)
 
     assert trained is False
-    assert classifier.last_training_warning == "Entrenamiento fallido: vectorizador generó 0 features"
+    assert classifier.last_training_warning == "Entrenamiento fallido: Training aborted: vectorizer produced 0 features (empty vocabulary)"
+
+
+def test_retrain_propagates_fit_exception_details(monkeypatch) -> None:
+    classifier = EmailClassifier(email_repo=None)
+    classifier.email_repo = _RepoMixedLabels()
+
+    def _raise_fit(self, _texts, _labels, classes=None):
+        raise RuntimeError("Training failed during fit(): ValueError: inconsistent labels")
+
+    monkeypatch.setattr("app.core.email.email_classifier.MLEmailModel.fit", _raise_fit)
+
+    trained = classifier.retrain_if_possible(force=True)
+
+    assert trained is False
+    assert classifier.last_training_warning == "Entrenamiento fallido durante fit(): ValueError: inconsistent labels"

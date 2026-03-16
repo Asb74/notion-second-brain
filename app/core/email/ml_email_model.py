@@ -42,25 +42,37 @@ class MLEmailModel:
         return True
 
     def fit(self, texts: Sequence[str], labels: Sequence[str], classes: Sequence[str] | None = None) -> None:
-        if not texts or not self._ensure_model_components():
+        if not texts:
             self.is_trained = False
-            return
+            raise RuntimeError("Training aborted: empty dataset")
+        if not self._ensure_model_components():
+            self.is_trained = False
+            raise RuntimeError("Training aborted: ML dependencies unavailable")
+
+        logger.info("Training dataset size: %s", len(texts))
+        logger.info("Unique labels: %s", len(set(labels)))
+
         unique_labels = {str(label) for label in labels}
         if len(unique_labels) == 1:
             self.last_warning = "Entrenamiento insuficiente: solo una categoría detectada."
             return
 
         logger.info("Iniciando vectorización de entrenamiento")
-        features = self.vectorizer.fit_transform(texts)
-        logger.info("Vectorized shape: %s", features.shape)
+        try:
+            features = self.vectorizer.fit_transform(texts)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Training failed during vectorization")
+            raise RuntimeError(f"Training failed during vectorization: {exc.__class__.__name__}: {exc}") from exc
+
+        logger.info("Vectorized matrix shape: %s", features.shape)
         if features.shape[1] == 0:
-            raise RuntimeError("Entrenamiento fallido: vectorizador generó 0 features")
+            raise RuntimeError("Training aborted: vectorizer produced 0 features (empty vocabulary)")
 
         try:
             self.classifier.fit(features, labels)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Training failed during fit()")
-            raise RuntimeError(f"Entrenamiento fallido durante fit(): {exc.__class__.__name__}: {exc}") from exc
+            raise RuntimeError(f"Training failed during fit(): {str(exc)}") from exc
 
         self.is_trained = True
         self.last_warning = None

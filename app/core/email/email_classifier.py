@@ -168,11 +168,13 @@ class EmailClassifier:
                 logger.info("Entrenamiento email classifier: ejecutando partial_fit")
                 self.ml_model.partial_fit(texts, labels)
         except Exception as exc:  # noqa: BLE001
-            detail = str(exc)
-            if detail.startswith("Entrenamiento fallido"):
+            detail = str(exc).strip()
+            if detail.startswith("Entrenamiento"):
                 self.last_training_warning = detail
+            elif detail.startswith("Training failed during fit()"):
+                self.last_training_warning = f"Entrenamiento fallido durante fit(): {detail.removeprefix('Training failed during fit(): ').strip()}"
             else:
-                self.last_training_warning = f"Entrenamiento fallido durante fit(): {exc.__class__.__name__}: {detail}"
+                self.last_training_warning = f"Entrenamiento fallido: {detail or exc.__class__.__name__}"
             logger.exception("Entrenamiento cancelado por excepción")
             return False
 
