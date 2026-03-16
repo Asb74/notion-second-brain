@@ -84,6 +84,14 @@ ATTACHMENT_SUMMARY_REQUEST = (
     "- no inventar información\n"
     "- si falta contexto, indícalo brevemente\n"
 )
+MAX_REFINEMENTS = 5
+REFINEMENT_QUICK_ACTIONS = {
+    "más breve": "Hazlo más breve",
+    "más detallado": "Hazlo más detallado",
+    "formato tabla": "Haz el resumen en formato tabla",
+    "incluir datos numéricos": "Incluye datos numéricos relevantes",
+    "orientado a acción": "Hazlo orientado a acción con próximos pasos claros",
+}
 
 _SYSTEM_LOG_WIDGET: ScrolledText | None = None
 
@@ -2124,9 +2132,97 @@ class EmailManagerWindow(tk.Toplevel):
             fill="x", padx=12, pady=(12, 6), anchor="w"
         )
 
-        editor = ScrolledText(dialog, wrap="word", height=18)
+        editor = ScrolledText(dialog, wrap="word", height=14)
         editor.pack(fill="both", expand=True, padx=12, pady=(0, 12))
         editor.insert("1.0", self._apply_user_signature(draft_ai_response))
+
+        refinement_controls = ttk.LabelFrame(dialog, text="Refinar resultado")
+        refinement_controls.pack(fill="x", padx=12, pady=(0, 8))
+        refine_prompt_var = tk.StringVar()
+        refine_entry = ttk.Entry(refinement_controls, textvariable=refine_prompt_var)
+        refine_entry.pack(fill="x", padx=8, pady=(8, 4))
+        quick_actions = ttk.Frame(refinement_controls)
+        quick_actions.pack(fill="x", padx=8, pady=(0, 4))
+
+        original_output = self._apply_user_signature(draft_ai_response).strip()
+        input_original = build_email_training_input_text(
+            subject=row.get("subject", ""),
+            sender=row.get("real_sender") or row.get("sender", ""),
+            body_text=row.get("body_text", ""),
+        )
+        history_versions: list[str] = [original_output]
+        refinements_used = 0
+
+        history_frame = ttk.LabelFrame(refinement_controls, text="Historial de refinamiento")
+        history_frame.pack(fill="both", padx=8, pady=(0, 8))
+        history_list = tk.Listbox(history_frame, height=4, exportselection=False)
+        history_list.pack(fill="x", padx=6, pady=6)
+
+        def refresh_history() -> None:
+            history_list.delete(0, "end")
+            for idx in range(len(history_versions)):
+                history_list.insert("end", f"Versión {idx + 1}")
+            history_list.selection_clear(0, "end")
+            history_list.selection_set(len(history_versions) - 1)
+
+        def restore_selected_version() -> None:
+            selected = history_list.curselection()
+            if not selected:
+                return
+            value = history_versions[int(selected[0])]
+            editor.delete("1.0", "end")
+            editor.insert("1.0", value)
+
+        history_list.bind("<<ListboxSelect>>", lambda _event: restore_selected_version())
+
+        def apply_quick_instruction(instruction: str) -> None:
+            refine_prompt_var.set(instruction)
+
+        for label, instruction in REFINEMENT_QUICK_ACTIONS.items():
+            ttk.Button(
+                quick_actions,
+                text=f"➕ {label}",
+                command=lambda value=instruction: apply_quick_instruction(value),
+            ).pack(side="left", padx=(0, 4), pady=(0, 4))
+
+        def refine_response() -> None:
+            nonlocal refinements_used
+            instruction = refine_prompt_var.get().strip()
+            if not instruction:
+                messagebox.showwarning("Atención", "Escribe una instrucción para refinar el resultado.")
+                return
+            if refinements_used >= MAX_REFINEMENTS:
+                messagebox.showinfo("Refinamiento", "Has alcanzado el máximo de refinamientos. Guarda una versión final.")
+                return
+
+            current_output = editor.get("1.0", "end").strip()
+            refined = self._refine_generated_output(
+                input_original=input_original,
+                output_actual=current_output,
+                user_instruction=instruction,
+            )
+            if not refined:
+                return
+            editor.delete("1.0", "end")
+            editor.insert("1.0", refined)
+            history_versions.append(refined)
+            refinements_used += 1
+            refresh_history()
+            self.training_repo.save_refinement_history(
+                dataset="email_response",
+                input_original=input_original,
+                output_original=current_output,
+                user_instruction=instruction,
+                refined_output=refined,
+            )
+
+        actions_row = ttk.Frame(refinement_controls)
+        actions_row.pack(fill="x", padx=8, pady=(0, 8))
+        ttk.Button(actions_row, text="Mejorar resultado", command=refine_response).pack(side="left")
+        ttk.Button(actions_row, text="Restablecer", command=lambda: (editor.delete("1.0", "end"), editor.insert("1.0", original_output))).pack(side="left", padx=6)
+        ttk.Button(actions_row, text="Restaurar versión", command=restore_selected_version).pack(side="left")
+
+        refresh_history()
 
         buttons = ttk.Frame(dialog)
         buttons.pack(fill="x", padx=12, pady=(0, 12))
@@ -2148,8 +2244,19 @@ class EmailManagerWindow(tk.Toplevel):
             self._save_email_response_feedback_async(row=row, output_text=edited_text, edited_by_user=True)
             dialog.destroy()
 
+        def save_final_version() -> None:
+            final_text = editor.get("1.0", "end").strip()
+            if not final_text:
+                messagebox.showwarning("Atención", "La respuesta no puede estar vacía.")
+                return
+            self.response_text.delete("1.0", "end")
+            self.response_text.insert("1.0", final_text)
+            self._save_email_response_feedback_async(row=row, output_text=final_text, edited_by_user=final_text != original_output)
+            dialog.destroy()
+
         ttk.Button(buttons, text="Usar respuesta", command=use_response).pack(side="left")
         ttk.Button(buttons, text="Editar y usar", command=edit_and_use_response).pack(side="left", padx=6)
+        ttk.Button(buttons, text="Guardar versión final", command=save_final_version).pack(side="left", padx=6)
         ttk.Button(buttons, text="Cancelar", command=dialog.destroy).pack(side="right")
 
         self.wait_window(dialog)
@@ -2173,9 +2280,97 @@ class EmailManagerWindow(tk.Toplevel):
             fill="x", padx=12, pady=(12, 6), anchor="w"
         )
 
-        editor = ScrolledText(dialog, wrap="word", height=18)
+        editor = ScrolledText(dialog, wrap="word", height=14)
         editor.pack(fill="both", expand=True, padx=12, pady=(0, 12))
         editor.insert("1.0", ai_summary)
+
+        refinement_controls = ttk.LabelFrame(dialog, text="Refinar resultado")
+        refinement_controls.pack(fill="x", padx=12, pady=(0, 8))
+        refine_prompt_var = tk.StringVar()
+        refine_entry = ttk.Entry(refinement_controls, textvariable=refine_prompt_var)
+        refine_entry.pack(fill="x", padx=8, pady=(8, 4))
+
+        quick_actions = ttk.Frame(refinement_controls)
+        quick_actions.pack(fill="x", padx=8, pady=(0, 4))
+        for label, instruction in REFINEMENT_QUICK_ACTIONS.items():
+            ttk.Button(
+                quick_actions,
+                text=f"➕ {label}",
+                command=lambda value=instruction: refine_prompt_var.set(value),
+            ).pack(side="left", padx=(0, 4), pady=(0, 4))
+
+        sender = row.get("real_sender") or row.get("sender", "")
+        input_original = (
+            "EMAIL_SUBJECT:\n"
+            f"{(row.get('subject') or '').strip()}\n\n"
+            "EMAIL_SENDER:\n"
+            f"{(sender or '').strip()}\n\n"
+            f"{'ATTACHMENT_CONTENT' if summary_source == 'attachment' else 'EMAIL_BODY'}:\n"
+            f"{(preview_body or '').strip()[:MAX_ATTACHMENT_TEXT]}"
+        ).strip()
+        original_output = (ai_summary or "").strip()
+        history_versions: list[str] = [original_output]
+        refinements_used = 0
+
+        history_frame = ttk.LabelFrame(refinement_controls, text="Historial de refinamiento")
+        history_frame.pack(fill="both", padx=8, pady=(0, 8))
+        history_list = tk.Listbox(history_frame, height=4, exportselection=False)
+        history_list.pack(fill="x", padx=6, pady=6)
+
+        def refresh_history() -> None:
+            history_list.delete(0, "end")
+            for idx in range(len(history_versions)):
+                history_list.insert("end", f"Versión {idx + 1}")
+            history_list.selection_clear(0, "end")
+            history_list.selection_set(len(history_versions) - 1)
+
+        def restore_selected_version() -> None:
+            selected = history_list.curselection()
+            if not selected:
+                return
+            restored = history_versions[int(selected[0])]
+            editor.delete("1.0", "end")
+            editor.insert("1.0", restored)
+
+        history_list.bind("<<ListboxSelect>>", lambda _event: restore_selected_version())
+
+        def refine_summary() -> None:
+            nonlocal refinements_used
+            instruction = refine_prompt_var.get().strip()
+            if not instruction:
+                messagebox.showwarning("Atención", "Escribe una instrucción para refinar el resultado.")
+                return
+            if refinements_used >= MAX_REFINEMENTS:
+                messagebox.showinfo("Refinamiento", "Has alcanzado el máximo de refinamientos. Guarda una versión final.")
+                return
+            current_output = editor.get("1.0", "end").strip()
+            refined = self._refine_generated_output(
+                input_original=input_original,
+                output_actual=current_output,
+                user_instruction=instruction,
+            )
+            if not refined:
+                return
+            editor.delete("1.0", "end")
+            editor.insert("1.0", refined)
+            history_versions.append(refined)
+            refinements_used += 1
+            refresh_history()
+            self.training_repo.save_refinement_history(
+                dataset="email_summary",
+                input_original=input_original,
+                output_original=current_output,
+                user_instruction=instruction,
+                refined_output=refined,
+            )
+
+        actions_row = ttk.Frame(refinement_controls)
+        actions_row.pack(fill="x", padx=8, pady=(0, 8))
+        ttk.Button(actions_row, text="Mejorar resultado", command=refine_summary).pack(side="left")
+        ttk.Button(actions_row, text="Restablecer", command=lambda: (editor.delete("1.0", "end"), editor.insert("1.0", original_output))).pack(side="left", padx=6)
+        ttk.Button(actions_row, text="Restaurar versión", command=restore_selected_version).pack(side="left")
+
+        refresh_history()
 
         buttons = ttk.Frame(dialog)
         buttons.pack(fill="x", padx=12, pady=(0, 12))
@@ -2212,8 +2407,27 @@ class EmailManagerWindow(tk.Toplevel):
             )
             dialog.destroy()
 
+        def save_final_version() -> None:
+            final_summary = editor.get("1.0", "end").strip()
+            if not final_summary:
+                messagebox.showwarning("Atención", "El resumen no puede estar vacío.")
+                return
+            self.response_text.delete("1.0", "end")
+            self.response_text.insert("1.0", f"Resumen rápido:\n\n{final_summary}\n")
+            self._update_prepared_context_summary(row=row, summary_source=summary_source, summary_value=final_summary)
+            self._save_email_summary_feedback_async(
+                row=row,
+                output_text=final_summary,
+                edited_by_user=final_summary != original_output,
+                preview_body=preview_body,
+                summary_source=summary_source,
+                attachment_types=attachment_types,
+            )
+            dialog.destroy()
+
         ttk.Button(buttons, text="Confirmar resumen", command=confirm_summary).pack(side="left")
         ttk.Button(buttons, text="Editar resumen", command=edit_summary).pack(side="left", padx=6)
+        ttk.Button(buttons, text="Guardar versión final", command=save_final_version).pack(side="left", padx=6)
         ttk.Button(buttons, text="Cancelar", command=dialog.destroy).pack(side="right")
 
         self.wait_window(dialog)
@@ -2315,6 +2529,37 @@ class EmailManagerWindow(tk.Toplevel):
         if extra:
             payload.update(extra)
         return json.dumps(payload, ensure_ascii=False)
+
+    def _refine_generated_output(self, *, input_original: str, output_actual: str, user_instruction: str) -> str:
+        prompt = (
+            "CONTEXTO ORIGINAL\n"
+            f"{(input_original or '').strip()}\n\n"
+            "RESULTADO ACTUAL\n"
+            f"{(output_actual or '').strip()}\n\n"
+            "INSTRUCCIÓN DEL USUARIO\n"
+            f"{(user_instruction or '').strip()}\n\n"
+            "INSTRUCCIÓN AL MODELO\n"
+            "Mejora el resultado teniendo en cuenta la instrucción del usuario.\n"
+            "No repitas información innecesaria.\n"
+            "Si el usuario solicita campos específicos, extráelos explícitamente."
+        )
+        try:
+            client = build_openai_client()
+            response = client.responses.create(
+                model=MODEL_NAME,
+                input=[
+                    {
+                        "role": "system",
+                        "content": "Refina textos en español preservando el contexto original. Devuelve solo el texto refinado.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+            )
+            return str(response.output_text or "").strip()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("No se pudo refinar la salida generada: %s", exc)
+            self.status_var.set("No se pudo refinar con IA en este momento.")
+            return ""
 
     def _enqueue_training_example_save(
         self,
