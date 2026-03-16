@@ -34,7 +34,7 @@ def test_retrain_protects_against_single_label_collapse() -> None:
     trained = classifier.retrain_if_possible(force=True)
 
     assert trained is False
-    assert classifier.last_training_warning == "Entrenamiento insuficiente: solo una categoría detectada."
+    assert classifier.last_training_warning == "Entrenamiento cancelado: solo una categoría activa."
 
 
 def test_reclassify_all_emails_excludes_user_labels() -> None:
@@ -66,3 +66,32 @@ def test_reclassify_all_emails_excludes_user_labels() -> None:
     assert updated == 1
     assert g1_type == "other"
     assert g2_type == "priority"
+
+
+class _RepoMixedLabels:
+    def find_forced_label_for_sender(self, _sender: str):
+        return None
+
+    def get_category_names(self):
+        return ["priority", "order", "other"]
+
+    def get_labeled_dataset(self):
+        return [
+            {"subject": f"s{i}", "sender": "a@x.com", "body_text": "texto", "label": "priority" if i % 2 == 0 else "order"}
+            for i in range(20)
+        ]
+
+
+def test_retrain_propagates_detailed_fit_failure(monkeypatch) -> None:
+    classifier = EmailClassifier(email_repo=None)
+    classifier.email_repo = _RepoMixedLabels()
+
+    def _raise_fit(self, _texts, _labels, classes=None):
+        raise RuntimeError("Entrenamiento fallido: vectorizador generó 0 features")
+
+    monkeypatch.setattr("app.core.email.email_classifier.MLEmailModel.fit", _raise_fit)
+
+    trained = classifier.retrain_if_possible(force=True)
+
+    assert trained is False
+    assert classifier.last_training_warning == "Entrenamiento fallido: vectorizador generó 0 features"

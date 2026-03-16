@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import Counter
 from pathlib import Path
 
 from app.core.email.ml_email_model import MLEmailModel
@@ -142,6 +143,13 @@ class EmailClassifier:
         texts = [MLEmailModel.compose_features(row["subject"], row["sender"], row["body_text"]) for row in dataset]
         labels = [str(row["label"] or "other") for row in dataset]
 
+        logger.info("Training examples: %s", len(texts))
+        logger.info("Unique labels: %s", len(set(labels)))
+        label_distribution = Counter(labels)
+        logger.info("Label distribution:")
+        for label, count in label_distribution.most_common():
+            logger.info("%s: %s", label, count)
+
         unique_labels = {label for label in labels}
         logger.info("Entrenamiento email classifier: etiquetas detectadas=%s", sorted(unique_labels))
         if len(unique_labels) == 1:
@@ -160,7 +168,11 @@ class EmailClassifier:
                 logger.info("Entrenamiento email classifier: ejecutando partial_fit")
                 self.ml_model.partial_fit(texts, labels)
         except Exception as exc:  # noqa: BLE001
-            self.last_training_warning = f"Error durante entrenamiento: {exc}"
+            detail = str(exc)
+            if detail.startswith("Entrenamiento fallido"):
+                self.last_training_warning = detail
+            else:
+                self.last_training_warning = f"Entrenamiento fallido durante fit(): {exc.__class__.__name__}: {detail}"
             logger.exception("Entrenamiento cancelado por excepción")
             return False
 
@@ -170,7 +182,7 @@ class EmailClassifier:
             return False
 
         if not self.ml_model.is_trained:
-            self.last_training_warning = "El modelo no quedó entrenado tras el intento de fit."
+            self.last_training_warning = "Entrenamiento fallido: el modelo no quedó entrenado tras el intento de fit."
             logger.warning("Entrenamiento cancelado: modelo no entrenado")
             return False
 
