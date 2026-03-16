@@ -880,6 +880,7 @@ class EmailManagerWindow(tk.Toplevel):
         self.system_log(f"Iniciando creación de notas para {len(selected_ids)} emails")
 
         response_text = self.response_text.get("1.0", "end").strip()
+        editor_text = response_text
         summary_text = self._extract_quick_summary(response_text)
         include_summary = False
         if summary_text:
@@ -963,6 +964,7 @@ class EmailManagerWindow(tk.Toplevel):
             return
 
         response_text = self.response_text.get("1.0", "end").strip()
+        editor_text = response_text
         summary_text = self._extract_quick_summary(response_text)
         include_summary = False
         if summary_text:
@@ -986,18 +988,29 @@ class EmailManagerWindow(tk.Toplevel):
             if prepared_context is None:
                 prepared_context = self._prompt_prepare_context_if_missing(gmail_id, row)
             merged_content = (prepared_context or {}).get("merged_content", "").strip()
+            email_original_text = self._get_email_original_text(row).strip()
 
             payload = self._prompt_event_creation_data(row)
             if payload is None:
                 skipped_count += 1
                 continue
 
-            event_body = self._compose_event_body_from_email(
-                row,
-                summary_text,
-                include_summary,
-                merged_content=merged_content,
-            )
+            event_body = ""
+            if merged_content:
+                event_body = merged_content
+            elif editor_text:
+                event_body = editor_text
+            elif email_original_text:
+                event_body = email_original_text
+
+            if not event_body:
+                skipped_count += 1
+                self.system_log(
+                    f"No se pudo crear evento para {gmail_id}: contenido vacío en contexto, editor y email original",
+                    level="WARNING",
+                )
+                continue
+
             event_request = NoteCreateRequest(
                 title=payload["title"],
                 raw_text=event_body,
@@ -1019,7 +1032,7 @@ class EmailManagerWindow(tk.Toplevel):
                 continue
 
             self.email_repo.update_status(gmail_id, "converted_to_event")
-            logger.info(f"Email {gmail_id} marked as converted_to_event")
+            logger.info(f"Email {gmail_id} converted to event")
 
             self.log("Evento creado desde email")
             if merged_content:
