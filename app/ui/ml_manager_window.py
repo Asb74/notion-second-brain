@@ -66,8 +66,31 @@ class MLManagerWindow(tk.Toplevel):
         self.apply_filters(dataset=dataset_filter, label=label_filter)
 
     def _build_layout(self) -> None:
-        wrapper = ttk.Frame(self, padding=10)
-        wrapper.pack(fill="both", expand=True)
+        main_frame = ttk.Frame(self)
+        main_frame.pack(fill="both", expand=True)
+
+        canvas = tk.Canvas(main_frame, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(main_frame, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        wrapper = ttk.Frame(canvas, padding=10)
+        canvas_window = canvas.create_window((0, 0), window=wrapper, anchor="nw")
+
+        wrapper.bind(
+            "<Configure>",
+            lambda _event: canvas.configure(scrollregion=canvas.bbox("all")),
+        )
+        canvas.bind(
+            "<Configure>",
+            lambda event: canvas.itemconfigure(canvas_window, width=event.width),
+        )
+        canvas.bind_all(
+            "<MouseWheel>",
+            lambda event: canvas.yview_scroll(int(-1 * (event.delta / 120)), "units"),
+        )
 
         summary_frame = ttk.LabelFrame(wrapper, text="Resumen datasets")
         summary_frame.pack(fill="x")
