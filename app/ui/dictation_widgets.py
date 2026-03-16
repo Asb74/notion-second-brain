@@ -12,6 +12,9 @@ from app.services.voice_dictation import VoiceDictationError, VoiceDictationServ
 logger = logging.getLogger(__name__)
 
 
+_last_focused_widget: tk.Widget | object | None = None
+
+
 def _sanitize_tk_color(color: str | None, fallback: str = "#000000") -> str:
     """Return a Tkinter-safe color value for known invalid system color aliases."""
     value = str(color or "").strip()
@@ -32,6 +35,12 @@ def attach_dictation(widget: tk.Widget, parent_frame: tk.Misc) -> ttk.Frame:
     """Attach toggle dictation controls for Entry/Text/ScrolledText widgets."""
     if not _es_widget_texto(widget):
         raise ValueError("Dictado soporta solo Entry, Text y Textbox.")
+
+    def _remember_focus(event: tk.Event) -> None:
+        global _last_focused_widget
+        _last_focused_widget = event.widget
+
+    widget.bind("<FocusIn>", _remember_focus, add="+")
 
     controls = ttk.Frame(parent_frame)
     style = ttk.Style(controls)
