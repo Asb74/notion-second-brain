@@ -279,7 +279,7 @@ class MLManagerWindow(tk.Toplevel):
         lines = ["Duplicados detectados:"]
         for duplicate in duplicates:
             lines.append(
-                f"- índice {duplicate['duplicate_index']} duplica el ejemplo {duplicate['original_index']} "
+                f"- index {duplicate['duplicate_index']} duplicates example {duplicate['original_index']} "
                 f"(label: {duplicate['label'] or '-'})"
             )
         self.duplicates_text.insert("1.0", "\n".join(lines))
