@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Sequence
 
@@ -13,6 +14,9 @@ except Exception:  # noqa: BLE001
     joblib = None
     TfidfVectorizer = None
     SGDClassifier = None
+
+
+logger = logging.getLogger(__name__)
 
 
 class MLEmailModel:
@@ -46,8 +50,18 @@ class MLEmailModel:
             self.last_warning = "Entrenamiento insuficiente: solo una categoría detectada."
             return
 
+        logger.info("Iniciando vectorización de entrenamiento")
         features = self.vectorizer.fit_transform(texts)
-        self.classifier.fit(features, labels)
+        logger.info("Vectorized shape: %s", features.shape)
+        if features.shape[1] == 0:
+            raise RuntimeError("Entrenamiento fallido: vectorizador generó 0 features")
+
+        try:
+            self.classifier.fit(features, labels)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Training failed during fit()")
+            raise RuntimeError(f"Entrenamiento fallido durante fit(): {exc.__class__.__name__}: {exc}") from exc
+
         self.is_trained = True
         self.last_warning = None
 
