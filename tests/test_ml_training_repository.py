@@ -113,3 +113,28 @@ def test_duplicate_listing_and_auto_cleanup() -> None:
     removed = repo.remove_duplicate_examples("email_classification")
     assert removed == 1
     assert repo.count_duplicate_examples("email_classification") == 0
+
+
+def test_duplicates_use_normalized_input_and_label_only() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    _seed(conn)
+    conn.executemany(
+        """
+        INSERT INTO ml_training_examples(dataset, input_text, output_text, label, metadata, source, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            ("email_response", "  SAME\n\nTEXT  ", "first output", "priority", "{}", "manual", "2026-01-05 10:00:00"),
+            ("email_response", "same text", "different output", "priority", "{}", "manual", "2026-01-06 10:00:00"),
+            ("email_response", "same text", "another output", "normal", "{}", "manual", "2026-01-07 10:00:00"),
+        ],
+    )
+    conn.commit()
+    repo = MLTrainingRepository(conn)
+
+    duplicates = repo.list_duplicate_examples("email_response")
+    assert len(duplicates) == 1
+    assert duplicates[0]["original_index"] == 2
+    assert duplicates[0]["duplicate_index"] == 3
+    assert duplicates[0]["label"] == "priority"

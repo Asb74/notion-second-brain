@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 
 from app.ml.dataset_rules import get_dataset_rule
-from app.ml.training_validation import content_hash, normalize_text
+from app.ml.training_validation import normalize_text
 
 
 class MLTrainingRepository:
@@ -303,14 +303,7 @@ class MLTrainingRepository:
 
     @staticmethod
     def _duplicate_key(dataset: str, row: sqlite3.Row) -> tuple[str, ...]:
-        if (dataset or "").strip() == "email_classification":
-            return (
-                content_hash(row["input_text"]),
-                normalize_text(row["label"]),
-            )
-
         return (
-            content_hash(row["input_text"]),
-            content_hash(row["output_text"]),
+            normalize_text(row["input_text"]),
             normalize_text(row["label"]),
         )
