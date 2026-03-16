@@ -776,11 +776,33 @@ class MainWindow(ttk.Frame):
             token_path = Path("secrets/calendar_token.json")
 
         try:
-            self._calendar_client = GoogleCalendarClient(str(credentials_path), str(token_path))
+            self._calendar_client = GoogleCalendarClient(
+                str(credentials_path),
+                str(token_path),
+                auth_event_callback=self._on_google_auth_event,
+            )
         except Exception:  # noqa: BLE001
             logger.exception("No se pudo inicializar Google Calendar")
             self._calendar_client = None
         return self._calendar_client
+
+    def _on_google_auth_event(self, event_name: str) -> None:
+        if event_name == "reauthentication_required":
+            messagebox.showinfo(
+                "Reconectando con Google",
+                "La conexión con Google ha expirado.\n"
+                "Se abrirá una ventana del navegador para volver a conectar la cuenta.\n\n"
+                "Esto solo tarda unos segundos.",
+            )
+            return
+
+        if event_name == "reauthentication_started":
+            self.status_var.set("Reconectando con Google...")
+            self.update_idletasks()
+            return
+
+        if event_name == "reauthentication_succeeded":
+            self.status_var.set("Conexión con Google restablecida correctamente.")
 
     def _sync(self) -> None:
         threading.Thread(target=self._sync_worker, daemon=True).start()

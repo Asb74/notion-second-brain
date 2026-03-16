@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from typing import Callable
+
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
@@ -15,9 +17,16 @@ SCOPES = ["https://www.googleapis.com/auth/calendar"]
 class GoogleCalendarClient:
     """Simple wrapper around Google Calendar API operations."""
 
-    def __init__(self, credentials_path: str, token_path: str):
+    def __init__(
+        self,
+        credentials_path: str,
+        token_path: str,
+        auth_event_callback: Callable[[str], None] | None = None,
+    ):
         self.credentials_path = credentials_path
         self.token_path = token_path
+        self.auth_event_callback = auth_event_callback
+        self.reauthentication_required = False
         self.service = self._authenticate()
 
     def _authenticate(self):
@@ -25,8 +34,10 @@ class GoogleCalendarClient:
             credentials_path=self.credentials_path,
             token_path=self.token_path,
             scopes=SCOPES,
+            auth_event_callback=self.auth_event_callback,
         )
         creds = auth.get_credentials()
+        self.reauthentication_required = auth.reauthentication_required
         return build("calendar", "v3", credentials=creds)
 
     def list_calendars(self) -> list[dict]:

@@ -1,5 +1,5 @@
 import base64
-from typing import List
+from typing import Callable, List
 import logging
 
 from app.config.config_paths import GMAIL_CREDENTIALS, GMAIL_TOKEN
@@ -19,9 +19,12 @@ class GmailClient:
         self,
         credentials_path: str = GMAIL_CREDENTIALS,
         token_path: str = GMAIL_TOKEN,
+        auth_event_callback: Callable[[str], None] | None = None,
     ):
         self.credentials_path = credentials_path
         self.token_path = token_path
+        self.auth_event_callback = auth_event_callback
+        self.reauthentication_required = False
         self.service = self._authenticate()
 
     def _authenticate(self):
@@ -29,8 +32,10 @@ class GmailClient:
             credentials_path=self.credentials_path,
             token_path=self.token_path,
             scopes=SCOPES,
+            auth_event_callback=self.auth_event_callback,
         )
         creds = auth.get_credentials()
+        self.reauthentication_required = auth.reauthentication_required
         return build("gmail", "v1", credentials=creds)
 
     def _is_invalid_grant_error(self, exc: Exception) -> bool:
@@ -40,7 +45,15 @@ class GmailClient:
 
     def _reauthenticate_oauth(self):
         logger.info("Token revocado, iniciando reautenticación OAuth")
-        self.service = self._authenticate()
+        auth = GoogleAuthManager(
+            credentials_path=self.credentials_path,
+            token_path=self.token_path,
+            scopes=SCOPES,
+            auth_event_callback=self.auth_event_callback,
+        )
+        creds = auth.get_credentials(force_reauthentication=True)
+        self.reauthentication_required = auth.reauthentication_required
+        self.service = build("gmail", "v1", credentials=creds)
 
     def _execute_with_reauth(self, operation):
         try:
