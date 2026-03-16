@@ -7,6 +7,7 @@ import importlib.util
 import logging
 import tempfile
 import threading
+import time
 import tkinter as tk
 import wave
 from collections.abc import Callable
@@ -35,6 +36,7 @@ class VoiceDictationService:
     CHANNELS = 1
     MODEL = "gpt-4o-mini-transcribe"
     MAX_AUDIO_FILE_SIZE = 5 * 1024 * 1024
+    PHRASE_WINDOW_SECONDS = 3
 
     def __init__(
         self,
@@ -56,6 +58,7 @@ class VoiceDictationService:
         self._client = openai_client
         self._audio_path: str | None = None
         self._lock = threading.Lock()
+        self._recognition_thread: threading.Thread | None = None
 
     def toggle_recording(self) -> None:
         """Alterna estado del botón micrófono (iniciar/detener)."""
@@ -129,7 +132,10 @@ class VoiceDictationService:
                 logger.exception("No se pudo iniciar grabación")
                 raise VoiceDictationError("No se pudo acceder al micrófono para iniciar dictado.") from exc
 
-        self._set_status("🎤 Escuchando...")
+            self._recognition_thread = threading.Thread(target=self._recognition_loop, daemon=True)
+            self._recognition_thread.start()
+
+        self._set_status("🎙 Grabando...")
         self._set_button_recording_state(True)
 
     def stop_recording(self) -> None:
@@ -137,8 +143,7 @@ class VoiceDictationService:
         self.stop_recording_and_transcribe()
 
     def stop_recording_and_transcribe(self) -> None:
-        """Detiene la grabación y lanza la transcripción en un hilo."""
-        np = importlib.import_module("numpy")
+        """Detiene la grabación continua."""
 
         with self._lock:
             if not self.recording:
@@ -155,36 +160,57 @@ class VoiceDictationService:
                 self._stream = None
                 self.recording = False
 
-            chunks = list(self._audio_chunks)
-            self._audio_chunks = []
-
         self._set_button_recording_state(False)
+        self._set_status("Listo")
 
-        if not chunks:
-            self._set_status("No se capturó audio. Intenta hablar más cerca del micrófono.")
-            if self._error_callback:
-                self._error_callback("No se capturó audio. Intenta nuevamente.")
-            return
+    def _recognition_loop(self) -> None:
+        """Transcribe segmentos consecutivos sin bloquear la UI."""
+        while True:
+            time.sleep(self.PHRASE_WINDOW_SECONDS)
 
-        self._set_status("⏳ Transcribiendo...")
+            with self._lock:
+                recording = self.recording
+                chunks = list(self._audio_chunks)
+                self._audio_chunks = []
+
+            if not chunks:
+                if recording:
+                    self.root.after(0, lambda: self._set_status("🎙 Escuchando..."))
+                    continue
+                break
+
+            try:
+                text = self._transcribe_chunks(chunks)
+                if text:
+                    self.root.after(0, lambda value=text: self._insert_text(value))
+                if recording:
+                    self.root.after(0, lambda: self._set_status("🎙 Escuchando..."))
+            except Exception:  # noqa: BLE001
+                logger.exception("Error de reconocimiento; se continuará escuchando")
+                if recording:
+                    self.root.after(0, lambda: self._set_status("🎙 Escuchando..."))
+
+            if not recording:
+                break
+
+    def _transcribe_chunks(self, chunks: list[Any]) -> str:
+        np = importlib.import_module("numpy")
+        audio_data = np.concatenate(chunks, axis=0)
+        if audio_data.size == 0:
+            return ""
+
+        if getattr(audio_data, "ndim", 1) > 1:
+            audio_data = audio_data.mean(axis=1)
+
+        audio_data = np.clip(audio_data, -1.0, 1.0)
+        pcm16_data = (audio_data * 32767.0).astype(np.int16)
+        if pcm16_data.size == 0:
+            return ""
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+            self._audio_path = temp_file.name
 
         try:
-            audio_data = np.concatenate(chunks, axis=0)
-            if audio_data.size == 0:
-                raise RuntimeError("El audio capturado está vacío.")
-
-            if getattr(audio_data, "ndim", 1) > 1:
-                audio_data = audio_data.mean(axis=1)
-
-            audio_data = np.clip(audio_data, -1.0, 1.0)
-            pcm16_data = (audio_data * 32767.0).astype(np.int16)
-
-            if pcm16_data.size == 0:
-                raise RuntimeError("El audio convertido a PCM16 está vacío.")
-
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
-                self._audio_path = temp_file.name
-
             with wave.open(self._audio_path, "wb") as wav_file:
                 wav_file.setnchannels(self.CHANNELS)
                 wav_file.setsampwidth(2)
@@ -193,15 +219,13 @@ class VoiceDictationService:
 
             audio_size = Path(self._audio_path).stat().st_size
             if audio_size == 0:
-                raise RuntimeError("El archivo WAV temporal se creó vacío.")
+                return ""
             if audio_size > self.MAX_AUDIO_FILE_SIZE:
                 raise RuntimeError("El audio supera 5 MB. Reduce la duración del dictado.")
-        except Exception as exc:  # noqa: BLE001
-            self._cleanup_temp_audio()
-            logger.exception("Error preparando audio para transcripción")
-            raise VoiceDictationError(str(exc)) from exc
 
-        threading.Thread(target=self._transcribe_audio, daemon=True).start()
+            return self._transcribe_audio(self._audio_path)
+        finally:
+            self._cleanup_temp_audio()
 
     def _build_client(self) -> Any:
         if self._client is not None:
@@ -227,13 +251,8 @@ class VoiceDictationService:
             raise VoiceDictationError(f"El archivo KeySecret.txt está vacío: {key_path}")
         return key
 
-    def _transcribe_audio(self) -> None:
-        """Envía audio WAV a OpenAI y actualiza la UI en el hilo principal."""
-        audio_path = self._audio_path
-        if not audio_path:
-            self.root.after(0, lambda: self._on_transcription_error("No se encontró archivo temporal de audio."))
-            return
-
+    def _transcribe_audio(self, audio_path: str) -> str:
+        """Envía audio WAV a OpenAI y retorna texto transcrito."""
         try:
             client = self._build_client()
             openai_module = importlib.import_module("openai")
@@ -246,27 +265,23 @@ class VoiceDictationService:
                     model=self.MODEL,
                     file=audio_file,
                 )
-
-            text = (getattr(transcription, "text", "") or "").strip()
-            self.root.after(0, lambda: self._on_transcription_success(text))
+            return (getattr(transcription, "text", "") or "").strip()
         except api_timeout as exc:  # type: ignore[misc]
             logger.exception("Timeout al transcribir audio")
-            self.root.after(0, lambda: self._on_transcription_error("Tiempo de espera agotado al transcribir audio."))
+            raise VoiceDictationError("Tiempo de espera agotado al transcribir audio.") from exc
         except api_connection as exc:  # type: ignore[misc]
             logger.exception("Error de conexión al transcribir audio")
-            self.root.after(0, lambda: self._on_transcription_error("Error de conexión con OpenAI. Revisa internet."))
+            raise VoiceDictationError("Error de conexión con OpenAI. Revisa internet.") from exc
         except api_status as exc:  # type: ignore[misc]
             status_code = getattr(exc, "status_code", "desconocido")
             logger.exception("Error HTTP de OpenAI al transcribir audio")
-            self.root.after(0, lambda: self._on_transcription_error(f"OpenAI devolvió error HTTP {status_code}."))
-        except VoiceDictationError as exc:
+            raise VoiceDictationError(f"OpenAI devolvió error HTTP {status_code}.") from exc
+        except VoiceDictationError:
             logger.exception("Error controlado de dictado")
-            self.root.after(0, lambda: self._on_transcription_error(str(exc)))
+            raise
         except Exception as exc:  # noqa: BLE001
             logger.exception("Error inesperado al transcribir audio")
-            self.root.after(0, lambda: self._on_transcription_error(f"Error inesperado al transcribir: {exc}"))
-        finally:
-            self._cleanup_temp_audio()
+            raise VoiceDictationError(f"Error inesperado al transcribir: {exc}") from exc
 
     def _cleanup_temp_audio(self) -> None:
         audio_path = self._audio_path
@@ -278,31 +293,34 @@ class VoiceDictationService:
         except OSError:
             logger.debug("No se pudo eliminar temporal de dictado: %s", audio_path)
 
-    def _on_transcription_success(self, text: str) -> None:
-        if text:
-            self._insert_text(text)
-            self._set_status("Listo")
-            return
-
-        self._on_transcription_error("La transcripción llegó vacía.")
-
-    def _on_transcription_error(self, message: str) -> None:
-        self._set_status(message)
-        if self._error_callback:
-            self._error_callback(message)
-
     def _insert_text(self, text: str) -> None:
         widget = self._target_widget
         if widget is None or not self._is_text_widget(widget):
             return
 
+        clean_text = text.strip()
+        if not clean_text:
+            return
+
         try:
             if isinstance(widget, tk.Entry):
-                widget.insert(tk.INSERT, text)
+                current_text = widget.get()
+                value = clean_text if not str(current_text).strip() else f" {clean_text}"
+                widget.insert(tk.END, value)
             elif isinstance(widget, (tk.Text, ScrolledText)):
-                widget.insert(tk.INSERT, text)
+                current_text = widget.get("1.0", "end-1c")
+                value = clean_text if not str(current_text).strip() else f" {clean_text}"
+                widget.insert("end", value)
             else:
-                widget.insert("insert", text)
+                value = clean_text
+                if hasattr(widget, "get"):
+                    try:
+                        current_text = widget.get()
+                        if str(current_text).strip():
+                            value = f" {clean_text}"
+                    except Exception:  # noqa: BLE001
+                        logger.debug("No se pudo consultar contenido previo en widget personalizado")
+                widget.insert("end", value)
         except Exception:  # noqa: BLE001
             logger.exception("No se pudo insertar texto transcrito")
 
