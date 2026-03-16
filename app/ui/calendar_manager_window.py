@@ -100,6 +100,7 @@ class CalendarManagerWindow(ttk.Frame):
         self._drag_target_day: date | None = None
         self._drag_hover_column: tk.Widget | None = None
         self._week_day_columns: dict[str, tk.Widget] = {}
+        self.google_auth_status_var = tk.StringVar(value="")
 
         style = ttk.Style(self)
         style.theme_use("clam")
@@ -165,8 +166,29 @@ class CalendarManagerWindow(ttk.Frame):
         ttk.Button(toolbar, text="Lista", command=self._show_list_overview, style="Toolbar.TButton").grid(row=0, column=7, padx=4)
         ttk.Button(toolbar, text="Calendario", command=self._show_calendar_overview, style="Toolbar.TButton").grid(row=0, column=8, padx=4)
         ttk.Button(toolbar, text="Actualizar", command=self.refresh_calendar, style="Toolbar.TButton").grid(row=0, column=9, padx=4)
+        ttk.Label(toolbar, textvariable=self.google_auth_status_var, anchor="e").grid(row=0, column=10, sticky="e", padx=(8, 0))
 
         toolbar.columnconfigure(6, weight=1)
+        toolbar.columnconfigure(10, weight=1)
+
+    def _on_google_auth_event(self, event_name: str) -> None:
+        if event_name == "reauthentication_required":
+            messagebox.showinfo(
+                "Reconectando con Google",
+                "La conexión con Google ha expirado.\n"
+                "Se abrirá una ventana del navegador para volver a conectar la cuenta.\n\n"
+                "Esto solo tarda unos segundos.",
+            )
+            return
+
+        if event_name == "reauthentication_started":
+            self.google_auth_status_var.set("Reconectando con Google...")
+            self.update_idletasks()
+            return
+
+        if event_name == "reauthentication_succeeded":
+            self.google_auth_status_var.set("Conexión con Google restablecida correctamente.")
+            self.after(4000, lambda: self.google_auth_status_var.set(""))
 
     def _build_calendar_filters(self) -> None:
         self.calendar_filters_frame = ttk.LabelFrame(self, text="Calendarios")
@@ -1427,7 +1449,11 @@ class CalendarManagerWindow(ttk.Frame):
             token_path = Path("secrets/calendar_token.json")
 
         try:
-            self.calendar_client = GoogleCalendarClient(str(credentials_path), str(token_path))
+            self.calendar_client = GoogleCalendarClient(
+                str(credentials_path),
+                str(token_path),
+                auth_event_callback=self._on_google_auth_event,
+            )
         except Exception:  # noqa: BLE001
             logger.exception("No se pudo inicializar Google Calendar")
             self.calendar_client = None

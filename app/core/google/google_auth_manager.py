@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import Callable
 
 from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
@@ -18,12 +19,29 @@ logger = logging.getLogger(__name__)
 class GoogleAuthManager:
     """Centralized OAuth token handling for Google services."""
 
-    def __init__(self, credentials_path: str, token_path: str, scopes: list[str]):
+    def __init__(
+        self,
+        credentials_path: str,
+        token_path: str,
+        scopes: list[str],
+        auth_event_callback: Callable[[str], None] | None = None,
+    ):
         self.credentials_path = credentials_path
         self.token_path = token_path
         self.scopes = scopes
+        self.auth_event_callback = auth_event_callback
+        self.reauthentication_required = False
 
-    def get_credentials(self) -> Credentials:
+    def get_credentials(self, force_reauthentication: bool = False) -> Credentials:
+        self.reauthentication_required = False
+
+        if force_reauthentication:
+            logger.info("Reautenticación Google forzada")
+            self._delete_token_file()
+            creds = self._run_oauth_flow(trigger_reauth=True)
+            self._save_token(creds)
+            return creds
+
         creds = self._load_token()
 
         if not creds:
@@ -68,26 +86,41 @@ class GoogleAuthManager:
                     exc,
                 )
                 self._delete_token_file()
-                return self._run_oauth_flow()
+                return self._run_oauth_flow(trigger_reauth=True)
 
         logger.info("No se puede refrescar token Google; relanzando OAuth")
-        return self._run_oauth_flow()
+        return self._run_oauth_flow(trigger_reauth=True)
 
-    def _run_oauth_flow(self) -> Credentials:
+    def _run_oauth_flow(self, trigger_reauth: bool = False) -> Credentials:
         credentials_file = Path(self.credentials_path)
         if not credentials_file.exists():
             raise FileNotFoundError(
                 f"No se encontró el archivo de credenciales Google en: {self.credentials_path}"
             )
 
+        if trigger_reauth:
+            self.reauthentication_required = True
+            self._emit_auth_event("reauthentication_required")
+            self._emit_auth_event("reauthentication_started")
+
         try:
             flow = InstalledAppFlow.from_client_secrets_file(self.credentials_path, self.scopes)
             creds = flow.run_local_server(port=0)
             logger.info("OAuth completado correctamente")
+            if trigger_reauth:
+                self._emit_auth_event("reauthentication_succeeded")
             return creds
         except Exception as exc:  # noqa: BLE001
             logger.exception("Error durante el flujo OAuth interactivo de Google")
             raise RuntimeError("Falló el flujo OAuth interactivo de Google") from exc
+
+    def _emit_auth_event(self, event_name: str) -> None:
+        if self.auth_event_callback is None:
+            return
+        try:
+            self.auth_event_callback(event_name)
+        except Exception:  # noqa: BLE001
+            logger.exception("Error enviando evento de autenticación Google: %s", event_name)
 
     def _save_token(self, creds: Credentials) -> None:
         token_file = Path(self.token_path)
