@@ -91,11 +91,21 @@ class VoiceDictationService:
         np, sd = self._validate_runtime_requirements()
         _ = np
 
+        from app.ui.dictation_widgets import _last_focused_widget
+
+        target_widget = _last_focused_widget
+        if target_widget is None or not self._is_text_widget(target_widget):
+            message = "No se detectó un campo de texto activo para insertar el dictado."
+            self._set_status(message)
+            if self._error_callback:
+                self._error_callback(message)
+            raise VoiceDictationError(message)
+
         with self._lock:
             if self.recording:
                 return
 
-            self._target_widget = self.root.focus_get()
+            self._target_widget = target_widget
             self._audio_chunks = []
 
             def _audio_callback(indata, _frames, _time, status) -> None:
