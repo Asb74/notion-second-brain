@@ -20,7 +20,7 @@ def _seed(conn: sqlite3.Connection) -> None:
     )
     rows = [
         ("email_classification", "subj a\nbody a", "", "spam", "{}", "manual", "2026-01-01 10:00:00"),
-        ("email_classification", "subj a\nbody a", "", "spam", "{}", "manual", "2026-01-02 10:00:00"),
+        ("email_classification", "  SUBJ  a\n body a  ", "", "spam", "{}", "manual", "2026-01-02 10:00:00"),
         ("email_classification", "subj c", "", "spam", "{}", "manual", "2026-01-03 10:00:00"),
         ("email_classification", "subj c", "", "priority", "{}", "manual", "2026-01-04 10:00:00"),
         ("email_response", "hola", "respuesta", "priority", '{"k":1}', "generated", "2026-01-03 10:00:00"),
@@ -96,3 +96,20 @@ def test_quality_metrics_and_recommendations() -> None:
     recommendations = repo.get_recommendations("email_classification")
     assert any("Añadir al menos" in item for item in recommendations)
     assert any("Revisar duplicados" in item for item in recommendations)
+
+
+def test_duplicate_listing_and_auto_cleanup() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    _seed(conn)
+    repo = MLTrainingRepository(conn)
+
+    duplicates = repo.list_duplicate_examples("email_classification")
+    assert len(duplicates) == 1
+    assert duplicates[0]["original_index"] == 1
+    assert duplicates[0]["duplicate_index"] == 2
+    assert duplicates[0]["label"] == "spam"
+
+    removed = repo.remove_duplicate_examples("email_classification")
+    assert removed == 1
+    assert repo.count_duplicate_examples("email_classification") == 0

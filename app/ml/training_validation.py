@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import hashlib
 from typing import Any
 
 from app.ml.dataset_rules import get_dataset_rule
@@ -14,6 +15,12 @@ def normalize_text(text: str | None) -> str:
     value = re.sub(r"\n+", "\n", value)
     value = re.sub(r"\s+", " ", value)
     return value.strip()
+
+
+def content_hash(text: str | None) -> str:
+    """Stable hash for normalized content comparisons."""
+    normalized = normalize_text(text)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def build_dedupe_signature(
