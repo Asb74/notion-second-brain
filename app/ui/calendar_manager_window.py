@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import calendar
+import locale
 import logging
 import webbrowser
 from datetime import date, datetime, timedelta
@@ -29,6 +30,34 @@ EMAIL_COLOR = "#70AD47"
 EVENT_COLOR = "#ED7D31"
 ACTION_COLOR = "#FFC000"
 STATUS_OPTIONS = ["Pendiente", "En curso", "Finalizado", "Cancelado", "Completado"]
+
+SPANISH_MONTH_NAMES = {
+    1: "enero",
+    2: "febrero",
+    3: "marzo",
+    4: "abril",
+    5: "mayo",
+    6: "junio",
+    7: "julio",
+    8: "agosto",
+    9: "septiembre",
+    10: "octubre",
+    11: "noviembre",
+    12: "diciembre",
+}
+
+
+def _configure_spanish_time_locale() -> bool:
+    for candidate in ("es_ES.UTF-8", "es_ES", "Spanish_Spain.1252"):
+        try:
+            locale.setlocale(locale.LC_TIME, candidate)
+            return True
+        except locale.Error:
+            continue
+    return False
+
+
+SPANISH_TIME_LOCALE_SET = _configure_spanish_time_locale()
 
 
 def _sanitize_tk_color(color: str | None, fallback: str = "#000000") -> str:
@@ -75,6 +104,7 @@ class CalendarManagerWindow(ttk.Frame):
         self.current_date = date.today()
         self.current_month = self.current_date.replace(day=1)
         self.view_mode = "month"
+        self.vista_actual = "mes"
         self.calendar_events: list[dict] = []
         self.notes_with_dates: list[Note] = []
         self.actions: list[Action] = []
@@ -320,12 +350,30 @@ class CalendarManagerWindow(ttk.Frame):
             ttk.Label(item, text=label_text).pack(side="left")
 
         legend_frame.columnconfigure(len(legend_items), weight=1)
-        self.week_label = ttk.Label(legend_frame, text="", font=("Segoe UI", 10, "bold"), foreground="#2f2f2f")
-        self.week_label.grid(row=0, column=len(legend_items) + 1, sticky="e", padx=(10, 0))
+        self.label_contexto = ttk.Label(legend_frame, text="", font=("Segoe UI", 10, "bold"), foreground="#2f2f2f")
+        self.label_contexto.grid(row=0, column=len(legend_items) + 1, sticky="e", padx=(10, 0))
+
+    def actualizar_label_contexto(self, fecha: date, vista: str) -> None:
+        if vista == "semana":
+            semana = fecha.isocalendar().week
+            texto = f"SEMANA {semana}"
+        elif vista == "mes":
+            if SPANISH_TIME_LOCALE_SET:
+                texto = fecha.strftime("%B %Y").upper()
+            else:
+                texto = f"{SPANISH_MONTH_NAMES.get(fecha.month, '')} {fecha.year}".upper()
+        elif vista == "dia":
+            if SPANISH_TIME_LOCALE_SET:
+                texto = fecha.strftime("%d %B %Y").upper()
+            else:
+                texto = f"{fecha.day:02d} {SPANISH_MONTH_NAMES.get(fecha.month, '')} {fecha.year}".upper()
+        else:
+            texto = ""
+
+        self.label_contexto.config(text=texto)
 
     def _update_week_label(self, reference_date: date) -> None:
-        week_number = reference_date.isocalendar().week
-        self.week_label.config(text=f"SEMANA {week_number}")
+        self.actualizar_label_contexto(reference_date, "semana")
 
     def _build_layout(self) -> None:
         self.crm_paned = ttk.PanedWindow(self, orient="vertical")
@@ -1573,14 +1621,17 @@ class CalendarManagerWindow(ttk.Frame):
 
     def _set_view_day(self) -> None:
         self.view_mode = "day"
+        self.vista_actual = "dia"
         self.render_calendar()
 
     def _set_view_week(self) -> None:
         self.view_mode = "week"
+        self.vista_actual = "semana"
         self.render_calendar()
 
     def _set_view_month(self) -> None:
         self.view_mode = "month"
+        self.vista_actual = "mes"
         self.render_calendar()
 
     def _clear_calendar_body(self) -> None:
@@ -1588,7 +1639,7 @@ class CalendarManagerWindow(ttk.Frame):
             child.destroy()
 
     def render_calendar(self) -> None:
-        self._update_week_label(self.current_date)
+        self.actualizar_label_contexto(self.current_date, self.vista_actual)
         if self.view_mode == "week":
             self._render_week_view()
             return
