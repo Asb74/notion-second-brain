@@ -1,0 +1,5 @@
+"""Background email polling defaults."""
+
+EMAIL_CHECK_INTERVAL_SECONDS = 60
+EMAIL_QUEUE_POLL_MS = 2000
+EMAIL_NOTIFICATIONS_ENABLED = True

@@ -393,6 +393,7 @@ class EmailManagerWindow(tk.Toplevel):
         note_service: NoteService,
         db_connection: sqlite3.Connection,
         gmail_client: GmailClient,
+        enable_auto_checker: bool = True,
     ):
         super().__init__(master)
         self.note_service = note_service
@@ -471,7 +472,8 @@ class EmailManagerWindow(tk.Toplevel):
 
         self._build_layout()
         self.refresh_emails()
-        self._inicializar_revisor_automatico()
+        if enable_auto_checker:
+            self._inicializar_revisor_automatico()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     @staticmethod
