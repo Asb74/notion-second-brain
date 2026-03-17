@@ -555,11 +555,11 @@ def test_update_week_label_uses_iso_week() -> None:
         def config(self, *, text: str) -> None:
             self.text = text
 
-    window.week_label = _LabelStub()
+    window.label_contexto = _LabelStub()
 
     window._update_week_label(__import__("datetime").date(2025, 3, 5))
 
-    assert window.week_label.text == "SEMANA 10"
+    assert window.label_contexto.text == "SEMANA 10"
 
 
 def test_get_drop_target_in_day_view_returns_day_and_hour() -> None:
