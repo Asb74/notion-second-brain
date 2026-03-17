@@ -48,6 +48,7 @@ from app.ui.email_manager_window import (
     normalize_to_table,
     parse_kv_to_table,
     parse_markdown_table,
+    sanitize_html_for_tk,
 )
 
 
@@ -57,6 +58,22 @@ class _PreviewStub:
 
     def set_html(self, value: str) -> None:
         self.value = value
+
+
+class _PreviewErrorStub:
+    def set_html(self, _value: str) -> None:
+        raise RuntimeError("tkhtmlview error")
+
+
+class _PreviewTextStub:
+    def __init__(self) -> None:
+        self.value = ""
+
+    def delete(self, *_args) -> None:
+        self.value = ""
+
+    def insert(self, _index: str, text: str) -> None:
+        self.value = text
 
 
 def test_create_notes_no_row_get() -> None:
@@ -114,6 +131,30 @@ def test_set_html_preview_uses_text_fallback_for_non_html() -> None:
     assert window._current_html_content == ""
     assert window.preview_html.value == "<pre>line 1\nline &lt;2&gt;</pre>"
 
+
+
+
+def test_sanitize_html_for_tk_replaces_problematic_css_values() -> None:
+    raw = '<span style="background:transparent;color:inherit;border-color:rgba(0,0,0,.2);color:var(--text)">ok</span>'
+
+    sanitized = sanitize_html_for_tk(raw)
+
+    assert "transparent" not in sanitized.lower()
+    assert "inherit" not in sanitized.lower()
+    assert "rgba(" not in sanitized.lower()
+    assert "var(" not in sanitized.lower()
+
+
+def test_set_html_preview_falls_back_to_text_when_renderer_fails() -> None:
+    window = EmailManagerWindow.__new__(EmailManagerWindow)
+    window.preview_html = _PreviewErrorStub()
+    window.preview_text = _PreviewTextStub()
+    window._expanded_html_frame = None
+    window._current_html_content = ""
+
+    EmailManagerWindow._set_html_preview(window, '<div style="color:transparent">hola</div>', "texto alternativo")
+
+    assert window.preview_text.value == "texto alternativo"
 
 def test_clean_outlook_styles_removes_mso_and_list_noise() -> None:
     raw = """{mso-level-number-format:bullet; mso-level-text:\\F0B7;}\n@list l1:level6 {mso-level-number-format:bullet; font-family:Wingdings;}\nfont-family: Times New Roman\nDe: Antonio Sánchez"""
