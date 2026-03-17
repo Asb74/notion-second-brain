@@ -316,6 +316,12 @@ class CalendarManagerWindow(ttk.Frame):
             ttk.Label(item, text=label_text).pack(side="left")
 
         legend_frame.columnconfigure(len(legend_items), weight=1)
+        self.week_label = ttk.Label(legend_frame, text="", font=("Segoe UI", 10, "bold"), foreground="#2f2f2f")
+        self.week_label.grid(row=0, column=len(legend_items) + 1, sticky="e", padx=(10, 0))
+
+    def _update_week_label(self, reference_date: date) -> None:
+        week_number = reference_date.isocalendar().week
+        self.week_label.config(text=f"SEMANA {week_number}")
 
     def _build_layout(self) -> None:
         self.crm_paned = ttk.PanedWindow(self, orient="vertical")
@@ -1578,6 +1584,7 @@ class CalendarManagerWindow(ttk.Frame):
             child.destroy()
 
     def render_calendar(self) -> None:
+        self._update_week_label(self.current_date)
         if self.view_mode == "week":
             self._render_week_view()
             return
