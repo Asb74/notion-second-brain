@@ -134,37 +134,146 @@ class MainWindow(ttk.Frame):
 
 
     def _build_menu(self) -> None:
+        """Build a desktop-style top menu and wire existing actions into it."""
         menubar = tk.Menu(self.master)
 
         archivo = tk.Menu(menubar, tearoff=0)
+        archivo.add_command(label="Nueva nota", command=self._new_note, accelerator="Ctrl+N")
+        archivo.add_command(label="Abrir", command=self._open_selected_note)
+        archivo.add_command(label="Guardar", command=self._save_note, accelerator="Ctrl+S")
+        archivo.add_separator()
         archivo.add_command(label="Salir", command=self.master.destroy)
         menubar.add_cascade(label="Archivo", menu=archivo)
 
         edicion = tk.Menu(menubar, tearoff=0)
-        edicion.add_command(label="Refrescar notas", command=self.refresh_notes)
+        edicion.add_command(label="Copiar", command=self._copy_selected_text, accelerator="Ctrl+C")
+        edicion.add_command(label="Pegar", command=self._paste_text, accelerator="Ctrl+V")
+        edicion.add_separator()
+        edicion.add_command(label="Limpiar campos", command=self._clear_note_fields)
         menubar.add_cascade(label="Edición", menu=edicion)
 
         herramientas = tk.Menu(menubar, tearoff=0)
+        herramientas.add_command(label="Reentrenar modelo", command=self._retrain_model_from_menu)
+        herramientas.add_command(label="Reclasificar emails", command=self._reclassify_emails_from_menu)
+        herramientas.add_command(label="Descargar", command=self._download_emails_from_menu)
+        herramientas.add_command(label="Procesos automáticos", command=self._auto_process_from_menu)
+        herramientas.add_separator()
         herramientas.add_command(label="Configuración", command=self._open_settings)
         herramientas.add_command(label="Gestión de Emails", command=self._open_email_manager)
         herramientas.add_command(label="Agenda", command=self._open_calendar_manager)
         herramientas.add_command(label="ML Manager", command=self._open_ml_manager)
         herramientas.add_command(label="ML Metrics", command=self._open_ml_quality_metrics)
-        herramientas.add_command(label="Calidad ML", command=self._open_ml_quality_metrics)
+        herramientas.add_command(label="Abrir en Notion", command=self._open_notion)
+        herramientas.add_command(label="Abrir evento", command=self._open_selected_note_google_event)
         menubar.add_cascade(label="Herramientas", menu=herramientas)
 
         maestros = tk.Menu(menubar, tearoff=0)
-        maestros.add_command(label="Gestionar Áreas", command=lambda: self._open_masters_dialog("Area"))
-        maestros.add_command(label="Gestionar Tipos", command=lambda: self._open_masters_dialog("Tipo"))
-        maestros.add_command(label="Gestionar Prioridades", command=lambda: self._open_masters_dialog("Prioridad"))
-        maestros.add_command(label="Gestionar Orígenes", command=lambda: self._open_masters_dialog("Origen"))
+        maestros.add_command(label="Perfiles", command=self._open_user_profile)
+        maestros.add_command(label="Contextos", command=lambda: self._open_masters_dialog("Area"))
+        maestros.add_command(label="Plantillas", command=lambda: self._open_masters_dialog("Tipo"))
+        maestros.add_separator()
+        maestros.add_command(label="Importar CSV", command=lambda: self._open_masters_dialog("Origen"))
+        maestros.add_command(label="Exportar CSV", command=lambda: self._open_masters_dialog("Prioridad"))
         menubar.add_cascade(label="Maestros", menu=maestros)
 
         ia = tk.Menu(menubar, tearoff=0)
+        ia.add_command(label="Generar respuesta", command=self._generate_response_from_menu)
+        ia.add_command(label="Resumir", command=self._summarize_from_menu)
+        ia.add_command(label="Preparar contexto", command=self._prepare_context_from_menu)
+        ia.add_command(label="Crear nota desde IA", command=self._create_note_from_ai_menu)
+        ia.add_separator()
         ia.add_command(label="Sincronizar pendientes", command=self._sync)
         menubar.add_cascade(label="IA", menu=ia)
 
         self.master.config(menu=menubar)
+
+        # Shortcuts básicos del menú de escritorio.
+        self.master.bind_all("<Control-n>", self._new_note_event)
+        self.master.bind_all("<Control-s>", self._save_note_event)
+        self.master.bind_all("<Control-c>", self._copy_selected_text_event)
+        self.master.bind_all("<Control-v>", self._paste_text_event)
+
+    def _new_note_event(self, _event: tk.Event | None = None) -> str:
+        self._new_note()
+        return "break"
+
+    def _save_note_event(self, _event: tk.Event | None = None) -> str:
+        self._save_note()
+        return "break"
+
+    def _copy_selected_text_event(self, _event: tk.Event | None = None) -> str:
+        self._copy_selected_text()
+        return "break"
+
+    def _paste_text_event(self, _event: tk.Event | None = None) -> str:
+        self._paste_text()
+        return "break"
+
+    def _new_note(self) -> None:
+        self._clear_note_fields()
+        self.title_entry.focus_set()
+
+    def _clear_note_fields(self) -> None:
+        self.title_var.set("")
+        self.text_widget.delete("1.0", "end")
+        self.source_var.set("manual")
+        self.hora_inicio_var.set("")
+        self.duracion_var.set("60 min")
+        self.hora_fin_var.set("")
+
+    def _copy_selected_text(self) -> None:
+        widget = self.master.focus_get()
+        if widget is None:
+            return
+        try:
+            widget.event_generate("<<Copy>>")
+        except tk.TclError:
+            return
+
+    def _paste_text(self) -> None:
+        widget = self.master.focus_get()
+        if widget is None:
+            return
+        try:
+            widget.event_generate("<<Paste>>")
+        except tk.TclError:
+            return
+
+    def _run_email_manager_action(self, action_name: str) -> None:
+        email_window = self._ensure_email_manager_window()
+        if email_window is None:
+            return
+        action = getattr(email_window, action_name, None)
+        if not callable(action):
+            messagebox.showwarning("Acción no disponible", "La acción no está disponible en esta versión.")
+            return
+        action()
+
+    def _retrain_model_from_menu(self) -> None:
+        self._run_email_manager_action("_retrain_model")
+
+    def _reclassify_emails_from_menu(self) -> None:
+        self._run_email_manager_action("_reclassify_current_emails")
+
+    def _download_emails_from_menu(self) -> None:
+        self._run_email_manager_action("_download_new_emails")
+
+    def _auto_process_from_menu(self) -> None:
+        # Flujo automático mínimo reutilizando acciones existentes de Email Manager.
+        self._run_email_manager_action("_reclassify_current_emails")
+        self._run_email_manager_action("_retrain_model")
+
+    def _generate_response_from_menu(self) -> None:
+        self._run_email_manager_action("_generate_response")
+
+    def _summarize_from_menu(self) -> None:
+        self._run_email_manager_action("_summarize_email")
+
+    def _prepare_context_from_menu(self) -> None:
+        self._run_email_manager_action("_prepare_context_for_selected_email")
+
+    def _create_note_from_ai_menu(self) -> None:
+        self._run_email_manager_action("_create_notes_from_selected_emails")
 
     def _open_masters_dialog(self, category: str) -> None:
         MastersDialog(self.master, self.service, category, self._load_master_values)
@@ -415,15 +524,11 @@ class MainWindow(ttk.Frame):
 
         actions = ttk.Frame(form)
         actions.grid(row=4, column=0, columnspan=10, sticky="ew", pady=(4, 8), padx=6)
+        # Toolbar simplificada: acciones frecuentes permanecen visibles;
+        # el resto vive en el menú superior para evitar saturación visual.
         action_buttons = [
-            ("⚙ Perfil usuario", self._open_user_profile),
-            ("Configuración", self._open_settings),
             ("Guardar", self._save_note),
             ("Enviar", self._sync),
-            ("Reintentar", self._sync),
-            ("Abrir en Notion", self._open_notion),
-            ("Abrir evento", self._open_selected_note_google_event),
-            ("Agenda", self._open_calendar_manager),
         ]
         for idx, (label, command) in enumerate(action_buttons):
             ttk.Button(actions, text=label, command=command, style="Toolbar.TButton").grid(
