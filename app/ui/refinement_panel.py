@@ -102,6 +102,9 @@ def build_refinement_prompt(
         mode_prompts[REFINEMENT_MODE_EMAIL_SUMMARY],
     )
 
+    if any("formato tabla" in line.lower() for line in refinements):
+        task_instruction += "\nDevuelve el resultado en formato tabla Markdown con encabezados claros."
+
     return (
         f"{base_instruction}\n\n"
         "CONTEXTO ORIGINAL\n"

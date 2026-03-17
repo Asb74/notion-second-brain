@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import base64
+import csv
 import threading
 import shutil
 import sqlite3
@@ -93,6 +94,72 @@ ATTACHMENT_SUMMARY_REQUEST = (
 MAX_REFINEMENTS = 5
 
 _SYSTEM_LOG_WIDGET: ScrolledText | None = None
+
+
+def is_table(text: str) -> bool:
+    """Return True when text resembles a Markdown or CSV table."""
+    normalized_lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    if len(normalized_lines) < 2:
+        return False
+
+    pipe_lines = [line for line in normalized_lines if "|" in line]
+    if len(pipe_lines) >= 2:
+        return True
+
+    comma_lines = [line for line in normalized_lines if "," in line]
+    if len(comma_lines) < 2:
+        return False
+
+    expected_columns = len([cell for cell in comma_lines[0].split(",")])
+    if expected_columns < 2:
+        return False
+    return all(len(line.split(",")) == expected_columns for line in comma_lines[:6])
+
+
+def parse_markdown_table(text: str) -> tuple[list[str], list[list[str]]]:
+    """Parse Markdown/CSV tabular text and return headers and rows."""
+    normalized_lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+
+    if any("|" in line for line in normalized_lines):
+        candidate_lines = []
+        for line in normalized_lines:
+            compact = line.replace("|", "").replace(":", "").replace("-", "").strip()
+            if not compact:
+                continue
+            candidate_lines.append(line)
+
+        parsed_rows: list[list[str]] = []
+        for line in candidate_lines:
+            trimmed = line.strip("|")
+            columns = [cell.strip() for cell in trimmed.split("|")]
+            if columns:
+                parsed_rows.append(columns)
+    else:
+        parsed_rows = [next(csv.reader([line])) for line in normalized_lines if "," in line]
+
+    if not parsed_rows:
+        return [], []
+
+    max_columns = max(len(row) for row in parsed_rows)
+    normalized_rows = [row + [""] * (max_columns - len(row)) for row in parsed_rows]
+    headers = normalized_rows[0]
+    rows = normalized_rows[1:]
+    return headers, rows
+
+
+def render_table(parent: tk.Misc, headers: list[str], rows: list[list[str]]) -> ttk.Treeview:
+    """Render headers and rows into a table-like Treeview."""
+    tree = ttk.Treeview(parent, columns=headers, show="headings")
+    for col in headers:
+        tree.heading(col, text=col)
+        tree.column(col, anchor="w", width=150)
+
+    for row in rows:
+        values = row + [""] * (len(headers) - len(row))
+        tree.insert("", "end", values=values[: len(headers)])
+
+    tree.pack(fill="both", expand=True)
+    return tree
 
 
 def is_real_html(content: str | None) -> bool:
@@ -271,6 +338,81 @@ class EmailManagerWindow(tk.Toplevel):
 
         self._build_layout()
         self.refresh_emails()
+
+    @staticmethod
+    def _clear_result_container(container: tk.Misc) -> None:
+        for widget in container.winfo_children():
+            widget.destroy()
+
+    def _copy_treeview_as_csv(self, tree: ttk.Treeview) -> None:
+        headers = [str(column) for column in tree["columns"]]
+        output_lines: list[str] = []
+        if headers:
+            output_lines.append(",".join(f'"{value.replace('"', '""')}"' for value in headers))
+
+        for item in tree.get_children():
+            values = [str(value) for value in tree.item(item, "values")]
+            output_lines.append(",".join(f'"{value.replace('"', '""')}"' for value in values))
+
+        csv_content = "\n".join(output_lines)
+        self.clipboard_clear()
+        self.clipboard_append(csv_content)
+        self.update_idletasks()
+        messagebox.showinfo("Tabla", "Tabla copiada al portapapeles en formato CSV.")
+
+    def _save_treeview_as_csv(self, tree: ttk.Treeview) -> None:
+        file_path = filedialog.asksaveasfilename(
+            title="Guardar tabla",
+            defaultextension=".csv",
+            filetypes=[("CSV", "*.csv"), ("Todos los archivos", "*.*")],
+        )
+        if not file_path:
+            return
+
+        with open(file_path, "w", encoding="utf-8", newline="") as csv_file:
+            writer = csv.writer(csv_file)
+            headers = [str(column) for column in tree["columns"]]
+            if headers:
+                writer.writerow(headers)
+            for item in tree.get_children():
+                writer.writerow(list(tree.item(item, "values")))
+
+        messagebox.showinfo("Tabla", f"Tabla guardada en:\n{file_path}")
+
+    def _render_output_widget(self, container: tk.Misc, output_text: str) -> tk.Text | None:
+        self._clear_result_container(container)
+
+        if is_table(output_text):
+            headers, rows = parse_markdown_table(output_text)
+            if headers and rows:
+                wrapper = ttk.Frame(container)
+                wrapper.pack(fill="both", expand=True)
+                wrapper.rowconfigure(0, weight=1)
+                wrapper.columnconfigure(0, weight=1)
+
+                table_frame = ttk.Frame(wrapper)
+                table_frame.grid(row=0, column=0, sticky="nsew")
+                table_frame.rowconfigure(0, weight=1)
+                table_frame.columnconfigure(0, weight=1)
+
+                tree = render_table(table_frame, headers, rows)
+                tree.grid(row=0, column=0, sticky="nsew")
+                y_scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
+                y_scrollbar.grid(row=0, column=1, sticky="ns")
+                x_scrollbar = ttk.Scrollbar(table_frame, orient="horizontal", command=tree.xview)
+                x_scrollbar.grid(row=1, column=0, sticky="ew")
+                tree.configure(yscrollcommand=y_scrollbar.set, xscrollcommand=x_scrollbar.set)
+
+                actions = ttk.Frame(wrapper)
+                actions.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+                ttk.Button(actions, text="📋 Copiar tabla", command=lambda: self._copy_treeview_as_csv(tree)).pack(side="left")
+                ttk.Button(actions, text="💾 Guardar como CSV", command=lambda: self._save_treeview_as_csv(tree)).pack(side="left", padx=(6, 0))
+                return None
+
+        editor = ScrolledText(container, wrap="word", height=14)
+        editor.pack(fill="both", expand=True)
+        editor.insert("1.0", output_text)
+        return editor
 
     def _build_layout(self) -> None:
         global _SYSTEM_LOG_WIDGET
@@ -2230,11 +2372,14 @@ class EmailManagerWindow(tk.Toplevel):
             pady=(12, 6),
         )
 
-        editor = ScrolledText(dialog, wrap="word", height=14)
-        editor.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
-        editor.insert("1.0", self._apply_user_signature(draft_ai_response))
+        output_frame = ttk.Frame(dialog)
+        output_frame.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        output_frame.grid_columnconfigure(0, weight=1)
+        output_frame.grid_rowconfigure(0, weight=1)
 
         original_output = self._apply_user_signature(draft_ai_response).strip()
+        current_output = original_output
+        editor = self._render_output_widget(output_frame, current_output)
         input_original = build_email_training_input_text(
             subject=row.get("subject", ""),
             sender=row.get("real_sender") or row.get("sender", ""),
@@ -2246,17 +2391,30 @@ class EmailManagerWindow(tk.Toplevel):
             texto_base=original_output,
             refinement_mode=REFINEMENT_MODE_RESPONSE,
             original_context=input_original,
-            on_restore_version=lambda value: (editor.delete("1.0", "end"), editor.insert("1.0", value)),
+            on_restore_version=lambda _value: None,
             max_refinements=MAX_REFINEMENTS,
         )
         panel.grid(row=2, column=0, sticky="nsew", padx=12, pady=(0, 8))
         panel.seed_history(original_output)
 
+        def get_current_output() -> str:
+            nonlocal current_output
+            if editor is not None:
+                current_output = editor.get("1.0", "end").strip()
+            return current_output
+
+        def set_current_output(value: str) -> None:
+            nonlocal current_output, editor
+            current_output = (value or "").strip()
+            editor = self._render_output_widget(output_frame, current_output)
+
+        panel.on_restore_version = set_current_output
+
         def refine_response() -> None:
             if not panel.can_refine():
                 return
 
-            current_output = editor.get("1.0", "end").strip()
+            current_output = get_current_output()
             panel.texto_base = current_output
             instruction = panel.get_prompt_final()
             refined = self._refine_generated_output(
@@ -2266,8 +2424,7 @@ class EmailManagerWindow(tk.Toplevel):
             )
             if not refined:
                 return
-            editor.delete("1.0", "end")
-            editor.insert("1.0", refined)
+            set_current_output(refined)
             panel.record_version(refined)
             self.training_repo.save_refinement_history(
                 dataset="email_response",
@@ -2286,15 +2443,14 @@ class EmailManagerWindow(tk.Toplevel):
             buttons,
             text="Restablecer",
             command=lambda: (
-                editor.delete("1.0", "end"),
-                editor.insert("1.0", original_output),
+                set_current_output(original_output),
                 panel.clear_refinements(),
             ),
         ).pack(side="left", padx=6)
         ttk.Button(buttons, text="Restaurar versión", command=panel.restore_selected_version).pack(side="left")
 
         def use_response() -> None:
-            final_text = editor.get("1.0", "end").strip()
+            final_text = get_current_output()
             if not final_text:
                 messagebox.showwarning("Atención", "La respuesta no puede estar vacía.")
                 return
@@ -2304,7 +2460,7 @@ class EmailManagerWindow(tk.Toplevel):
             dialog.destroy()
 
         def edit_and_use_response() -> None:
-            edited_text = editor.get("1.0", "end").strip()
+            edited_text = get_current_output()
             if not edited_text:
                 messagebox.showwarning("Atención", "La respuesta no puede estar vacía.")
                 return
@@ -2314,7 +2470,7 @@ class EmailManagerWindow(tk.Toplevel):
             dialog.destroy()
 
         def save_final_version() -> None:
-            final_text = editor.get("1.0", "end").strip()
+            final_text = get_current_output()
             if not final_text:
                 messagebox.showwarning("Atención", "La respuesta no puede estar vacía.")
                 return
@@ -2356,11 +2512,14 @@ class EmailManagerWindow(tk.Toplevel):
             pady=(12, 6),
         )
 
-        editor = ScrolledText(dialog, wrap="word", height=14)
-        editor.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
-        editor.insert("1.0", ai_summary)
-
         original_output = ai_summary.strip()
+        output_frame = ttk.Frame(dialog)
+        output_frame.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        output_frame.grid_columnconfigure(0, weight=1)
+        output_frame.grid_rowconfigure(0, weight=1)
+        current_output = original_output
+        editor = self._render_output_widget(output_frame, current_output)
+
         input_original = preview_body.strip() or build_email_training_input_text(
             subject=row.get("subject", ""),
             sender=row.get("real_sender") or row.get("sender", ""),
@@ -2372,16 +2531,29 @@ class EmailManagerWindow(tk.Toplevel):
             texto_base=original_output,
             refinement_mode=REFINEMENT_MODE_ATTACHMENT_SUMMARY if summary_source == "attachment" else REFINEMENT_MODE_EMAIL_SUMMARY,
             original_context=input_original,
-            on_restore_version=lambda value: (editor.delete("1.0", "end"), editor.insert("1.0", value)),
+            on_restore_version=lambda _value: None,
             max_refinements=MAX_REFINEMENTS,
         )
         panel.grid(row=2, column=0, sticky="nsew", padx=12, pady=(0, 8))
         panel.seed_history(original_output)
 
+        def get_current_output() -> str:
+            nonlocal current_output
+            if editor is not None:
+                current_output = editor.get("1.0", "end").strip()
+            return current_output
+
+        def set_current_output(value: str) -> None:
+            nonlocal current_output, editor
+            current_output = (value or "").strip()
+            editor = self._render_output_widget(output_frame, current_output)
+
+        panel.on_restore_version = set_current_output
+
         def refine_summary() -> None:
             if not panel.can_refine():
                 return
-            current_output = editor.get("1.0", "end").strip()
+            current_output = get_current_output()
             panel.texto_base = current_output
             instruction = panel.get_prompt_final()
             refined = self._refine_generated_output(
@@ -2391,8 +2563,7 @@ class EmailManagerWindow(tk.Toplevel):
             )
             if not refined:
                 return
-            editor.delete("1.0", "end")
-            editor.insert("1.0", refined)
+            set_current_output(refined)
             panel.record_version(refined)
             self.training_repo.save_refinement_history(
                 dataset="email_summary",
@@ -2407,11 +2578,11 @@ class EmailManagerWindow(tk.Toplevel):
         buttons.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 12))
 
         ttk.Button(buttons, text="Mejorar resultado", command=refine_summary).pack(side="left")
-        ttk.Button(buttons, text="Restablecer", command=lambda: (editor.delete("1.0", "end"), editor.insert("1.0", original_output), panel.clear_refinements())).pack(side="left", padx=6)
+        ttk.Button(buttons, text="Restablecer", command=lambda: (set_current_output(original_output), panel.clear_refinements())).pack(side="left", padx=6)
         ttk.Button(buttons, text="Restaurar versión", command=panel.restore_selected_version).pack(side="left")
 
         def confirm_summary() -> None:
-            current_summary = editor.get("1.0", "end").strip()
+            current_summary = get_current_output()
             if not current_summary:
                 messagebox.showwarning("Atención", "El resumen no puede estar vacío.")
                 return
@@ -2429,7 +2600,7 @@ class EmailManagerWindow(tk.Toplevel):
             dialog.destroy()
 
         def edit_summary() -> None:
-            edited_summary = editor.get("1.0", "end").strip()
+            edited_summary = get_current_output()
             if not edited_summary:
                 messagebox.showwarning("Atención", "El resumen no puede estar vacío.")
                 return
@@ -2447,7 +2618,7 @@ class EmailManagerWindow(tk.Toplevel):
             dialog.destroy()
 
         def save_final_version() -> None:
-            final_summary = editor.get("1.0", "end").strip()
+            final_summary = get_current_output()
             if not final_summary:
                 messagebox.showwarning("Atención", "El resumen no puede estar vacío.")
                 return
