@@ -28,12 +28,13 @@ class EmailCheckerThread(Thread):
         self._stop_event = Event()
 
     def run(self) -> None:
-        logger.info("Email checker thread started")
+        logger.info("Email checker started")
         while not self._stop_event.is_set():
             try:
-                logger.debug("Checking new emails in background")
+                logger.info("Checking emails...")
                 nuevos = self.check_callback()
                 if nuevos:
+                    logger.info("New emails detected: %s", len(nuevos))
                     self.result_queue.put(nuevos)
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Background email checker failed")

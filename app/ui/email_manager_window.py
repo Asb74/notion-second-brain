@@ -12,7 +12,6 @@ import re
 import base64
 import csv
 import threading
-import time
 import shutil
 import sqlite3
 import tempfile
@@ -21,7 +20,6 @@ from datetime import datetime
 from email.utils import getaddresses, parseaddr
 from pathlib import Path
 from queue import Queue
-from threading import Thread
 from typing import Callable
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from tkinter.scrolledtext import ScrolledText
@@ -44,6 +42,7 @@ from app.ml.ml_training_manager import MLTrainingManager
 from app.ml.retraining_service import DatasetRetrainingService
 from app.persistence.user_profile_repository import UserProfileRepository
 from app.services.email_entity_extractor import EmailEntityExtractor
+from app.services.email_background_checker import EmailCheckerThread
 from app.ui.app_icons import apply_app_icon
 from app.ui.excel_filter import ExcelTreeFilter
 from app.ui.dictation_widgets import attach_dictation
@@ -63,32 +62,12 @@ from app.utils.attachment_text_extractor import (
 logger = logging.getLogger(__name__)
 
 
-class EmailCheckerThread(Thread):
-    """Poll email backend in background and enqueue only unseen emails."""
-
-    def __init__(self, output_queue: Queue[list[dict[str, str]]], check_callback: Callable[[], list[dict[str, str]]], interval_seconds: int = 60):
-        super().__init__(daemon=True)
-        self.queue = output_queue
-        self.check_callback = check_callback
-        self.interval_seconds = max(10, interval_seconds)
-        self.running = True
-
-    def run(self) -> None:
-        while self.running:
-            nuevos = self.check_callback()
-            if nuevos:
-                self.queue.put(nuevos)
-            time.sleep(self.interval_seconds)
-
-    def stop(self) -> None:
-        self.running = False
-
 def _sanitize_tk_color(color: str | None, fallback: str = "#000000") -> str:
     """Return a Tkinter-safe color value for known invalid system color aliases."""
     value = str(color or "").strip()
     if not value:
         return fallback
-    if value.lower() == "windowtext":
+    if value.lower() in {"windowtext", "inherit"}:
         return fallback
     return value
 
@@ -101,6 +80,7 @@ def _sanitize_html_colors(html_content: str) -> str:
         "window": "white",
         "buttontext": "black",
         "buttonface": "lightgray",
+        "inherit": "black",
     }
 
     for source, target in replacements.items():
@@ -464,7 +444,7 @@ class EmailManagerWindow(tk.Toplevel):
         self._prepared_context_by_gmail_id: dict[str, dict[str, str]] = {}
         self.calendar_refresh_callback: Callable[[], None] | None = None
         self.tree_context_menu: tk.Menu | None = None
-        self.email_queue: Queue[list[dict[str, str]]] = Queue()
+        self.email_queue: Queue[list[dict[str, str]] | dict[str, str]] = Queue()
         self.emails_vistos: set[str] = set()
         self.email_checker_thread: EmailCheckerThread | None = None
         self._queue_after_id: str | None = None
@@ -968,11 +948,11 @@ class EmailManagerWindow(tk.Toplevel):
     def _download_new_emails(self) -> None:
         self.system_log("Iniciando descarga de emails")
         try:
-            processed_ids = self.mail_ingestion_service.sync_unread_emails()
-            self.system_log(f"Descarga completada. Nuevos correos: {len(processed_ids)}")
-            self.status_var.set(f"Descarga completada. Nuevos correos: {len(processed_ids)}")
+            nuevos = self._collect_new_email_items()
+            self.system_log(f"Descarga completada. Nuevos correos: {len(nuevos)}")
+            self.status_var.set(f"Descarga completada. Nuevos correos: {len(nuevos)}")
             self.refresh_emails()
-            messagebox.showinfo("Emails", f"Se descargaron {len(processed_ids)} correos nuevos.")
+            messagebox.showinfo("Emails", f"Se descargaron {len(nuevos)} correos nuevos.")
         except Exception as exc:  # noqa: BLE001
             logger.exception("Error descargando correos")
             self.system_log(f"Error al descargar correos: {exc}", level="ERROR")
@@ -980,25 +960,21 @@ class EmailManagerWindow(tk.Toplevel):
             messagebox.showerror("Error", f"No se pudieron descargar correos.\n\n{exc}")
 
     def _inicializar_revisor_automatico(self) -> None:
+        self.system_log("Email checker started")
         self.emails_vistos = self._obtener_ids_guardados()
-        self.email_checker_thread = EmailCheckerThread(self.email_queue, self.check_emails)
+        self.email_checker_thread = EmailCheckerThread(
+            check_callback=self.check_emails,
+            result_queue=self.email_queue,
+            interval_seconds=60,
+        )
         self.email_checker_thread.start()
         self._programar_procesamiento_cola()
 
     def _programar_procesamiento_cola(self) -> None:
         self._queue_after_id = self.after(2000, self.procesar_cola)
 
-    def check_emails(self) -> list[dict[str, str]]:
-        try:
-            nuevos_ids = self.mail_ingestion_service.sync_unread_emails()
-        except Exception as exc:  # noqa: BLE001
-            error_text = str(exc)
-            if error_text != self._last_email_check_error:
-                self._last_email_check_error = error_text
-                self.after(0, lambda: self.system_log(f"Error en revisión automática: {error_text}", level="ERROR"))
-            return []
-
-        self._last_email_check_error = ""
+    def _collect_new_email_items(self) -> list[dict[str, str]]:
+        nuevos_ids = self.mail_ingestion_service.sync_unread_emails()
         if not nuevos_ids:
             return []
 
@@ -1019,12 +995,30 @@ class EmailManagerWindow(tk.Toplevel):
             self.emails_vistos.add(normalized_id)
         return nuevos
 
+    def check_emails(self) -> list[dict[str, str]]:
+        self.after(0, lambda: self.system_log("Checking emails..."))
+        try:
+            nuevos = self._collect_new_email_items()
+            if nuevos:
+                self.after(0, lambda: self.system_log(f"New emails detected: {len(nuevos)}"))
+            return nuevos
+        except Exception as exc:  # noqa: BLE001
+            error_text = str(exc)
+            if error_text != self._last_email_check_error:
+                self._last_email_check_error = error_text
+                self.after(0, lambda: self.system_log(f"Error en revisión automática: {error_text}", level="ERROR"))
+            return []
+
     def procesar_cola(self) -> None:
         requires_refresh = False
         while not self.email_queue.empty():
             nuevos = self.email_queue.get()
+            if isinstance(nuevos, dict) and nuevos.get("type") == "error":
+                self.system_log(f"Error en revisión automática: {nuevos.get('error', 'desconocido')}", level="ERROR")
+                continue
             if not nuevos:
                 continue
+            print("Nuevos emails:", nuevos)
             requires_refresh = True
             for email_item in nuevos:
                 self._notificar_nuevo_email(email_item)
