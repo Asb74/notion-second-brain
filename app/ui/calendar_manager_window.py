@@ -65,6 +65,12 @@ class CalendarManagerWindow(ttk.Frame):
         self.calendar_client: GoogleCalendarClient | None = None
         self.calendar_repo = calendar_repo
         self._calendar_filter_vars: dict[str, tk.BooleanVar] = {}
+        self._type_filter_vars: dict[str, tk.BooleanVar] = {
+            "NOTE": tk.BooleanVar(value=True),
+            "ACTION": tk.BooleanVar(value=True),
+            "EMAIL": tk.BooleanVar(value=True),
+            "EVENT": tk.BooleanVar(value=True),
+        }
         self._calendar_color_swatches: list[tk.Frame] = []
         self.current_date = date.today()
         self.current_month = self.current_date.replace(day=1)
@@ -112,8 +118,9 @@ class CalendarManagerWindow(ttk.Frame):
         style.configure("MoreItems.TLabel", foreground=_sanitize_tk_color("#4b5563"))
         style.configure("Time.TLabel", foreground=_sanitize_tk_color("#4b5563"))
 
+        self._build_menu_bar()
         self._build_toolbar()
-        self._build_calendar_filters()
+        self._build_filter_bar()
         self._build_legend()
         self._build_layout()
         self._initialize_client()
@@ -152,24 +159,72 @@ class CalendarManagerWindow(ttk.Frame):
         toolbar = ttk.Frame(self)
         toolbar.pack(fill="x", pady=(0, 8))
 
-        ttk.Button(toolbar, text="Anterior", command=self._go_previous_month, style="Toolbar.TButton").grid(row=0, column=0, padx=4)
-        ttk.Button(toolbar, text="Hoy", command=self._go_today, style="Toolbar.TButton").grid(row=0, column=1, padx=4)
-        ttk.Button(toolbar, text="Siguiente", command=self._go_next_month, style="Toolbar.TButton").grid(row=0, column=2, padx=4)
+        nav_group = ttk.Frame(toolbar)
+        nav_group.grid(row=0, column=0, sticky="w")
+        ttk.Button(nav_group, text="Anterior", command=self._go_previous_month, style="Toolbar.TButton").pack(side="left", padx=(0, 4))
+        ttk.Button(nav_group, text="Hoy", command=self._go_today, style="Toolbar.TButton").pack(side="left", padx=(0, 4))
+        ttk.Button(nav_group, text="Siguiente", command=self._go_next_month, style="Toolbar.TButton").pack(side="left")
 
-        ttk.Button(toolbar, text="Día", command=self._set_view_day, style="Toolbar.TButton").grid(row=0, column=3, padx=(10, 4))
-        ttk.Button(toolbar, text="Semana", command=self._set_view_week, style="Toolbar.TButton").grid(row=0, column=4, padx=4)
-        ttk.Button(toolbar, text="Mes", command=self._set_view_month, style="Toolbar.TButton").grid(row=0, column=5, padx=4)
+        ttk.Separator(toolbar, orient="vertical").grid(row=0, column=1, sticky="ns", padx=6)
+        view_group = ttk.Frame(toolbar)
+        view_group.grid(row=0, column=2, sticky="w")
+        ttk.Button(view_group, text="Día", command=self._set_view_day, style="Toolbar.TButton").pack(side="left", padx=(0, 4))
+        ttk.Button(view_group, text="Semana", command=self._set_view_week, style="Toolbar.TButton").pack(side="left", padx=(0, 4))
+        ttk.Button(view_group, text="Mes", command=self._set_view_month, style="Toolbar.TButton").pack(side="left")
+
+        ttk.Separator(toolbar, orient="vertical").grid(row=0, column=3, sticky="ns", padx=6)
+        mode_group = ttk.Frame(toolbar)
+        mode_group.grid(row=0, column=4, sticky="w")
+        ttk.Button(mode_group, text="Lista", command=self._show_list_overview, style="Toolbar.TButton").pack(side="left", padx=(0, 4))
+        ttk.Button(mode_group, text="Calendario", command=self._show_calendar_overview, style="Toolbar.TButton").pack(side="left")
+
+        ttk.Separator(toolbar, orient="vertical").grid(row=0, column=5, sticky="ns", padx=6)
+        ttk.Button(toolbar, text="Actualizar", command=self.refresh_calendar, style="Toolbar.TButton").grid(row=0, column=6, padx=4)
 
         self.month_label = ttk.Label(toolbar, text="", style="CalendarHeader.TLabel")
-        self.month_label.grid(row=0, column=6, sticky="ew", padx=8)
+        self.month_label.grid(row=0, column=7, sticky="ew", padx=8)
+        ttk.Label(toolbar, textvariable=self.google_auth_status_var, anchor="e").grid(row=0, column=8, sticky="e", padx=(8, 0))
 
-        ttk.Button(toolbar, text="Lista", command=self._show_list_overview, style="Toolbar.TButton").grid(row=0, column=7, padx=4)
-        ttk.Button(toolbar, text="Calendario", command=self._show_calendar_overview, style="Toolbar.TButton").grid(row=0, column=8, padx=4)
-        ttk.Button(toolbar, text="Actualizar", command=self.refresh_calendar, style="Toolbar.TButton").grid(row=0, column=9, padx=4)
-        ttk.Label(toolbar, textvariable=self.google_auth_status_var, anchor="e").grid(row=0, column=10, sticky="e", padx=(8, 0))
+        toolbar.columnconfigure(7, weight=1)
 
-        toolbar.columnconfigure(6, weight=1)
-        toolbar.columnconfigure(10, weight=1)
+    def _build_menu_bar(self) -> None:
+        """Menú superior para igualar la arquitectura UX de Emails."""
+        menubar = tk.Menu(self.winfo_toplevel())
+
+        archivo = tk.Menu(menubar, tearoff=0)
+        archivo.add_command(label="Actualizar", command=self.refresh_calendar)
+        archivo.add_command(label="Hoy", command=self._go_today)
+        archivo.add_separator()
+        archivo.add_command(label="Cerrar", command=self.winfo_toplevel().destroy)
+        menubar.add_cascade(label="Archivo", menu=archivo)
+
+        vista = tk.Menu(menubar, tearoff=0)
+        vista.add_command(label="Lista", command=self._show_list_overview)
+        vista.add_command(label="Calendario", command=self._show_calendar_overview)
+        vista.add_separator()
+        vista.add_command(label="Día", command=self._set_view_day)
+        vista.add_command(label="Semana", command=self._set_view_week)
+        vista.add_command(label="Mes", command=self._set_view_month)
+        menubar.add_cascade(label="Vista", menu=vista)
+
+        self.winfo_toplevel().config(menu=menubar)
+
+    def _build_filter_bar(self) -> None:
+        self.filters_frame = ttk.LabelFrame(self, text="Filtros")
+        self.filters_frame.pack(fill="x", pady=(0, 8))
+        self.calendar_filters_frame = ttk.LabelFrame(self.filters_frame, text="Calendarios")
+        self.calendar_filters_frame.pack(fill="x", padx=6, pady=(6, 4))
+
+        types_frame = ttk.LabelFrame(self.filters_frame, text="Tipos")
+        types_frame.pack(fill="x", padx=6, pady=(0, 6))
+        for idx, (kind, var) in enumerate(self._type_filter_vars.items()):
+            ttk.Checkbutton(types_frame, text=self.TYPE_LABELS[kind], variable=var, command=self._apply_global_search).grid(
+                row=0,
+                column=idx,
+                sticky="w",
+                padx=(0, 12),
+                pady=4,
+            )
 
     def _on_google_auth_event(self, event_name: str) -> None:
         if event_name == "reauthentication_required":
@@ -289,9 +344,11 @@ class CalendarManagerWindow(ttk.Frame):
 
         self.calendar_canvas = tk.Canvas(self.calendar_scroll_container, highlightthickness=0)
         self.calendar_scrollbar = ttk.Scrollbar(self.calendar_scroll_container, orient="vertical", command=self.calendar_canvas.yview)
-        self.calendar_canvas.configure(yscrollcommand=self.calendar_scrollbar.set)
+        self.calendar_hscrollbar = ttk.Scrollbar(self.calendar_scroll_container, orient="horizontal", command=self.calendar_canvas.xview)
+        self.calendar_canvas.configure(yscrollcommand=self.calendar_scrollbar.set, xscrollcommand=self.calendar_hscrollbar.set)
 
         self.calendar_scrollbar.pack(side="right", fill="y")
+        self.calendar_hscrollbar.pack(side="bottom", fill="x")
         self.calendar_canvas.pack(side="left", fill="both", expand=True)
 
         self.calendar_frame = ttk.Frame(self.calendar_canvas)
@@ -374,18 +431,20 @@ class CalendarManagerWindow(ttk.Frame):
         self.detail_time_var = tk.StringVar(value="-")
         self.detail_calendar_var = tk.StringVar(value="-")
 
-        self.detail_canvas = tk.Canvas(self.detail_panel, highlightthickness=0)
-        detail_scroll = ttk.Scrollbar(self.detail_panel, orient="vertical", command=self.detail_canvas.yview)
-        self.detail_canvas.configure(yscrollcommand=detail_scroll.set)
+        # Arquitectura tipo Emails: detalle en notebook con pestañas dedicadas.
+        self.detail_notebook = ttk.Notebook(self.detail_panel)
+        self.detail_notebook.pack(fill="both", expand=True)
 
-        self.detail_canvas.pack(side="left", fill="both", expand=True)
-        detail_scroll.pack(side="right", fill="y")
+        self.detail_tab = ttk.Frame(self.detail_notebook, padding=8)
+        self.actions_tab = ttk.Frame(self.detail_notebook, padding=8)
+        self.attachments_tab = ttk.Frame(self.detail_notebook, padding=8)
+        self.notes_tab = ttk.Frame(self.detail_notebook, padding=8)
+        self.detail_notebook.add(self.detail_tab, text="Detalle")
+        self.detail_notebook.add(self.actions_tab, text="Acciones")
+        self.detail_notebook.add(self.attachments_tab, text="Adjuntos")
+        self.detail_notebook.add(self.notes_tab, text="Notas")
 
-        self.detail_content = ttk.Frame(self.detail_canvas)
-        self.detail_canvas_window = self.detail_canvas.create_window((0, 0), window=self.detail_content, anchor="nw")
-        self.detail_content.bind("<Configure>", self._update_detail_scrollregion)
-        self.detail_canvas.bind("<Configure>", self._resize_detail_canvas_window)
-
+        self.detail_content = self.detail_tab
         self.detail_title_label = ttk.Label(
             self.detail_content,
             textvariable=self.detail_title_var,
@@ -393,7 +452,6 @@ class CalendarManagerWindow(ttk.Frame):
             font=("TkDefaultFont", 13, "bold"),
         )
         self.detail_title_label.pack(anchor="w", fill="x")
-        # Doble click: cambia el título a un Entry inline en el mismo lugar.
         self.detail_title_label.bind("<Double-Button-1>", self._start_inline_title_edit)
 
         self.detail_metadata = ttk.Frame(self.detail_content)
@@ -421,23 +479,29 @@ class CalendarManagerWindow(ttk.Frame):
         self.content_dictation_controls = attach_dictation(self.content_text, self.detail_content)
         self.content_dictation_controls.pack(anchor="w", pady=(4, 0))
 
-        self.associated_actions_frame = ttk.LabelFrame(self.detail_content, text="Acciones asociadas")
-        self.associated_actions_frame.pack(fill="x", pady=(8, 6))
+        self.detail_context_buttons = ttk.Frame(self.detail_content)
+        self.detail_context_buttons.pack(fill="x", pady=(6, 0))
 
-        self.attachments_frame = ttk.LabelFrame(self.detail_content, text="Archivos adjuntos")
-        self.attachments_frame.pack(fill="x", pady=(4, 6))
+        self.associated_actions_frame = ttk.LabelFrame(self.actions_tab, text="Acciones asociadas")
+        self.associated_actions_frame.pack(fill="both", expand=True, pady=(0, 6))
+        self.actions_context_buttons = ttk.Frame(self.actions_tab)
+        self.actions_context_buttons.pack(fill="x")
+
+        self.attachments_frame = ttk.LabelFrame(self.attachments_tab, text="Archivos adjuntos")
+        self.attachments_frame.pack(fill="both", expand=True, pady=(0, 6))
         self.attachments_list = tk.Listbox(self.attachments_frame, height=5)
-        self.attachments_list.pack(fill="x", padx=6, pady=6)
+        self.attachments_list.pack(fill="both", expand=True, padx=6, pady=6)
         self.attachments_list.bind("<Double-Button-1>", self._on_attachment_open)
+        self.attachments_context_buttons = ttk.Frame(self.attachments_tab)
+        self.attachments_context_buttons.pack(fill="x")
 
-        self.context_buttons = ttk.Frame(self.detail_content)
-        self.context_buttons.pack(fill="x", pady=(2, 0))
+        ttk.Label(self.notes_tab, text="Espacio para notas futuras.").pack(anchor="w")
 
     def _update_detail_scrollregion(self, _event: tk.Event | None = None) -> None:
-        self.detail_canvas.configure(scrollregion=self.detail_canvas.bbox("all"))
+        return
 
     def _resize_detail_canvas_window(self, event: tk.Event) -> None:
-        self.detail_canvas.itemconfigure(self.detail_canvas_window, width=event.width)
+        return
 
     def _show_list_overview(self) -> None:
         self.list_frame.tkraise()
@@ -449,7 +513,8 @@ class CalendarManagerWindow(ttk.Frame):
         self.calendar_canvas.configure(scrollregion=self.calendar_canvas.bbox("all"))
 
     def _on_calendar_canvas_configure(self, event: tk.Event) -> None:
-        self.calendar_canvas.itemconfigure(self.calendar_canvas_window, width=event.width)
+        required_width = self.calendar_frame.winfo_reqwidth()
+        self.calendar_canvas.itemconfigure(self.calendar_canvas_window, width=max(event.width, required_width))
 
     def _bind_calendar_mousewheel(self, _event: tk.Event | None = None) -> None:
         if self._calendar_mousewheel_bound:
@@ -590,11 +655,16 @@ class CalendarManagerWindow(ttk.Frame):
 
     def _rows_for_excel_filter(self) -> list[dict[str, str]]:
         text = self.search_var.get().lower().strip()
-        if not text:
-            return self._all_rows
+        enabled_kinds = {kind for kind, var in self._type_filter_vars.items() if var.get()}
 
         filtered: list[dict[str, str]] = []
         for row in self._all_rows:
+            if str(row.get("kind") or "") not in enabled_kinds:
+                continue
+            if not text:
+                filtered.append(row)
+                continue
+
             searchable_text = " ".join(
                 [
                     str(row.get("title", "")),
@@ -996,8 +1066,9 @@ class CalendarManagerWindow(ttk.Frame):
         self.refresh_calendar()
 
     def _render_context_actions(self, record: dict[str, str | int]) -> None:
-        for child in self.context_buttons.winfo_children():
-            child.destroy()
+        for frame in (self.detail_context_buttons, self.actions_context_buttons, self.attachments_context_buttons):
+            for child in frame.winfo_children():
+                child.destroy()
 
         kind = str(record.get("kind") or "NOTE")
         is_email = self._is_email_backed_record(record)
@@ -1005,19 +1076,19 @@ class CalendarManagerWindow(ttk.Frame):
         has_note = self._note_id_for_record(record) > 0
 
         if has_note and kind in {"NOTE", "EMAIL", "EVENT"}:
-            ttk.Button(self.context_buttons, text="Editar", command=self.editar_registro).pack(side="left", padx=4)
-            ttk.Button(self.context_buttons, text="Completar", command=self.completar_registro).pack(side="left", padx=4)
-            ttk.Button(self.context_buttons, text="+ Nueva acción", command=self.crear_accion).pack(side="left", padx=4)
+            ttk.Button(self.detail_context_buttons, text="Editar", command=self.editar_registro).pack(side="left", padx=4)
+            ttk.Button(self.detail_context_buttons, text="Completar", command=self.completar_registro).pack(side="left", padx=4)
+            ttk.Button(self.actions_context_buttons, text="Nueva acción", command=self.crear_accion).pack(side="left", padx=4)
         elif kind == "ACTION":
-            ttk.Button(self.context_buttons, text="Marcar completada", command=self.completar_registro).pack(side="left", padx=4)
-            ttk.Button(self.context_buttons, text="Editar", command=self.editar_registro).pack(side="left", padx=4)
-        elif kind == "EVENT":
-            ttk.Button(self.context_buttons, text="Editar evento", command=self.editar_registro).pack(side="left", padx=4)
-            ttk.Button(self.context_buttons, text="Abrir en Google Calendar", command=self.abrir_evento_calendar).pack(side="left", padx=4)
+            ttk.Button(self.actions_context_buttons, text="Marcar completada", command=self.completar_registro).pack(side="left", padx=4)
+            ttk.Button(self.actions_context_buttons, text="Editar", command=self.editar_registro).pack(side="left", padx=4)
 
-        ttk.Button(self.context_buttons, text="Responder", command=self.responder_email, state=email_buttons_state).pack(side="left", padx=4)
-        ttk.Button(self.context_buttons, text="Reenviar", command=self.reenviar_email, state=email_buttons_state).pack(side="left", padx=4)
-        ttk.Button(self.context_buttons, text="Abrir email", command=self.abrir_email, state=email_buttons_state).pack(side="left", padx=4)
+        if kind == "EVENT":
+            ttk.Button(self.detail_context_buttons, text="Abrir en Google Calendar", command=self.abrir_evento_calendar).pack(side="left", padx=4)
+
+        ttk.Button(self.attachments_context_buttons, text="Responder", command=self.responder_email, state=email_buttons_state).pack(side="left", padx=4)
+        ttk.Button(self.attachments_context_buttons, text="Reenviar", command=self.reenviar_email, state=email_buttons_state).pack(side="left", padx=4)
+        ttk.Button(self.attachments_context_buttons, text="Abrir email", command=self.abrir_email, state=email_buttons_state).pack(side="left", padx=4)
 
     def _resolve_gmail_id(self, item: dict[str, str | int]) -> str:
         gmail_id = str(item.get("gmail_id") or "").strip()
@@ -1152,31 +1223,24 @@ class CalendarManagerWindow(ttk.Frame):
         if not item:
             return
 
-        if self._note_id_for_record(item) <= 0:
+        note_id = self._note_id_for_record(item)
+        if note_id <= 0:
             return
 
-        if getattr(self, "_inline_action_entry", None) is not None:
-            self._inline_action_entry.focus_set()
-            self._inline_action_entry.select_range(0, "end")
+        # Popup dedicado para reducir ruido visual en la zona de detalle.
+        description = simpledialog.askstring("Nueva acción", "Descripción de la acción:", parent=self)
+        if description is None:
+            return
+        cleaned = description.strip()
+        if not cleaned:
             return
 
-        for child in self.associated_actions_frame.winfo_children():
-            if child.winfo_class() == "TLabel":
-                child.destroy()
+        note = self.note_service.get_note_by_id(note_id)
+        if not note:
+            return
 
-        # Nueva fila inline: checkbox + entrada de texto para capturar una acción rápida.
-        self._inline_action_row = ttk.Frame(self.associated_actions_frame)
-        self._inline_action_row.pack(fill="x", padx=6, pady=2)
-
-        inline_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(self._inline_action_row, variable=inline_var).pack(side="left", padx=(0, 4))
-        self._inline_action_entry = ttk.Entry(self._inline_action_row)
-        self._inline_action_entry.pack(side="left", fill="x", expand=True)
-
-        # Guardar con Enter o al perder foco, como en gestores de tareas modernos.
-        self._inline_action_entry.bind("<Return>", self._save_inline_action)
-        self._inline_action_entry.bind("<FocusOut>", self._save_inline_action)
-        self._inline_action_entry.focus_set()
+        self.note_service.actions_repo.create_action(note_id, cleaned, note.area)
+        self.refresh_calendar()
 
     def _save_inline_action(self, _event: tk.Event | None = None) -> str | None:
         if getattr(self, "_inline_action_saving", False) or getattr(self, "_inline_action_entry", None) is None:
