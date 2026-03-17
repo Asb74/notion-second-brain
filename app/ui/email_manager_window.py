@@ -2488,11 +2488,15 @@ class EmailManagerWindow(tk.Toplevel):
                 add_refinement_lines(dictated_text)
 
         def add_manual_refinements() -> None:
-            add_refinement_lines(refine_text.get("1.0", "end"))
+            if add_refinement_lines(refine_text.get("1.0", "end")):
+                actualizar_input()
 
         def clear_refinements() -> None:
+            nonlocal dictation_snapshot
             refinements.clear()
+            dictation_snapshot = ""
             actualizar_input()
+            _set_dictation_status("")
 
         dictation_button = ttk.Button(dictation_controls, text="🎤 Dictar", command=toggle_refinement_dictation)
         dictation_button.pack(side="left")
@@ -2566,7 +2570,7 @@ class EmailManagerWindow(tk.Toplevel):
         actions_row = ttk.Frame(refinement_controls)
         actions_row.grid(row=5, column=0, sticky="nsew", padx=8, pady=(0, 8))
         ttk.Button(actions_row, text="Mejorar resultado", command=refine_summary).pack(side="left")
-        ttk.Button(actions_row, text="🧹 Limpiar refinamiento", command=clear_refinements).pack(side="left", padx=6)
+        ttk.Button(actions_row, text="🧹 Limpiar instrucciones", command=clear_refinements).pack(side="left", padx=6)
         ttk.Button(
             actions_row,
             text="Restablecer",
