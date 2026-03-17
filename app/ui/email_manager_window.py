@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import html
+import importlib
+import importlib.util
 import json
 import logging
 import os
@@ -10,6 +12,7 @@ import re
 import base64
 import csv
 import threading
+import time
 import shutil
 import sqlite3
 import tempfile
@@ -17,6 +20,8 @@ import tkinter as tk
 from datetime import datetime
 from email.utils import getaddresses, parseaddr
 from pathlib import Path
+from queue import Queue
+from threading import Thread
 from typing import Callable
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from tkinter.scrolledtext import ScrolledText
@@ -57,6 +62,27 @@ from app.utils.attachment_text_extractor import (
 
 logger = logging.getLogger(__name__)
 
+
+class EmailCheckerThread(Thread):
+    """Poll email backend in background and enqueue only unseen emails."""
+
+    def __init__(self, output_queue: Queue[list[dict[str, str]]], check_callback: Callable[[], list[dict[str, str]]], interval_seconds: int = 60):
+        super().__init__(daemon=True)
+        self.queue = output_queue
+        self.check_callback = check_callback
+        self.interval_seconds = max(10, interval_seconds)
+        self.running = True
+
+    def run(self) -> None:
+        while self.running:
+            nuevos = self.check_callback()
+            if nuevos:
+                self.queue.put(nuevos)
+            time.sleep(self.interval_seconds)
+
+    def stop(self) -> None:
+        self.running = False
+
 def _sanitize_tk_color(color: str | None, fallback: str = "#000000") -> str:
     """Return a Tkinter-safe color value for known invalid system color aliases."""
     value = str(color or "").strip()
@@ -96,6 +122,25 @@ MAX_REFINEMENTS = 5
 EMAIL_SUMMARY_EXAMPLES_LIMIT = 5
 
 _SYSTEM_LOG_WIDGET: ScrolledText | None = None
+_PLYER_NOTIFICATION = None
+
+
+def _resolve_notification_sender():
+    global _PLYER_NOTIFICATION
+    if _PLYER_NOTIFICATION is not None:
+        return _PLYER_NOTIFICATION
+
+    if importlib.util.find_spec("plyer") is None:
+        _PLYER_NOTIFICATION = False
+        return None
+
+    try:
+        module = importlib.import_module("plyer")
+        _PLYER_NOTIFICATION = getattr(module, "notification", False)
+    except Exception:  # noqa: BLE001
+        _PLYER_NOTIFICATION = False
+
+    return _PLYER_NOTIFICATION if _PLYER_NOTIFICATION is not False else None
 
 
 def is_table(text: str) -> bool:
@@ -351,6 +396,7 @@ class EmailManagerWindow(tk.Toplevel):
     ):
         super().__init__(master)
         self.note_service = note_service
+        self.db_connection = db_connection
         self.gmail_client = gmail_client
         self.email_repo = EmailRepository(db_connection)
         self.calendar_repo = CalendarRepository(db_connection)
@@ -417,9 +463,16 @@ class EmailManagerWindow(tk.Toplevel):
         self._prepared_context_by_gmail_id: dict[str, dict[str, str]] = {}
         self.calendar_refresh_callback: Callable[[], None] | None = None
         self.tree_context_menu: tk.Menu | None = None
+        self.email_queue: Queue[list[dict[str, str]]] = Queue()
+        self.emails_vistos: set[str] = set()
+        self.email_checker_thread: EmailCheckerThread | None = None
+        self._queue_after_id: str | None = None
+        self._last_email_check_error: str = ""
 
         self._build_layout()
         self.refresh_emails()
+        self._inicializar_revisor_automatico()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     @staticmethod
     def _clear_result_container(container: tk.Misc) -> None:
@@ -923,6 +976,98 @@ class EmailManagerWindow(tk.Toplevel):
             self.system_log(f"Error al descargar correos: {exc}", level="ERROR")
             self.status_var.set(f"Error al descargar correos: {exc}")
             messagebox.showerror("Error", f"No se pudieron descargar correos.\n\n{exc}")
+
+    def _inicializar_revisor_automatico(self) -> None:
+        self.emails_vistos = self._obtener_ids_guardados()
+        self.email_checker_thread = EmailCheckerThread(self.email_queue, self.check_emails)
+        self.email_checker_thread.start()
+        self._programar_procesamiento_cola()
+
+    def _programar_procesamiento_cola(self) -> None:
+        self._queue_after_id = self.after(2000, self.procesar_cola)
+
+    def check_emails(self) -> list[dict[str, str]]:
+        try:
+            nuevos_ids = self.mail_ingestion_service.sync_unread_emails()
+        except Exception as exc:  # noqa: BLE001
+            error_text = str(exc)
+            if error_text != self._last_email_check_error:
+                self._last_email_check_error = error_text
+                self.after(0, lambda: self.system_log(f"Error en revisión automática: {error_text}", level="ERROR"))
+            return []
+
+        self._last_email_check_error = ""
+        if not nuevos_ids:
+            return []
+
+        nuevos: list[dict[str, str]] = []
+        for gmail_id in nuevos_ids:
+            normalized_id = str(gmail_id or "").strip()
+            if not normalized_id or normalized_id in self.emails_vistos:
+                continue
+            row = self.email_repo.get_email_content(normalized_id)
+            if row is None:
+                continue
+            email_item = {
+                "gmail_id": normalized_id,
+                "subject": str(row["subject"] or "(sin asunto)"),
+                "sender": str(row["sender"] or ""),
+            }
+            nuevos.append(email_item)
+            self.emails_vistos.add(normalized_id)
+        return nuevos
+
+    def procesar_cola(self) -> None:
+        requires_refresh = False
+        while not self.email_queue.empty():
+            nuevos = self.email_queue.get()
+            if not nuevos:
+                continue
+            requires_refresh = True
+            for email_item in nuevos:
+                self._notificar_nuevo_email(email_item)
+
+        if requires_refresh:
+            self.refresh_emails()
+            self.status_var.set("Nuevos correos detectados automáticamente")
+
+        self._programar_procesamiento_cola()
+
+    def _notificar_nuevo_email(self, email_item: dict[str, str]) -> None:
+        subject = str(email_item.get("subject", "(sin asunto)"))
+        sender = str(email_item.get("sender", ""))
+        self.system_log(f"Nuevo correo detectado: {subject}")
+
+        notification_sender = _resolve_notification_sender()
+        if notification_sender is None:
+            return
+
+        message = subject if not sender else f"{subject}\nDe: {sender}"
+        try:
+            notification_sender.notify(
+                title="Nuevo correo",
+                message=message,
+                timeout=5,
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("No se pudo lanzar notificación de escritorio", exc_info=True)
+
+    def _obtener_ids_guardados(self) -> set[str]:
+        rows = self.db_connection.execute("SELECT gmail_id FROM emails").fetchall()
+        return {str(row["gmail_id"] or "").strip() for row in rows if str(row["gmail_id"] or "").strip()}
+
+    def _on_close(self) -> None:
+        if self.email_checker_thread is not None:
+            self.email_checker_thread.stop()
+
+        if self._queue_after_id is not None:
+            try:
+                self.after_cancel(self._queue_after_id)
+            except tk.TclError:
+                pass
+            self._queue_after_id = None
+
+        self.destroy()
 
     def _recompute_senders(self) -> None:
         count = self.mail_ingestion_service.recompute_original_senders()
