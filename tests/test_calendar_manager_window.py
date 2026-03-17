@@ -560,3 +560,73 @@ def test_update_week_label_uses_iso_week() -> None:
     window._update_week_label(__import__("datetime").date(2025, 3, 5))
 
     assert window.week_label.text == "SEMANA 10"
+
+
+def test_get_drop_target_in_day_view_returns_day_and_hour() -> None:
+    window = CalendarManagerWindow.__new__(CalendarManagerWindow)
+    target_day = __import__("datetime").date(2026, 6, 2)
+
+    class _Widget:
+        def __init__(self, master=None) -> None:
+            self.master = master
+
+    row_widget = _Widget()
+    setattr(row_widget, "fecha", target_day)
+    setattr(row_widget, "hora", 14)
+    child_widget = _Widget(master=row_widget)
+
+    window.view_mode = "day"
+    window._week_day_columns = {}
+    window._month_day_cells = {}
+    window._day_hour_rows = {str(row_widget): 14}
+    window.winfo_containing = lambda _x, _y: child_widget
+
+    result = window.get_drop_target(10, 10)
+
+    assert result["day"] == target_day
+    assert result["hour"] == 14
+    assert result["widget"] is row_widget
+
+
+def test_mover_evento_delegates_to_central_update() -> None:
+    window = CalendarManagerWindow.__new__(CalendarManagerWindow)
+    received: list[tuple[dict[str, str | int], str, str | None]] = []
+
+    def _capture(entry, target_day, target_time=None):
+        received.append((entry, target_day.isoformat(), target_time))
+        return True
+
+    window._update_dragged_entry_date = _capture
+
+    moved = window.mover_evento({"kind": "EVENT", "id": 1}, __import__("datetime").datetime(2026, 7, 8, 16, 0))
+
+    assert moved is True
+    assert received == [({"kind": "EVENT", "id": 1}, "2026-07-08", "16:00")]
+
+
+def test_update_dragged_entry_date_updates_event_note_time_when_provided() -> None:
+    window = CalendarManagerWindow.__new__(CalendarManagerWindow)
+    date_calls: list[tuple[int, str]] = []
+    time_calls: list[tuple[int, str]] = []
+
+    class _NoteService:
+        @staticmethod
+        def update_note_date(note_id: int, target_date: str) -> None:
+            date_calls.append((note_id, target_date))
+
+        @staticmethod
+        def update_note_time(note_id: int, target_time: str) -> None:
+            time_calls.append((note_id, target_time))
+
+    window.note_service = _NoteService()
+    window.calendar_client = None
+
+    moved = window._update_dragged_entry_date(
+        {"kind": "EVENT", "note_id": 44},
+        __import__("datetime").date(2026, 4, 9),
+        "15:00",
+    )
+
+    assert moved is True
+    assert date_calls == [(44, "2026-04-09")]
+    assert time_calls == [(44, "15:00")]

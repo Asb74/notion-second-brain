@@ -106,6 +106,10 @@ class CalendarManagerWindow(ttk.Frame):
         self._drag_target_day: date | None = None
         self._drag_hover_column: tk.Widget | None = None
         self._week_day_columns: dict[str, tk.Widget] = {}
+        self._month_day_cells: dict[str, date] = {}
+        self._day_hour_rows: dict[str, int] = {}
+        self._drag_ghost: tk.Toplevel | None = None
+        self._drag_ghost_label: tk.Label | None = None
         self.google_auth_status_var = tk.StringVar(value="")
 
         style = ttk.Style(self)
@@ -1598,6 +1602,10 @@ class CalendarManagerWindow(ttk.Frame):
         self._build_month_grid()
         self.month_label.configure(text=self.current_month.strftime("%B %Y").capitalize())
         self._label_metadata.clear()
+        self._month_day_cells = {}
+        self._day_hour_rows = {}
+        self._week_day_columns = {}
+        self._reset_drag_state()
 
         month_matrix = self._month_matrix(self.current_month.year, self.current_month.month)
 
@@ -1614,6 +1622,8 @@ class CalendarManagerWindow(ttk.Frame):
                 day_number_label.configure(text=str(day_value.day), foreground=_sanitize_tk_color("#9ca3af"))
                 continue
 
+            self._month_day_cells[str(cell)] = day_value
+            setattr(cell, "fecha", day_value)
             cell.configure(bg=_sanitize_tk_color("#ffffff", fallback="#ffffff"))
             today = date.today()
             if day_value == today:
@@ -1627,6 +1637,7 @@ class CalendarManagerWindow(ttk.Frame):
                 label = tk.Label(events_frame, text=text, anchor="w", justify="left", cursor="hand2", wraplength=170, bg=_sanitize_tk_color(self._detail_bg(entry), fallback="#ffffff"), fg=_sanitize_tk_color("#000000"))
                 label.pack(anchor="w", fill="x", pady=1)
                 label.bind("<Button-1>", self._on_entry_click)
+                self._bind_drag_events(label)
                 self._label_metadata[str(label)] = entry
 
     def _build_month_grid(self) -> None:
@@ -1664,6 +1675,8 @@ class CalendarManagerWindow(ttk.Frame):
         self._clear_calendar_body()
         self._label_metadata.clear()
         self._week_day_columns = {}
+        self._month_day_cells = {}
+        self._day_hour_rows = {}
         self._reset_drag_state()
 
         container = ttk.Frame(self.calendar_frame)
@@ -1681,6 +1694,7 @@ class CalendarManagerWindow(ttk.Frame):
             column = tk.Frame(container, bg=_sanitize_tk_color("#ffffff", fallback="#ffffff"), highlightbackground="#d1d5db", highlightthickness=1, bd=0, padx=6, pady=6)
             column.grid(row=0, column=index, sticky="nsew", padx=2, pady=2)
             self._week_day_columns[str(column)] = day_value
+            setattr(column, "fecha", day_value)
 
             ttk.Label(column, text=f"{day_name} {day_value.day}", style="Weekday.TLabel").pack(anchor="w")
 
@@ -1690,10 +1704,13 @@ class CalendarManagerWindow(ttk.Frame):
                 label = tk.Label(column, text=text, anchor="w", justify="left", cursor="hand2", wraplength=165, bg=_sanitize_tk_color(self._detail_bg(entry), fallback="#ffffff"), fg=_sanitize_tk_color("#000000"))
                 label.pack(anchor="w", fill="x", pady=1)
                 label.bind("<Button-1>", self._on_entry_click)
-                label.bind("<ButtonPress-1>", self._on_drag_start, add="+")
-                label.bind("<B1-Motion>", self._on_drag_motion, add="+")
-                label.bind("<ButtonRelease-1>", self._on_drag_release, add="+")
+                self._bind_drag_events(label)
                 self._label_metadata[str(label)] = entry
+
+    def _bind_drag_events(self, label: tk.Widget) -> None:
+        label.bind("<ButtonPress-1>", self._on_drag_start, add="+")
+        label.bind("<B1-Motion>", self._on_drag_motion, add="+")
+        label.bind("<ButtonRelease-1>", self._on_drag_release, add="+")
 
     def _on_drag_start(self, event: tk.Event) -> None:
         widget = event.widget
@@ -1706,40 +1723,84 @@ class CalendarManagerWindow(ttk.Frame):
         self.drag_origin_day = self._day_from_widget(widget)
         self._drag_target_day = self.drag_origin_day
         widget.configure(cursor="fleur", highlightthickness=2, highlightbackground="#1d4ed8", relief="solid")
+        self._start_drag_visual(event)
 
     def _on_drag_motion(self, event: tk.Event) -> None:
         if self.dragged_entry is None or self._dragged_widget is None:
             return
-        pointer_widget = self.winfo_containing(event.x_root, event.y_root)
-        target_day = self._day_from_widget(pointer_widget)
-        self._drag_target_day = target_day
-        self._highlight_drag_target(pointer_widget)
+        drop_target = self.get_drop_target(event.x_root, event.y_root)
+        self._drag_target_day = drop_target.get("day")
+        self._highlight_drag_target(drop_target.get("widget"))
+        self._update_drag_visual(event.x_root, event.y_root)
 
     def _on_drag_release(self, event: tk.Event) -> None:
         if self.dragged_entry is None or self.drag_origin_day is None:
             self._reset_drag_state()
             return
 
-        pointer_widget = self.winfo_containing(event.x_root, event.y_root)
-        target_day = self._day_from_widget(pointer_widget)
-        if target_day is None or target_day == self.drag_origin_day:
+        drop_target = self.get_drop_target(event.x_root, event.y_root)
+        new_datetime = self._build_drop_datetime(self.dragged_entry, drop_target)
+        if new_datetime is None:
             self._reset_drag_state()
             return
 
-        moved = self._update_dragged_entry_date(self.dragged_entry, target_day)
+        moved = self.mover_evento(self.dragged_entry, new_datetime)
         self._reset_drag_state()
         if moved:
-            self.log(f"Elemento movido a {target_day.isoformat()}")
+            self.log(f"Elemento movido a {new_datetime.isoformat(sep=' ', timespec='minutes')}")
             self.refresh_calendar()
+
+    def _build_drop_datetime(self, entry: dict[str, str | int], drop_target: dict[str, Any]) -> datetime | None:
+        target_day = drop_target.get("day")
+        if not isinstance(target_day, date):
+            return None
+
+        original = self._entry_datetime(entry)
+        new_value = original.replace(year=target_day.year, month=target_day.month, day=target_day.day)
+
+        if self.view_mode == "day":
+            target_hour = drop_target.get("hour")
+            if not isinstance(target_hour, int):
+                return None
+            new_value = new_value.replace(hour=max(0, min(23, target_hour)), minute=0)
+
+        if self.drag_origin_day == target_day and new_value == original:
+            return None
+        return new_value
 
     def _day_from_widget(self, widget: tk.Widget | None) -> date | None:
         current = widget
         while current is not None:
+            day_attr = getattr(current, "fecha", None)
+            if isinstance(day_attr, date):
+                return day_attr
             day_value = self._week_day_columns.get(str(current))
             if day_value is not None:
                 return day_value
+            month_day = self._month_day_cells.get(str(current))
+            if month_day is not None:
+                return month_day
             current = current.master
         return None
+
+    def _hour_from_widget(self, widget: tk.Widget | None) -> int | None:
+        current = widget
+        while current is not None:
+            hour_attr = getattr(current, "hora", None)
+            if isinstance(hour_attr, int):
+                return max(0, min(23, hour_attr))
+            hour_value = self._day_hour_rows.get(str(current))
+            if isinstance(hour_value, int):
+                return max(0, min(23, hour_value))
+            current = current.master
+        return None
+
+    def get_drop_target(self, x_root: int, y_root: int) -> dict[str, Any]:
+        pointer_widget = self.winfo_containing(x_root, y_root)
+        target_day = self._day_from_widget(pointer_widget)
+        target_widget = self._column_widget_from_child(pointer_widget)
+        target_hour = self._hour_from_widget(pointer_widget) if self.view_mode == "day" else None
+        return {"day": target_day, "hour": target_hour, "widget": target_widget}
 
     def _highlight_drag_target(self, widget: tk.Widget | None) -> None:
         target_widget = self._column_widget_from_child(widget)
@@ -1754,12 +1815,44 @@ class CalendarManagerWindow(ttk.Frame):
     def _column_widget_from_child(self, widget: tk.Widget | None) -> tk.Widget | None:
         current = widget
         while current is not None:
-            if str(current) in self._week_day_columns:
+            if str(current) in self._week_day_columns or str(current) in self._month_day_cells or str(current) in self._day_hour_rows:
                 return current
             current = current.master
         return None
 
-    def _update_dragged_entry_date(self, entry: dict[str, str | int], target_day: date) -> bool:
+    def _start_drag_visual(self, event: tk.Event) -> None:
+        if self._dragged_widget is None:
+            return
+        self._drag_ghost = tk.Toplevel(self)
+        self._drag_ghost.overrideredirect(True)
+        self._drag_ghost.attributes("-alpha", 0.85)
+        text = self._dragged_widget.cget("text") if hasattr(self._dragged_widget, "cget") else "Moviendo..."
+        self._drag_ghost_label = tk.Label(self._drag_ghost, text=text, bg="#1f2937", fg="#ffffff", padx=8, pady=4)
+        self._drag_ghost_label.pack()
+        self._update_drag_visual(event.x_root, event.y_root)
+
+    def _update_drag_visual(self, x_root: int, y_root: int) -> None:
+        if self._drag_ghost is None:
+            return
+        self._drag_ghost.geometry(f"+{x_root + 12}+{y_root + 12}")
+
+    def _entry_datetime(self, entry: dict[str, str | int]) -> datetime:
+        raw_date = str(entry.get("date") or "").strip()
+        raw_time = str(entry.get("time") or "").strip()
+        day_value = self._safe_parse_date(raw_date) or self.current_date
+        hour = 9
+        minute = 0
+        if raw_time:
+            parsed_minutes = self._to_minutes(raw_time)
+            if parsed_minutes is not None:
+                hour = parsed_minutes // 60
+                minute = parsed_minutes % 60
+        return datetime.combine(day_value, datetime.min.time()).replace(hour=hour, minute=minute)
+
+    def mover_evento(self, entry: dict[str, str | int], nueva_fecha: datetime) -> bool:
+        return self._update_dragged_entry_date(entry, nueva_fecha.date(), nueva_fecha.time().strftime("%H:%M"))
+
+    def _update_dragged_entry_date(self, entry: dict[str, str | int], target_day: date, target_time: str | None = None) -> bool:
         target_date = target_day.isoformat()
         kind = str(entry.get("kind") or "")
 
@@ -1788,6 +1881,8 @@ class CalendarManagerWindow(ttk.Frame):
             if note_id <= 0:
                 return False
             self.note_service.update_note_date(note_id, target_date)
+            if target_time:
+                self.note_service.update_note_time(note_id, target_time)
             return True
 
         return False
@@ -1821,15 +1916,23 @@ class CalendarManagerWindow(ttk.Frame):
             self._dragged_widget.configure(cursor="hand2", highlightthickness=0, relief="flat")
         if self._drag_hover_column is not None:
             self._drag_hover_column.configure(highlightbackground="#d1d5db")
+        if self._drag_ghost is not None:
+            self._drag_ghost.destroy()
         self.dragged_entry = None
         self.drag_origin_day = None
         self._dragged_widget = None
         self._drag_target_day = None
         self._drag_hover_column = None
+        self._drag_ghost = None
+        self._drag_ghost_label = None
 
     def _render_day_view(self) -> None:
         self._clear_calendar_body()
         self._label_metadata.clear()
+        self._week_day_columns = {}
+        self._month_day_cells = {}
+        self._day_hour_rows = {}
+        self._reset_drag_state()
         self.month_label.configure(text=self.current_date.strftime("%A %d %B %Y").capitalize())
 
         container = ttk.Frame(self.calendar_frame)
@@ -1847,6 +1950,8 @@ class CalendarManagerWindow(ttk.Frame):
 
         top_frame = tk.Frame(container, bg=_sanitize_tk_color("#ffffff", fallback="#ffffff"), highlightbackground="#d1d5db", highlightthickness=1, bd=0, padx=8, pady=6)
         top_frame.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(0, 10))
+        setattr(top_frame, "fecha", self.current_date)
+        self._month_day_cells[str(top_frame)] = self.current_date
         container.rowconfigure(1, weight=0)
 
         if not top_section_entries:
@@ -1857,6 +1962,7 @@ class CalendarManagerWindow(ttk.Frame):
                 label = tk.Label(top_frame, text=text, anchor="w", justify="left", cursor="hand2", wraplength=600, bg=_sanitize_tk_color(self._detail_bg(entry), fallback="#ffffff"), fg=_sanitize_tk_color("#000000"))
                 label.pack(anchor="w", fill="x", pady=1)
                 label.bind("<Button-1>", self._on_entry_click)
+                self._bind_drag_events(label)
                 self._label_metadata[str(label)] = entry
 
         timeline_label = ttk.Label(container, text="Timeline por horas", style="CalendarHeader.TLabel")
@@ -1868,6 +1974,11 @@ class CalendarManagerWindow(ttk.Frame):
 
             slot_frame = tk.Frame(container, bg=_sanitize_tk_color("#ffffff", fallback="#ffffff"), highlightbackground="#d1d5db", highlightthickness=1, bd=0, padx=6, pady=4)
             slot_frame.grid(row=row, column=1, sticky="nsew", pady=1)
+            hour_value = self._to_minutes(slot)
+            hour_value = 0 if hour_value is None else hour_value // 60
+            setattr(slot_frame, "hora", hour_value)
+            setattr(slot_frame, "fecha", self.current_date)
+            self._day_hour_rows[str(slot_frame)] = hour_value
 
             for entry in timed_slot_map.get(slot, []):
                 include_entry_time = str(entry.get("time") or "") != slot
@@ -1875,6 +1986,7 @@ class CalendarManagerWindow(ttk.Frame):
                 label = tk.Label(slot_frame, text=text, anchor="w", justify="left", cursor="hand2", wraplength=500, bg=_sanitize_tk_color(self._detail_bg(entry), fallback="#ffffff"), fg=_sanitize_tk_color("#000000"))
                 label.pack(anchor="w", fill="x", pady=1)
                 label.bind("<Button-1>", self._on_entry_click)
+                self._bind_drag_events(label)
                 self._label_metadata[str(label)] = entry
 
         self.log("Vista diaria reconstruida con eventos sin hora y timeline")
