@@ -41,25 +41,26 @@ from app.ui.app_icons import apply_app_icon
 from app.ui.dictation_widgets import attach_dictation
 
 logger = logging.getLogger(__name__)
-_PLYER_NOTIFICATION = None
+_WIN_TOASTER = None
 
 
 def _resolve_notification_sender():
-    global _PLYER_NOTIFICATION
-    if _PLYER_NOTIFICATION is not None:
-        return _PLYER_NOTIFICATION
+    global _WIN_TOASTER
+    if _WIN_TOASTER is not None:
+        return _WIN_TOASTER
 
-    if importlib.util.find_spec("plyer") is None:
-        _PLYER_NOTIFICATION = False
+    if importlib.util.find_spec("win10toast") is None:
+        _WIN_TOASTER = False
         return None
 
     try:
-        module = importlib.import_module("plyer")
-        _PLYER_NOTIFICATION = getattr(module, "notification", False)
+        module = importlib.import_module("win10toast")
+        toaster_class = getattr(module, "ToastNotifier", None)
+        _WIN_TOASTER = toaster_class() if callable(toaster_class) else False
     except Exception:  # noqa: BLE001
-        _PLYER_NOTIFICATION = False
+        _WIN_TOASTER = False
 
-    return _PLYER_NOTIFICATION if _PLYER_NOTIFICATION is not False else None
+    return _WIN_TOASTER if _WIN_TOASTER is not False else None
 
 
 def _sanitize_tk_color(color: str | None, fallback: str = "#000000") -> str:
@@ -1085,13 +1086,14 @@ class MainWindow(ttk.Frame):
                 email_item = new_emails[0]
                 sender = str(email_item.get("sender") or "Remitente desconocido")
                 subject = str(email_item.get("subject") or "(sin asunto)")
-                message = f"{sender}: {subject}"
+                message = f"{sender} - {subject}"
                 title = "Nuevo correo"
             else:
                 title = "Nuevos correos"
                 message = f"Han llegado {len(new_emails)} correos nuevos"
 
-            notification_sender.notify(title=title, message=message, timeout=5)
+            print("NOTIFICANDO:", message)
+            notification_sender.show_toast(title, message, duration=5, threaded=True)
             logger.info("Desktop notification shown")
         except Exception:  # noqa: BLE001
             logger.debug("Desktop notification could not be shown", exc_info=True)

@@ -137,25 +137,26 @@ MAX_REFINEMENTS = 5
 EMAIL_SUMMARY_EXAMPLES_LIMIT = 5
 
 _SYSTEM_LOG_WIDGET: ScrolledText | None = None
-_PLYER_NOTIFICATION = None
+_WIN_TOASTER = None
 
 
 def _resolve_notification_sender():
-    global _PLYER_NOTIFICATION
-    if _PLYER_NOTIFICATION is not None:
-        return _PLYER_NOTIFICATION
+    global _WIN_TOASTER
+    if _WIN_TOASTER is not None:
+        return _WIN_TOASTER
 
-    if importlib.util.find_spec("plyer") is None:
-        _PLYER_NOTIFICATION = False
+    if importlib.util.find_spec("win10toast") is None:
+        _WIN_TOASTER = False
         return None
 
     try:
-        module = importlib.import_module("plyer")
-        _PLYER_NOTIFICATION = getattr(module, "notification", False)
+        module = importlib.import_module("win10toast")
+        toaster_class = getattr(module, "ToastNotifier", None)
+        _WIN_TOASTER = toaster_class() if callable(toaster_class) else False
     except Exception:  # noqa: BLE001
-        _PLYER_NOTIFICATION = False
+        _WIN_TOASTER = False
 
-    return _PLYER_NOTIFICATION if _PLYER_NOTIFICATION is not False else None
+    return _WIN_TOASTER if _WIN_TOASTER is not False else None
 
 
 def is_table(text: str) -> bool:
@@ -1064,6 +1065,9 @@ class EmailManagerWindow(tk.Toplevel):
         self._queue_after_id = self.after(2000, self.procesar_cola)
 
     def notify_new_emails(self, emails: list[dict[str, str]]) -> None:
+        if not self.app_config.get("notifications", True):
+            return
+
         if not emails:
             return
 
@@ -1071,19 +1075,24 @@ class EmailManagerWindow(tk.Toplevel):
             email_item = emails[0]
             sender = str(email_item.get("sender") or "Remitente desconocido")
             subject = str(email_item.get("subject") or "(sin asunto)")
-            message = f"{sender}: {subject}"
+            message = f"{sender} - {subject}"
         else:
             message = f"{len(emails)} nuevos correos"
+
+        print("NOTIFICANDO:", message)
 
         notification_sender = _resolve_notification_sender()
         if notification_sender is None:
             return
-
-        notification_sender.notify(
-            title="Nuevo correo",
-            message=message,
-            timeout=5,
-        )
+        try:
+            notification_sender.show_toast(
+                "Nuevo correo",
+                message,
+                duration=5,
+                threaded=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print("Error notificación:", exc)
 
     def _open_email_config_dialog(self) -> None:
         dialog = tk.Toplevel(self)
