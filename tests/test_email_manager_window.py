@@ -624,3 +624,23 @@ def test_build_note_request_prioritizes_prepared_context_over_quick_summary() ->
 
     assert "RESUMEN DEL EMAIL" in request.raw_text
     assert "RESUMEN RÁPIDO" not in request.raw_text
+
+
+def test_is_table_detects_markdown_and_csv() -> None:
+    from app.ui.email_manager_window import is_table
+
+    assert is_table("| A | B |\n|---|---|\n| 1 | 2 |") is True
+    assert is_table("col1,col2\n1,2\n3,4") is True
+    assert is_table("texto libre\nsolo una linea") is False
+
+
+def test_parse_markdown_table_handles_separator_and_csv() -> None:
+    from app.ui.email_manager_window import parse_markdown_table
+
+    headers, rows = parse_markdown_table("| Nombre | Valor |\n|---|---|\n| A | 10 |\n| B | 20 |")
+    assert headers == ["Nombre", "Valor"]
+    assert rows == [["A", "10"], ["B", "20"]]
+
+    csv_headers, csv_rows = parse_markdown_table("h1,h2\nr1c1,r1c2\nr2c1,r2c2")
+    assert csv_headers == ["h1", "h2"]
+    assert csv_rows == [["r1c1", "r1c2"], ["r2c1", "r2c2"]]
