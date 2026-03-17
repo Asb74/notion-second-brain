@@ -1,6 +1,7 @@
 import sqlite3
 import sys
 import types
+from pathlib import Path
 from unittest.mock import patch
 
 # Minimal stubs so importing UI module does not require optional google deps.
@@ -36,7 +37,15 @@ sys.modules.setdefault("googleapiclient", apiclient)
 sys.modules.setdefault("googleapiclient.discovery", discovery)
 sys.modules.setdefault("googleapiclient.errors", errors)
 
-from app.ui.email_manager_window import EmailManagerWindow, clean_outlook_styles, is_real_html
+from app.ui.email_manager_window import (
+    EmailManagerWindow,
+    clean_markdown,
+    clean_outlook_styles,
+    copiar_tabla,
+    export_to_csv,
+    is_real_html,
+    parse_markdown_table,
+)
 
 
 class _PreviewStub:
@@ -123,6 +132,31 @@ def test_set_html_preview_keeps_html_for_real_html_content() -> None:
 
     assert window._current_html_content == "<div><p>ok</p></div>"
     assert window.preview_html.value == "<div><p>ok</p></div>"
+
+
+def test_clean_markdown_removes_bold_markers() -> None:
+    assert clean_markdown("**Campo** | **Detalles**") == "Campo | Detalles"
+
+
+def test_parse_markdown_table_cleans_headers_and_cells() -> None:
+    headers, rows = parse_markdown_table("**Campo** | **Detalles**\nvalor | **ok**")
+
+    assert headers == ["Campo", "Detalles"]
+    assert rows == [["valor", "ok"]]
+
+
+def test_export_to_csv_writes_headers_and_rows(tmp_path: Path) -> None:
+    output_path = tmp_path / "tabla.csv"
+    export_to_csv(["Campo", "Detalles"], [["A", "B"]], str(output_path))
+
+    assert output_path.read_text(encoding="utf-8") == "Campo,Detalles\nA,B\n"
+
+
+def test_copiar_tabla_uses_dataframe_clipboard_without_index() -> None:
+    with patch("pandas.DataFrame.to_clipboard") as to_clipboard:
+        copiar_tabla(["Campo", "Detalles"], [["A", "B"]])
+
+    to_clipboard.assert_called_once_with(index=False)
 
 class _TreeStub:
     def __init__(self) -> None:

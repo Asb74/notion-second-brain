@@ -116,6 +116,29 @@ def is_table(text: str) -> bool:
     return all(len(line.split(",")) == expected_columns for line in comma_lines[:6])
 
 
+def clean_markdown(text: str) -> str:
+    """Remove common Markdown markers from a text fragment."""
+    sanitized = re.sub(r"\*\*(.*?)\*\*", r"\1", text or "")
+    sanitized = sanitized.replace("**", "")
+    return sanitized.strip()
+
+
+def export_to_csv(headers: list[str], rows: list[list[str]], path: str) -> None:
+    """Persist table data to CSV with explicit headers and UTF-8 encoding."""
+    with open(path, "w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.writer(csv_file)
+        writer.writerow(headers)
+        writer.writerows(rows)
+
+
+def copiar_tabla(headers: list[str], rows: list[list[str]]) -> None:
+    """Copy table data to clipboard in a format compatible with Excel."""
+    import pandas as pd
+
+    df = pd.DataFrame(rows, columns=headers)
+    df.to_clipboard(index=False)
+
+
 def parse_markdown_table(text: str) -> tuple[list[str], list[list[str]]]:
     """Parse Markdown/CSV tabular text and return headers and rows."""
     normalized_lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
@@ -142,8 +165,8 @@ def parse_markdown_table(text: str) -> tuple[list[str], list[list[str]]]:
 
     max_columns = max(len(row) for row in parsed_rows)
     normalized_rows = [row + [""] * (max_columns - len(row)) for row in parsed_rows]
-    headers = normalized_rows[0]
-    rows = normalized_rows[1:]
+    headers = [clean_markdown(header) for header in normalized_rows[0]]
+    rows = [[clean_markdown(cell) for cell in row] for row in normalized_rows[1:]]
     return headers, rows
 
 
@@ -346,19 +369,12 @@ class EmailManagerWindow(tk.Toplevel):
 
     def _copy_treeview_as_csv(self, tree: ttk.Treeview) -> None:
         headers = [str(column) for column in tree["columns"]]
-        output_lines: list[str] = []
-        if headers:
-            output_lines.append(",".join(f'"{value.replace('"', '""')}"' for value in headers))
-
+        rows: list[list[str]] = []
         for item in tree.get_children():
-            values = [str(value) for value in tree.item(item, "values")]
-            output_lines.append(",".join(f'"{value.replace('"', '""')}"' for value in values))
+            rows.append([str(value) for value in tree.item(item, "values")])
 
-        csv_content = "\n".join(output_lines)
-        self.clipboard_clear()
-        self.clipboard_append(csv_content)
-        self.update_idletasks()
-        messagebox.showinfo("Tabla", "Tabla copiada al portapapeles en formato CSV.")
+        copiar_tabla(headers, rows)
+        messagebox.showinfo("Tabla", "Tabla copiada al portapapeles.")
 
     def _save_treeview_as_csv(self, tree: ttk.Treeview) -> None:
         file_path = filedialog.asksaveasfilename(
@@ -369,21 +385,18 @@ class EmailManagerWindow(tk.Toplevel):
         if not file_path:
             return
 
-        with open(file_path, "w", encoding="utf-8", newline="") as csv_file:
-            writer = csv.writer(csv_file)
-            headers = [str(column) for column in tree["columns"]]
-            if headers:
-                writer.writerow(headers)
-            for item in tree.get_children():
-                writer.writerow(list(tree.item(item, "values")))
+        headers = [str(column) for column in tree["columns"]]
+        rows = [list(tree.item(item, "values")) for item in tree.get_children()]
+        export_to_csv(headers, rows, file_path)
 
         messagebox.showinfo("Tabla", f"Tabla guardada en:\n{file_path}")
 
     def _render_output_widget(self, container: tk.Misc, output_text: str) -> tk.Text | None:
         self._clear_result_container(container)
+        clean_output = clean_markdown(output_text)
 
-        if is_table(output_text):
-            headers, rows = parse_markdown_table(output_text)
+        if is_table(clean_output):
+            headers, rows = parse_markdown_table(clean_output)
             if headers and rows:
                 wrapper = ttk.Frame(container)
                 wrapper.pack(fill="both", expand=True)
@@ -411,7 +424,7 @@ class EmailManagerWindow(tk.Toplevel):
 
         editor = ScrolledText(container, wrap="word", height=14)
         editor.pack(fill="both", expand=True)
-        editor.insert("1.0", output_text)
+        editor.insert("1.0", clean_output)
         return editor
 
     def _build_layout(self) -> None:
