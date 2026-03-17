@@ -8,6 +8,8 @@ auth = types.ModuleType("google.auth")
 transport = types.ModuleType("google.auth.transport")
 requests = types.ModuleType("google.auth.transport.requests")
 requests.Request = object
+exceptions = types.ModuleType("google.auth.exceptions")
+exceptions.RefreshError = Exception
 oauth2 = types.ModuleType("google.oauth2")
 credentials = types.ModuleType("google.oauth2.credentials")
 credentials.Credentials = object
@@ -22,6 +24,7 @@ sys.modules.setdefault("google", google)
 sys.modules.setdefault("google.auth", auth)
 sys.modules.setdefault("google.auth.transport", transport)
 sys.modules.setdefault("google.auth.transport.requests", requests)
+sys.modules.setdefault("google.auth.exceptions", exceptions)
 sys.modules.setdefault("google.oauth2", oauth2)
 sys.modules.setdefault("google.oauth2.credentials", credentials)
 sys.modules.setdefault("google_auth_oauthlib", oauthlib)
@@ -540,3 +543,20 @@ def test_update_dragged_entry_date_updates_event_note_date() -> None:
 
     assert moved is True
     assert calls == [(44, "2026-04-09")]
+
+
+def test_update_week_label_uses_iso_week() -> None:
+    window = CalendarManagerWindow.__new__(CalendarManagerWindow)
+
+    class _LabelStub:
+        def __init__(self) -> None:
+            self.text = ""
+
+        def config(self, *, text: str) -> None:
+            self.text = text
+
+    window.week_label = _LabelStub()
+
+    window._update_week_label(__import__("datetime").date(2025, 3, 5))
+
+    assert window.week_label.text == "SEMANA 10"
