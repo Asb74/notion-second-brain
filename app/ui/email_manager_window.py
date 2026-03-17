@@ -34,6 +34,7 @@ from app.persistence.email_repository import EmailRepository
 from app.persistence.calendar_repository import CalendarRepository
 from app.persistence.training_repository import TrainingRepository
 from app.ml.continuous_learning_service import ContinuousLearningService
+from app.ml.email_summary_feedback_store import EmailSummaryFeedbackStore
 from app.ml.ml_training_manager import MLTrainingManager
 from app.ml.retraining_service import DatasetRetrainingService
 from app.persistence.user_profile_repository import UserProfileRepository
@@ -92,6 +93,7 @@ ATTACHMENT_SUMMARY_REQUEST = (
     "- si falta contexto, indícalo brevemente\n"
 )
 MAX_REFINEMENTS = 5
+EMAIL_SUMMARY_EXAMPLES_LIMIT = 5
 
 _SYSTEM_LOG_WIDGET: ScrolledText | None = None
 
@@ -364,6 +366,8 @@ class EmailManagerWindow(tk.Toplevel):
         )
         dataset_dir = Path(os.getenv("ML_DATASET_DIR", "data/ml_datasets"))
         self.ml_training_manager = MLTrainingManager(base_dir=dataset_dir)
+        summary_feedback_path = Path(os.getenv("EMAIL_SUMMARY_FEEDBACK_PATH", "training_data_email_summary.json"))
+        self.email_summary_feedback_store = EmailSummaryFeedbackStore(file_path=summary_feedback_path)
         self.outlook_service = OutlookService()
         self.attachment_cache = AttachmentCache(gmail_client=gmail_client)
         self.my_email = self._resolve_my_email()
@@ -2167,20 +2171,7 @@ class EmailManagerWindow(tk.Toplevel):
             return
 
         # Nuevo prompt orientado a lectura ultrarrápida en viñetas, evitando formato de email formal.
-        prompt = (
-            "Analiza el siguiente email y extrae únicamente las ideas principales.\n\n"
-            "Devuelve un resumen visual para lectura rápida.\n\n"
-            "Reglas:\n"
-            "- máximo 6 líneas\n"
-            "- cada línea una idea independiente\n"
-            "- usar viñetas (•)\n"
-            "- frases muy cortas\n"
-            "- no incluir saludos ni despedidas\n"
-            "- no copiar frases completas del email\n"
-            "- lenguaje claro y directo\n\n"
-            "El objetivo es que el contenido del email se entienda en menos de 5 segundos.\n\n"
-            f"Email:\n{preview_body}"
-        )
+        prompt = self._build_email_summary_prompt(preview_body)
         try:
             self.log("Generando resumen...")
             client = build_openai_client()
@@ -2197,6 +2188,26 @@ class EmailManagerWindow(tk.Toplevel):
             logger.exception("No se pudo generar el resumen")
             self.log(f"Error generando resumen: {exc}", level="ERROR")
             messagebox.showerror("OpenAI", f"No se pudo generar el resumen.\n\n{exc}")
+
+    def _build_email_summary_prompt(self, preview_body: str) -> str:
+        examples_context = self.email_summary_feedback_store.build_prompt_context(limit=EMAIL_SUMMARY_EXAMPLES_LIMIT)
+        sections = [
+            "Analiza el siguiente email y extrae únicamente las ideas principales.\n\n"
+            "Devuelve un resumen visual para lectura rápida.\n\n"
+            "Reglas:\n"
+            "- máximo 6 líneas\n"
+            "- cada línea una idea independiente\n"
+            "- usar viñetas (•)\n"
+            "- frases muy cortas\n"
+            "- no incluir saludos ni despedidas\n"
+            "- no copiar frases completas del email\n"
+            "- lenguaje claro y directo\n\n"
+            "El objetivo es que el contenido del email se entienda en menos de 5 segundos."
+        ]
+        if examples_context:
+            sections.append(examples_context)
+        sections.append(f"Email:\n{preview_body}")
+        return "\n\n".join(sections)
 
     def _summarize_attachments(self) -> None:
         selection = self.tree.selection()
@@ -2464,6 +2475,7 @@ class EmailManagerWindow(tk.Toplevel):
         )
         panel.grid(row=2, column=0, sticky="nsew", padx=12, pady=(0, 8))
         panel.seed_history(original_output)
+        refinement_instructions_used: list[str] = []
 
         def get_current_output() -> str:
             nonlocal current_output
@@ -2493,6 +2505,7 @@ class EmailManagerWindow(tk.Toplevel):
             if not refined:
                 return
             set_current_output(refined)
+            refinement_instructions_used.append(instruction)
             panel.record_version(refined)
             self.training_repo.save_refinement_history(
                 dataset="email_response",
@@ -2604,6 +2617,7 @@ class EmailManagerWindow(tk.Toplevel):
         )
         panel.grid(row=2, column=0, sticky="nsew", padx=12, pady=(0, 8))
         panel.seed_history(original_output)
+        refinement_instructions_used: list[str] = []
 
         def get_current_output() -> str:
             nonlocal current_output
@@ -2632,6 +2646,7 @@ class EmailManagerWindow(tk.Toplevel):
             if not refined:
                 return
             set_current_output(refined)
+            refinement_instructions_used.append(instruction)
             panel.record_version(refined)
             self.training_repo.save_refinement_history(
                 dataset="email_summary",
@@ -2664,6 +2679,12 @@ class EmailManagerWindow(tk.Toplevel):
                 preview_body=preview_body,
                 summary_source=summary_source,
                 attachment_types=attachment_types,
+            )
+            self._save_email_summary_learning_async(
+                input_email=input_original,
+                ai_output=original_output,
+                user_final=current_summary,
+                refinement_instructions="\n".join(refinement_instructions_used).strip(),
             )
             dialog.destroy()
 
@@ -2735,6 +2756,30 @@ class EmailManagerWindow(tk.Toplevel):
                 "edited_by_user": bool(edited_by_user),
             },
         )
+
+    def _save_email_summary_learning_async(
+        self,
+        *,
+        input_email: str,
+        ai_output: str,
+        user_final: str,
+        refinement_instructions: str,
+    ) -> None:
+        def worker() -> None:
+            result = self.email_summary_feedback_store.guardar_feedback(
+                email=input_email,
+                ai_output=ai_output,
+                user_final=user_final,
+                instrucciones=refinement_instructions,
+            )
+            if bool(result.get("saved")):
+                self.after(0, lambda: self.status_var.set("✔ Aprendizaje guardado correctamente"))
+                self.after(0, lambda: self.system_log("✔ Aprendizaje guardado correctamente"))
+                return
+            reason = str(result.get("reason") or "unknown")
+            self.after(0, lambda: self.system_log(f"Aprendizaje omitido ({reason})", level="WARNING"))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _save_email_summary_feedback_async(
         self,
@@ -3179,20 +3224,7 @@ class EmailManagerWindow(tk.Toplevel):
         preview_body = self._get_email_original_text(row)
         if not preview_body:
             return ""
-        prompt = (
-            "Analiza el siguiente email y extrae únicamente las ideas principales.\n\n"
-            "Devuelve un resumen visual para lectura rápida.\n\n"
-            "Reglas:\n"
-            "- máximo 6 líneas\n"
-            "- cada línea una idea independiente\n"
-            "- usar viñetas (•)\n"
-            "- frases muy cortas\n"
-            "- no incluir saludos ni despedidas\n"
-            "- no copiar frases completas del email\n"
-            "- lenguaje claro y directo\n\n"
-            "El objetivo es que el contenido del email se entienda en menos de 5 segundos.\n\n"
-            f"Email:\n{preview_body}"
-        )
+        prompt = self._build_email_summary_prompt(preview_body)
         try:
             client = build_openai_client()
             response = client.responses.create(model="gpt-4.1-mini", input=prompt)
