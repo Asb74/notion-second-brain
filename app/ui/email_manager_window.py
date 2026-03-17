@@ -2386,25 +2386,42 @@ class EmailManagerWindow(tk.Toplevel):
         refinement_controls.grid(row=2, column=0, sticky="nsew", padx=12, pady=(0, 8))
         refinement_controls.grid_columnconfigure(0, weight=1)
         refinement_controls.grid_rowconfigure(4, weight=1)
-        refine_prompt_var = tk.StringVar()
-        refine_entry = ttk.Entry(refinement_controls, textvariable=refine_prompt_var)
-        refine_entry.grid(row=0, column=0, sticky="nsew", padx=8, pady=(8, 4))
-        register_dictation_focus(refine_entry)
+        refinement_input_frame = ttk.Frame(refinement_controls)
+        refinement_input_frame.grid(row=0, column=0, sticky="nsew", padx=8, pady=(8, 4))
+        refinement_input_frame.grid_columnconfigure(0, weight=1)
+        refinement_input_frame.grid_rowconfigure(0, weight=1)
+
+        refine_text = tk.Text(refinement_input_frame, height=4, wrap="word")
+        refine_text.grid(row=0, column=0, sticky="nsew")
+        refine_scrollbar = ttk.Scrollbar(refinement_input_frame, orient="vertical", command=refine_text.yview)
+        refine_scrollbar.grid(row=0, column=1, sticky="ns")
+        refine_text.configure(yscrollcommand=refine_scrollbar.set)
+        register_dictation_focus(refine_text)
 
         quick_actions = ttk.Frame(refinement_controls)
         quick_actions.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 4))
 
         refinements: list[str] = []
 
-        def sync_refinement_input() -> None:
-            refine_prompt_var.set(" | ".join(refinements))
+        def actualizar_input() -> None:
+            refine_text.delete("1.0", "end")
+            if refinements:
+                refine_text.insert("1.0", "\n".join(refinements))
+
+        def add_refinement_lines(raw_value: str) -> bool:
+            added = False
+            for line in raw_value.splitlines():
+                normalized = line.strip()
+                if not normalized or normalized in refinements:
+                    continue
+                refinements.append(normalized)
+                added = True
+            if added:
+                actualizar_input()
+            return added
 
         def append_refinement(instruction: str) -> None:
-            normalized = instruction.strip()
-            if not normalized:
-                return
-            refinements.append(normalized)
-            sync_refinement_input()
+            add_refinement_lines(instruction)
 
         for label, instruction in REFINEMENT_QUICK_ACTIONS.items():
             ttk.Button(
@@ -2451,8 +2468,8 @@ class EmailManagerWindow(tk.Toplevel):
             nonlocal dictation_snapshot
             try:
                 if not dictation_service.recording:
-                    dictation_snapshot = refine_prompt_var.get().strip()
-                    refine_entry.focus_set()
+                    dictation_snapshot = refine_text.get("1.0", "end").strip()
+                    refine_text.focus_set()
                     dictation_service.toggle_recording()
                     dictation_button.configure(text="⏹ Detener dictado")
                     return
@@ -2464,17 +2481,22 @@ class EmailManagerWindow(tk.Toplevel):
                 dictation_button.configure(text="🎤 Dictar")
                 return
 
-            dictated_text = refine_prompt_var.get().strip()
+            dictated_text = refine_text.get("1.0", "end").strip()
             if dictated_text.startswith(dictation_snapshot):
-                dictated_text = dictated_text[len(dictation_snapshot):].strip(" |")
+                dictated_text = dictated_text[len(dictation_snapshot):].strip()
             if dictated_text:
-                append_refinement(dictated_text)
+                add_refinement_lines(dictated_text)
+
+        def add_manual_refinements() -> None:
+            add_refinement_lines(refine_text.get("1.0", "end"))
+
+        def clear_refinements() -> None:
+            refinements.clear()
+            actualizar_input()
 
         dictation_button = ttk.Button(dictation_controls, text="🎤 Dictar", command=toggle_refinement_dictation)
         dictation_button.pack(side="left")
-        ttk.Button(dictation_controls, text="Añadir refinamiento", command=lambda: append_refinement(refine_prompt_var.get())).pack(
-            side="left", padx=6
-        )
+        ttk.Button(dictation_controls, text="➕ Añadir instrucciones", command=add_manual_refinements).pack(side="left", padx=6)
 
         history_frame = ttk.LabelFrame(refinement_controls, text="Historial de refinamiento")
         history_frame.grid(row=4, column=0, sticky="nsew", padx=8, pady=(0, 8))
@@ -2500,23 +2522,26 @@ class EmailManagerWindow(tk.Toplevel):
             editor.insert("1.0", restored)
             refinements.clear()
             refinements.extend(history_refinements[restored_index])
-            sync_refinement_input()
+            actualizar_input()
 
         history_list.bind("<<ListboxSelect>>", lambda _event: restore_selected_version())
 
         def refine_summary() -> None:
             nonlocal refinements_used
-            instruction = refine_prompt_var.get().strip()
-            if not instruction:
+            add_manual_refinements()
+            if not refinements:
                 messagebox.showwarning("Atención", "Escribe una instrucción para refinar el resultado.")
                 return
             if refinements_used >= MAX_REFINEMENTS:
                 messagebox.showinfo("Refinamiento", "Has alcanzado el máximo de refinamientos. Guarda una versión final.")
                 return
-            if not refinements:
-                append_refinement(instruction)
             current_output = editor.get("1.0", "end").strip()
-            cumulative_instruction = " | ".join(refinements)
+            cumulative_instruction = (
+                "Refina el siguiente resumen:\n\n"
+                f"{original_output}\n\n"
+                "Aplicando:\n\n"
+                + "\n".join(f"* {instruction}" for instruction in refinements)
+            )
             refined = self._refine_generated_output(
                 input_original=input_original,
                 output_actual=current_output,
@@ -2541,6 +2566,7 @@ class EmailManagerWindow(tk.Toplevel):
         actions_row = ttk.Frame(refinement_controls)
         actions_row.grid(row=5, column=0, sticky="nsew", padx=8, pady=(0, 8))
         ttk.Button(actions_row, text="Mejorar resultado", command=refine_summary).pack(side="left")
+        ttk.Button(actions_row, text="🧹 Limpiar refinamiento", command=clear_refinements).pack(side="left", padx=6)
         ttk.Button(
             actions_row,
             text="Restablecer",
@@ -2548,7 +2574,7 @@ class EmailManagerWindow(tk.Toplevel):
                 editor.delete("1.0", "end"),
                 editor.insert("1.0", original_output),
                 refinements.clear(),
-                sync_refinement_input(),
+                actualizar_input(),
             ),
         ).pack(side="left", padx=6)
         ttk.Button(actions_row, text="Restaurar versión", command=restore_selected_version).pack(side="left")
