@@ -17,7 +17,6 @@ from datetime import datetime
 from email.utils import getaddresses, parseaddr
 from pathlib import Path
 from typing import Callable
-from tkinter import font as tkfont
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from tkinter.scrolledtext import ScrolledText
 from tkcalendar import DateEntry
@@ -38,10 +37,10 @@ from app.ml.ml_training_manager import MLTrainingManager
 from app.ml.retraining_service import DatasetRetrainingService
 from app.persistence.user_profile_repository import UserProfileRepository
 from app.services.email_entity_extractor import EmailEntityExtractor
-from app.services.voice_dictation import VoiceDictationError, VoiceDictationService
 from app.ui.app_icons import apply_app_icon
 from app.ui.excel_filter import ExcelTreeFilter
-from app.ui.dictation_widgets import attach_dictation, register_dictation_focus
+from app.ui.dictation_widgets import attach_dictation
+from app.ui.refinement_panel import RefinamientoPanel
 from app.utils.openai_client import MODEL_NAME, build_openai_client
 from app.utils.attachment_text_extractor import (
     MAX_ATTACHMENT_TEXT,
@@ -2218,7 +2217,7 @@ class EmailManagerWindow(tk.Toplevel):
         dialog = tk.Toplevel(self)
         apply_app_icon(dialog)
         dialog.title("Respuesta propuesta por IA")
-        dialog.geometry("760x520")
+        dialog.geometry("760x560")
         dialog.transient(self)
         dialog.grab_set()
 
@@ -2230,66 +2229,29 @@ class EmailManagerWindow(tk.Toplevel):
         editor.pack(fill="both", expand=True, padx=12, pady=(0, 12))
         editor.insert("1.0", self._apply_user_signature(draft_ai_response))
 
-        refinement_controls = ttk.LabelFrame(dialog, text="Refinar resultado")
-        refinement_controls.pack(fill="x", padx=12, pady=(0, 8))
-        refine_prompt_var = tk.StringVar()
-        refine_entry = ttk.Entry(refinement_controls, textvariable=refine_prompt_var)
-        refine_entry.pack(fill="x", padx=8, pady=(8, 4))
-        quick_actions = ttk.Frame(refinement_controls)
-        quick_actions.pack(fill="x", padx=8, pady=(0, 4))
-
         original_output = self._apply_user_signature(draft_ai_response).strip()
         input_original = build_email_training_input_text(
             subject=row.get("subject", ""),
             sender=row.get("real_sender") or row.get("sender", ""),
             body_text=row.get("body_text", ""),
         )
-        history_versions: list[str] = [original_output]
-        refinements_used = 0
 
-        history_frame = ttk.LabelFrame(refinement_controls, text="Historial de refinamiento")
-        history_frame.pack(fill="both", padx=8, pady=(0, 8))
-        history_list = tk.Listbox(history_frame, height=4, exportselection=False)
-        history_list.pack(fill="x", padx=6, pady=6)
-
-        def refresh_history() -> None:
-            history_list.delete(0, "end")
-            for idx in range(len(history_versions)):
-                history_list.insert("end", f"Versión {idx + 1}")
-            history_list.selection_clear(0, "end")
-            history_list.selection_set(len(history_versions) - 1)
-
-        def restore_selected_version() -> None:
-            selected = history_list.curselection()
-            if not selected:
-                return
-            value = history_versions[int(selected[0])]
-            editor.delete("1.0", "end")
-            editor.insert("1.0", value)
-
-        history_list.bind("<<ListboxSelect>>", lambda _event: restore_selected_version())
-
-        def apply_quick_instruction(instruction: str) -> None:
-            refine_prompt_var.set(instruction)
-
-        for label, instruction in REFINEMENT_QUICK_ACTIONS.items():
-            ttk.Button(
-                quick_actions,
-                text=f"➕ {label}",
-                command=lambda value=instruction: apply_quick_instruction(value),
-            ).pack(side="left", padx=(0, 4), pady=(0, 4))
+        panel = RefinamientoPanel(
+            dialog,
+            texto_base=original_output,
+            quick_actions=REFINEMENT_QUICK_ACTIONS,
+            on_restore_version=lambda value: (editor.delete("1.0", "end"), editor.insert("1.0", value)),
+            max_refinements=MAX_REFINEMENTS,
+        )
+        panel.pack(fill="x", padx=12, pady=(0, 8))
+        panel.seed_history(original_output)
 
         def refine_response() -> None:
-            nonlocal refinements_used
-            instruction = refine_prompt_var.get().strip()
-            if not instruction:
-                messagebox.showwarning("Atención", "Escribe una instrucción para refinar el resultado.")
-                return
-            if refinements_used >= MAX_REFINEMENTS:
-                messagebox.showinfo("Refinamiento", "Has alcanzado el máximo de refinamientos. Guarda una versión final.")
+            if not panel.can_refine():
                 return
 
             current_output = editor.get("1.0", "end").strip()
+            instruction = panel.get_prompt_final()
             refined = self._refine_generated_output(
                 input_original=input_original,
                 output_actual=current_output,
@@ -2299,9 +2261,7 @@ class EmailManagerWindow(tk.Toplevel):
                 return
             editor.delete("1.0", "end")
             editor.insert("1.0", refined)
-            history_versions.append(refined)
-            refinements_used += 1
-            refresh_history()
+            panel.record_version(refined)
             self.training_repo.save_refinement_history(
                 dataset="email_response",
                 input_original=input_original,
@@ -2310,13 +2270,19 @@ class EmailManagerWindow(tk.Toplevel):
                 refined_output=refined,
             )
 
-        actions_row = ttk.Frame(refinement_controls)
-        actions_row.pack(fill="x", padx=8, pady=(0, 8))
+        actions_row = ttk.Frame(panel)
+        actions_row.grid(row=6, column=0, sticky="nsew", padx=8, pady=(0, 8))
         ttk.Button(actions_row, text="Mejorar resultado", command=refine_response).pack(side="left")
-        ttk.Button(actions_row, text="Restablecer", command=lambda: (editor.delete("1.0", "end"), editor.insert("1.0", original_output))).pack(side="left", padx=6)
-        ttk.Button(actions_row, text="Restaurar versión", command=restore_selected_version).pack(side="left")
-
-        refresh_history()
+        ttk.Button(
+            actions_row,
+            text="Restablecer",
+            command=lambda: (
+                editor.delete("1.0", "end"),
+                editor.insert("1.0", original_output),
+                panel.clear_refinements(),
+            ),
+        ).pack(side="left", padx=6)
+        ttk.Button(actions_row, text="Restaurar versión", command=panel.restore_selected_version).pack(side="left")
 
         buttons = ttk.Frame(dialog)
         buttons.pack(fill="x", padx=12, pady=(0, 12))
@@ -2372,7 +2338,6 @@ class EmailManagerWindow(tk.Toplevel):
         dialog.grab_set()
         dialog.grid_columnconfigure(0, weight=1)
         dialog.grid_rowconfigure(1, weight=1)
-        dialog.grid_rowconfigure(2, weight=1)
 
         ttk.Label(dialog, text="RESUMEN GENERADO", font=("Segoe UI", 11, "bold")).grid(
             row=0,
@@ -2386,270 +2351,51 @@ class EmailManagerWindow(tk.Toplevel):
         editor.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
         editor.insert("1.0", ai_summary)
 
-        refinement_controls = ttk.LabelFrame(dialog, text="Refinar resultado")
-        refinement_controls.grid(row=2, column=0, sticky="nsew", padx=12, pady=(0, 8))
-        refinement_controls.grid_columnconfigure(0, weight=1)
-        refinement_controls.grid_rowconfigure(5, weight=1)
-        refinement_input_frame = ttk.Frame(refinement_controls)
-        refinement_input_frame.grid(row=0, column=0, sticky="nsew", padx=8, pady=(8, 4))
-        refinement_input_frame.grid_columnconfigure(0, weight=1)
-        refinement_input_frame.grid_rowconfigure(0, weight=1)
-
-        refine_text = tk.Text(refinement_input_frame, height=4, wrap="word")
-        refine_text.grid(row=0, column=0, sticky="nsew")
-        refine_scrollbar = ttk.Scrollbar(refinement_input_frame, orient="vertical", command=refine_text.yview)
-        refine_scrollbar.grid(row=0, column=1, sticky="ns")
-        refine_text.configure(yscrollcommand=refine_scrollbar.set)
-        register_dictation_focus(refine_text)
-
-        chips_frame = ttk.Frame(refinement_controls)
-        chips_frame.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 4))
-        chips_frame.grid_columnconfigure(0, weight=1)
-
-        frame_chips = ttk.Frame(chips_frame)
-        frame_chips.grid(row=0, column=0, sticky="ew")
-
-        quick_actions = ttk.Frame(refinement_controls)
-        quick_actions.grid(row=2, column=0, sticky="nsew", padx=8, pady=(0, 4))
-
-        refinements: list[str] = []
-        rendering_chips = False
-
-        def actualizar_input() -> None:
-            refine_text.delete("1.0", "end")
-            if refinements:
-                refine_text.insert("1.0", "\n".join(refinements))
-
-        def eliminar_chip(texto: str) -> None:
-            if texto in refinements:
-                refinements.remove(texto)
-                actualizar_input()
-                render_chips()
-
-        def render_chips() -> None:
-            nonlocal rendering_chips
-            if rendering_chips:
-                return
-            rendering_chips = True
-            try:
-                for widget in frame_chips.winfo_children():
-                    widget.destroy()
-                if not refinements:
-                    return
-
-                chips_font = tkfont.nametofont("TkDefaultFont")
-                available_width = frame_chips.winfo_width() or chips_frame.winfo_width() or 600
-                row_index = 0
-                col_index = 0
-                current_width = 0
-
-                for texto in refinements:
-                    chip_width = chips_font.measure(texto) + 52
-                    if col_index > 0 and current_width + chip_width > available_width:
-                        row_index += 1
-                        col_index = 0
-                        current_width = 0
-
-                    chip = ttk.Frame(frame_chips, style="Chip.TFrame")
-                    chip.grid(row=row_index, column=col_index, padx=(0, 6), pady=(0, 6), sticky="w")
-                    ttk.Label(chip, text=texto, style="ChipText.TLabel").pack(side="left", padx=(0, 4))
-                    ttk.Button(
-                        chip,
-                        text="✖",
-                        width=2,
-                        style="ChipClose.TButton",
-                        command=lambda t=texto: eliminar_chip(t),
-                    ).pack(side="left")
-
-                    current_width += chip_width + 6
-                    col_index += 1
-            finally:
-                rendering_chips = False
-
-        frame_chips.bind("<Configure>", lambda _event: render_chips())
-
-        def add_refinement_lines(raw_value: str) -> bool:
-            added = False
-            for line in raw_value.splitlines():
-                normalized = line.strip()
-                if not normalized or normalized in refinements:
-                    continue
-                refinements.append(normalized)
-                added = True
-            if added:
-                actualizar_input()
-                render_chips()
-            return added
-
-        def append_refinement(instruction: str) -> None:
-            add_refinement_lines(instruction)
-
-        for label, instruction in REFINEMENT_QUICK_ACTIONS.items():
-            ttk.Button(
-                quick_actions,
-                text=f"➕ {label}",
-                command=lambda value=instruction: append_refinement(value),
-            ).pack(side="left", padx=(0, 4), pady=(0, 4))
-
-        dictation_controls = ttk.Frame(refinement_controls)
-        dictation_controls.grid(row=3, column=0, sticky="nsew", padx=8, pady=(0, 4))
-
-        sender = row.get("real_sender") or row.get("sender", "")
-        input_original = (
-            "EMAIL_SUBJECT:\n"
-            f"{(row.get('subject') or '').strip()}\n\n"
-            "EMAIL_SENDER:\n"
-            f"{(sender or '').strip()}\n\n"
-            f"{'ATTACHMENT_CONTENT' if summary_source == 'attachment' else 'EMAIL_BODY'}:\n"
-            f"{(preview_body or '').strip()[:MAX_ATTACHMENT_TEXT]}"
-        ).strip()
-        original_output = (ai_summary or "").strip()
-        history_versions: list[str] = [original_output]
-        history_refinements: list[list[str]] = [[]]
-        refinements_used = 0
-
-        mic_state = ttk.Label(dictation_controls, text="")
-        mic_state.pack(side="left", padx=(6, 0))
-
-        dictation_snapshot = ""
-
-        def _set_dictation_status(text: str) -> None:
-            mic_state.configure(text="" if text == "Listo" else text)
-
-        def _show_dictation_error(msg: str) -> None:
-            messagebox.showwarning("Dictado", msg, parent=dialog)
-
-        dictation_service = VoiceDictationService(
-            dialog,
-            status_callback=_set_dictation_status,
-            error_callback=_show_dictation_error,
+        original_output = ai_summary.strip()
+        input_original = preview_body.strip() or build_email_training_input_text(
+            subject=row.get("subject", ""),
+            sender=row.get("real_sender") or row.get("sender", ""),
+            body_text=row.get("body_text", ""),
         )
 
-        def toggle_refinement_dictation() -> None:
-            nonlocal dictation_snapshot
-            try:
-                if not dictation_service.recording:
-                    dictation_snapshot = refine_text.get("1.0", "end").strip()
-                    refine_text.focus_set()
-                    dictation_service.toggle_recording()
-                    dictation_button.configure(text="⏹ Detener dictado")
-                    return
-                dictation_service.toggle_recording()
-                dictation_button.configure(text="🎤 Dictar")
-            except VoiceDictationError as exc:
-                logger.exception("Error en dictado de refinamiento")
-                _show_dictation_error(str(exc))
-                dictation_button.configure(text="🎤 Dictar")
-                return
-
-            dictated_text = refine_text.get("1.0", "end").strip()
-            if dictated_text.startswith(dictation_snapshot):
-                dictated_text = dictated_text[len(dictation_snapshot):].strip()
-            if dictated_text:
-                add_refinement_lines(dictated_text)
-
-        def add_manual_refinements() -> None:
-            if add_refinement_lines(refine_text.get("1.0", "end")):
-                actualizar_input()
-                render_chips()
-
-        def clear_refinements() -> None:
-            nonlocal dictation_snapshot
-            refinements.clear()
-            dictation_snapshot = ""
-            actualizar_input()
-            render_chips()
-            _set_dictation_status("")
-
-        dictation_button = ttk.Button(dictation_controls, text="🎤 Dictar", command=toggle_refinement_dictation)
-        dictation_button.pack(side="left")
-        ttk.Button(dictation_controls, text="➕ Añadir instrucciones", command=add_manual_refinements).pack(side="left", padx=6)
-
-        history_frame = ttk.LabelFrame(refinement_controls, text="Historial de refinamiento")
-        history_frame.grid(row=5, column=0, sticky="nsew", padx=8, pady=(0, 8))
-        history_frame.grid_columnconfigure(0, weight=1)
-        history_frame.grid_rowconfigure(0, weight=1)
-        history_list = tk.Listbox(history_frame, height=4, exportselection=False)
-        history_list.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
-
-        def refresh_history() -> None:
-            history_list.delete(0, "end")
-            for idx in range(len(history_versions)):
-                history_list.insert("end", f"Versión {idx + 1}")
-            history_list.selection_clear(0, "end")
-            history_list.selection_set(len(history_versions) - 1)
-
-        def restore_selected_version() -> None:
-            selected = history_list.curselection()
-            if not selected:
-                return
-            restored_index = int(selected[0])
-            restored = history_versions[restored_index]
-            editor.delete("1.0", "end")
-            editor.insert("1.0", restored)
-            refinements.clear()
-            refinements.extend(history_refinements[restored_index])
-            actualizar_input()
-            render_chips()
-
-        history_list.bind("<<ListboxSelect>>", lambda _event: restore_selected_version())
+        panel = RefinamientoPanel(
+            dialog,
+            texto_base=original_output,
+            quick_actions=REFINEMENT_QUICK_ACTIONS,
+            on_restore_version=lambda value: (editor.delete("1.0", "end"), editor.insert("1.0", value)),
+            max_refinements=MAX_REFINEMENTS,
+        )
+        panel.grid(row=2, column=0, sticky="nsew", padx=12, pady=(0, 8))
+        panel.seed_history(original_output)
 
         def refine_summary() -> None:
-            nonlocal refinements_used
-            add_manual_refinements()
-            if not refinements:
-                messagebox.showwarning("Atención", "Escribe una instrucción para refinar el resultado.")
-                return
-            if refinements_used >= MAX_REFINEMENTS:
-                messagebox.showinfo("Refinamiento", "Has alcanzado el máximo de refinamientos. Guarda una versión final.")
+            if not panel.can_refine():
                 return
             current_output = editor.get("1.0", "end").strip()
-            cumulative_instruction = (
-                "Refina el siguiente resumen:\n\n"
-                f"{original_output}\n\n"
-                "Aplicando:\n\n"
-                + "\n".join(f"* {instruction}" for instruction in refinements)
-            )
+            instruction = panel.get_prompt_final()
             refined = self._refine_generated_output(
                 input_original=input_original,
                 output_actual=current_output,
-                user_instruction=cumulative_instruction,
+                user_instruction=instruction,
             )
             if not refined:
                 return
             editor.delete("1.0", "end")
             editor.insert("1.0", refined)
-            history_versions.append(refined)
-            history_refinements.append(list(refinements))
-            refinements_used += 1
-            refresh_history()
+            panel.record_version(refined)
             self.training_repo.save_refinement_history(
                 dataset="email_summary",
                 input_original=input_original,
                 output_original=current_output,
-                user_instruction=cumulative_instruction,
+                user_instruction=instruction,
                 refined_output=refined,
             )
 
-        actions_row = ttk.Frame(refinement_controls)
+        actions_row = ttk.Frame(panel)
         actions_row.grid(row=6, column=0, sticky="nsew", padx=8, pady=(0, 8))
         ttk.Button(actions_row, text="Mejorar resultado", command=refine_summary).pack(side="left")
-        ttk.Button(actions_row, text="🧹 Limpiar instrucciones", command=clear_refinements).pack(side="left", padx=6)
-        ttk.Button(
-            actions_row,
-            text="Restablecer",
-            command=lambda: (
-                editor.delete("1.0", "end"),
-                editor.insert("1.0", original_output),
-                refinements.clear(),
-                actualizar_input(),
-                render_chips(),
-            ),
-        ).pack(side="left", padx=6)
-        ttk.Button(actions_row, text="Restaurar versión", command=restore_selected_version).pack(side="left")
-
-        render_chips()
-        refresh_history()
+        ttk.Button(actions_row, text="Restablecer", command=lambda: (editor.delete("1.0", "end"), editor.insert("1.0", original_output), panel.clear_refinements())).pack(side="left", padx=6)
+        ttk.Button(actions_row, text="Restaurar versión", command=panel.restore_selected_version).pack(side="left")
 
         buttons = ttk.Frame(dialog)
         buttons.grid(row=3, column=0, sticky="nsew", padx=12, pady=(0, 12))
