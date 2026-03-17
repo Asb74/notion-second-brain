@@ -105,6 +105,7 @@ def test_save_and_list_refinement_history() -> None:
         output_original="Resumen inicial",
         user_instruction="Hazlo más breve",
         refined_output="Pedido 123 pendiente.",
+        refinement_mode="email_summary",
     )
     second_id = repo.save_refinement_history(
         dataset="email_summary",
@@ -112,6 +113,7 @@ def test_save_and_list_refinement_history() -> None:
         output_original="Pedido 123 pendiente.",
         user_instruction="Incluye cliente",
         refined_output="Cliente ACME. Pedido 123 pendiente.",
+        refinement_mode="attachment_summary",
     )
 
     rows = repo.list_refinement_history("email_summary", "EMAIL_BODY:\nPedido 123", limit=10)
@@ -120,6 +122,7 @@ def test_save_and_list_refinement_history() -> None:
     assert rows[0]["id"] == second_id
     assert rows[1]["id"] == first_id
     assert rows[0]["user_instruction"] == "Incluye cliente"
+    assert rows[0]["refinement_mode"] == "attachment_summary"
 
 
 def test_save_refinement_history_rejects_unsupported_dataset() -> None:
@@ -134,4 +137,21 @@ def test_save_refinement_history_rejects_unsupported_dataset() -> None:
             output_original="o",
             user_instruction="u",
             refined_output="r",
+            refinement_mode="email_summary",
+        )
+
+
+def test_save_refinement_history_rejects_unsupported_mode() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    repo = TrainingRepository(conn)
+
+    with pytest.raises(ValueError, match="Modo de refinamiento no soportado"):
+        repo.save_refinement_history(
+            dataset="email_summary",
+            input_original="i",
+            output_original="o",
+            user_instruction="u",
+            refined_output="r",
+            refinement_mode="invalid_mode",
         )

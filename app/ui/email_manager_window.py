@@ -40,7 +40,12 @@ from app.services.email_entity_extractor import EmailEntityExtractor
 from app.ui.app_icons import apply_app_icon
 from app.ui.excel_filter import ExcelTreeFilter
 from app.ui.dictation_widgets import attach_dictation
-from app.ui.refinement_panel import RefinamientoPanel
+from app.ui.refinement_panel import (
+    REFINEMENT_MODE_ATTACHMENT_SUMMARY,
+    REFINEMENT_MODE_EMAIL_SUMMARY,
+    REFINEMENT_MODE_RESPONSE,
+    RefinamientoPanel,
+)
 from app.utils.openai_client import MODEL_NAME, build_openai_client
 from app.utils.attachment_text_extractor import (
     MAX_ATTACHMENT_TEXT,
@@ -86,13 +91,6 @@ ATTACHMENT_SUMMARY_REQUEST = (
     "- si falta contexto, indícalo brevemente\n"
 )
 MAX_REFINEMENTS = 5
-REFINEMENT_QUICK_ACTIONS = {
-    "más breve": "Hazlo más breve",
-    "más detallado": "Hazlo más detallado",
-    "formato tabla": "Haz el resumen en formato tabla",
-    "incluir datos numéricos": "Incluye datos numéricos relevantes",
-    "orientado a acción": "Hazlo orientado a acción con próximos pasos claros",
-}
 
 _SYSTEM_LOG_WIDGET: ScrolledText | None = None
 
@@ -2246,7 +2244,8 @@ class EmailManagerWindow(tk.Toplevel):
         panel = RefinamientoPanel(
             dialog,
             texto_base=original_output,
-            quick_actions=REFINEMENT_QUICK_ACTIONS,
+            refinement_mode=REFINEMENT_MODE_RESPONSE,
+            original_context=input_original,
             on_restore_version=lambda value: (editor.delete("1.0", "end"), editor.insert("1.0", value)),
             max_refinements=MAX_REFINEMENTS,
         )
@@ -2258,6 +2257,7 @@ class EmailManagerWindow(tk.Toplevel):
                 return
 
             current_output = editor.get("1.0", "end").strip()
+            panel.texto_base = current_output
             instruction = panel.get_prompt_final()
             refined = self._refine_generated_output(
                 input_original=input_original,
@@ -2275,6 +2275,7 @@ class EmailManagerWindow(tk.Toplevel):
                 output_original=current_output,
                 user_instruction=instruction,
                 refined_output=refined,
+                refinement_mode=REFINEMENT_MODE_RESPONSE,
             )
 
         buttons = ttk.Frame(dialog)
@@ -2369,7 +2370,8 @@ class EmailManagerWindow(tk.Toplevel):
         panel = RefinamientoPanel(
             dialog,
             texto_base=original_output,
-            quick_actions=REFINEMENT_QUICK_ACTIONS,
+            refinement_mode=REFINEMENT_MODE_ATTACHMENT_SUMMARY if summary_source == "attachment" else REFINEMENT_MODE_EMAIL_SUMMARY,
+            original_context=input_original,
             on_restore_version=lambda value: (editor.delete("1.0", "end"), editor.insert("1.0", value)),
             max_refinements=MAX_REFINEMENTS,
         )
@@ -2380,6 +2382,7 @@ class EmailManagerWindow(tk.Toplevel):
             if not panel.can_refine():
                 return
             current_output = editor.get("1.0", "end").strip()
+            panel.texto_base = current_output
             instruction = panel.get_prompt_final()
             refined = self._refine_generated_output(
                 input_original=input_original,
@@ -2397,6 +2400,7 @@ class EmailManagerWindow(tk.Toplevel):
                 output_original=current_output,
                 user_instruction=instruction,
                 refined_output=refined,
+                refinement_mode=REFINEMENT_MODE_ATTACHMENT_SUMMARY if summary_source == "attachment" else REFINEMENT_MODE_EMAIL_SUMMARY,
             )
 
         buttons = ttk.Frame(dialog)
