@@ -89,6 +89,41 @@ def _sanitize_html_colors(html_content: str) -> str:
     return sanitized
 
 
+def sanitize_html_for_tk(html_content: str) -> str:
+    """Sanitize HTML/CSS values that tkhtmlview cannot parse safely."""
+    if not html_content:
+        return ""
+
+    sanitized = _sanitize_html_colors(html_content)
+    replacements = {
+        "transparent": "white",
+        "inherit": "black",
+        "rgba(": "rgb(",
+    }
+    for source, target in replacements.items():
+        sanitized = sanitized.replace(source, target)
+
+    sanitized = re.sub(
+        r"background\s*:\s*transparent\s*;",
+        "background:white;",
+        sanitized,
+        flags=re.IGNORECASE,
+    )
+    sanitized = re.sub(
+        r"color\s*:\s*inherit\s*;",
+        "color:black;",
+        sanitized,
+        flags=re.IGNORECASE,
+    )
+    sanitized = re.sub(
+        r"var\([^\)]*\)",
+        "black",
+        sanitized,
+        flags=re.IGNORECASE,
+    )
+    return sanitized
+
+
 ATTACHMENT_SUMMARY_REQUEST = (
     "Analiza el contenido consolidado de adjuntos y devuelve un resumen accionable en español.\n"
     "Reglas:\n"
@@ -429,6 +464,7 @@ class EmailManagerWindow(tk.Toplevel):
         self._expanded_html_window: tk.Toplevel | None = None
         self._expanded_html_frame: ScrolledText | None = None
         self.preview_html: tk.Widget | None = None
+        self.preview_text: tk.Text | None = None
         self._expanded_attachment_preview_window: tk.Toplevel | None = None
         self._expanded_attachment_preview_frame: tk.Widget | None = None
         self._temp_opened_attachments: list[Path] = []
@@ -659,6 +695,7 @@ class EmailManagerWindow(tk.Toplevel):
             background=_sanitize_tk_color("white"),
         )
         self.preview_html.pack(fill="both", expand=True)
+        self.preview_text = tk.Text(html_preview_frame, wrap="word")
 
         preview_actions = ttk.Frame(preview_tab, padding=(4, 0, 4, 4))
         preview_actions.pack(fill="x")
@@ -1877,10 +1914,15 @@ class EmailManagerWindow(tk.Toplevel):
             clean_text = html.escape(clean_text)
             preview_content = f"<pre>{clean_text}</pre>"
 
-        preview_content = _sanitize_html_colors(preview_content)
+        clean_html = sanitize_html_for_tk(preview_content)
 
         if self.preview_html is not None:
-            self.preview_html.set_html(preview_content)
+            try:
+                self.preview_html.set_html(clean_html)
+            except Exception:  # noqa: BLE001
+                if self.preview_text is not None:
+                    self.preview_text.delete("1.0", "end")
+                    self.preview_text.insert("1.0", text_body or "[No preview disponible]")
 
         if self._expanded_html_frame is not None:
             content = self._html_to_text(self._current_html_content) or text_body or "Sin contenido HTML."
