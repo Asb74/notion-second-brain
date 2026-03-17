@@ -71,7 +71,7 @@ def _sanitize_tk_color(color: str | None, fallback: str = "#000000") -> str:
     value = str(color or "").strip()
     if not value:
         return fallback
-    if value.lower() == "windowtext":
+    if value.lower() in {"windowtext", "inherit"}:
         return fallback
     return value
 
@@ -1070,6 +1070,7 @@ class MainWindow(ttk.Frame):
                     continue
 
                 if isinstance(item, list):
+                    print("Nuevos emails:", item)
                     processed_items.extend(item)
 
             if processed_items:
