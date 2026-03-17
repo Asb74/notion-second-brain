@@ -286,74 +286,70 @@ class EmailManagerWindow(tk.Toplevel):
 
         toolbar_container = ttk.Frame(self, padding=(10, 10, 10, 6))
         toolbar_container.pack(fill="x")
-        toolbar_container.columnconfigure(0, weight=1)
 
-        toolbar_main = ttk.Frame(toolbar_container)
-        toolbar_main.grid(row=0, column=0, sticky="ew")
+        # Toolbar agrupada por contexto para reducir ruido visual y mantener acciones.
+        toolbar = ttk.Frame(toolbar_container)
+        toolbar.pack(fill="x")
 
-        first_row_buttons = [
-            ("Descargar", self._download_new_emails),
-            ("Recalcular remitentes", self._recompute_senders),
-            ("Reentrenar modelo", self._retrain_model),
-            ("Reclasificar emails", self._reclassify_current_emails),
-            ("Nueva categoría", self._create_category),
-            ("Crear nota", self._create_notes_from_selected_emails),
-            ("Crear evento", self._create_events_from_selected_emails),
-            ("Marcar ignoradas", self._mark_selected_as_ignored),
-            ("Eliminar", self._delete_selected_emails),
-        ]
-        for idx, (label, command) in enumerate(first_row_buttons):
-            ttk.Button(toolbar_main, text=label, command=command, style="Toolbar.TButton").grid(
-                row=0,
-                column=idx * 2,
-                padx=(0, 6),
-                sticky="ew",
-            )
-            toolbar_main.columnconfigure(idx * 2, weight=1, uniform="toolbar-first-row")
-            if idx < len(first_row_buttons) - 1:
-                ttk.Separator(toolbar_main, orient="vertical").grid(row=0, column=idx * 2 + 1, sticky="ns", padx=(0, 6))
+        file_menu_button = ttk.Menubutton(toolbar, text="Archivo", style="Toolbar.TButton")
+        file_menu = tk.Menu(file_menu_button, tearoff=0)
+        file_menu.add_command(label="Descargar", command=self._download_new_emails)
+        file_menu.add_command(label="Recalcular remitentes", command=self._recompute_senders)
+        file_menu_button.configure(menu=file_menu)
+        file_menu_button.pack(side="left", padx=(0, 6))
 
-        toolbar_secondary = ttk.Frame(toolbar_container)
-        toolbar_secondary.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        process_menu_button = ttk.Menubutton(toolbar, text="Procesar", style="Toolbar.TButton")
+        process_menu = tk.Menu(process_menu_button, tearoff=0)
+        process_menu.add_command(label="Reentrenar modelo", command=self._retrain_model)
+        process_menu.add_command(label="Reclasificar emails", command=self._reclassify_current_emails)
+        process_menu.add_command(label="Nueva categoría", command=self._create_category)
+        process_menu_button.configure(menu=process_menu)
+        process_menu_button.pack(side="left", padx=(0, 6))
 
-        self.filters_menu_button = ttk.Menubutton(toolbar_secondary, text="Filtros", style="Toolbar.TButton")
-        self.filters_menu = tk.Menu(self.filters_menu_button, tearoff=0)
-        self.filters_menu.add_command(label="Solo no leídos", command=self._select_unread_rows)
-        self.filters_menu.add_command(label="Solo pedidos", command=lambda: self._select_rows_by_type("order"))
-        self.filters_menu.add_command(label="Solo suscripciones", command=lambda: self._select_rows_by_type("subscription"))
-        self.filters_menu_button.configure(menu=self.filters_menu)
-        second_row_controls: list[tuple[str, object]] = [
-            ("Filtros", self.filters_menu_button),
-            ("Limpiar filtros", ttk.Button(toolbar_secondary, text="Limpiar filtros", command=self._clear_filters, style="Toolbar.TButton")),
-            ("Seleccionar todo", ttk.Button(toolbar_secondary, text="Seleccionar todo", command=self._select_all_rows, style="Toolbar.TButton")),
-            ("Deseleccionar todo", ttk.Button(toolbar_secondary, text="Deseleccionar todo", command=self._clear_selection, style="Toolbar.TButton")),
-        ]
+        ia_menu_button = ttk.Menubutton(toolbar, text="IA", style="Toolbar.TButton")
+        ia_menu = tk.Menu(ia_menu_button, tearoff=0)
+        ia_menu.add_command(label="Generar respuesta", command=self._generate_response)
+        ia_menu.add_command(label="Resumir", command=self._summarize_email)
+        ia_menu.add_command(label="Resumir adjuntos", command=self._summarize_attachments)
+        ia_menu.add_command(label="Preparar contexto", command=self._prepare_context_for_selected_email)
+        ia_menu_button.configure(menu=ia_menu)
+        ia_menu_button.pack(side="left", padx=(0, 6))
 
-        self.move_target_combo = ttk.Combobox(
-            toolbar_secondary,
-            textvariable=self.move_target_var,
-            values=list(self._move_label_to_type.keys()),
-            state="readonly",
-            width=16,
-        )
-        second_row_controls.extend(
-            [
-                ("Mover a", self.move_target_combo),
-                ("Aplicar", ttk.Button(toolbar_secondary, text="Aplicar", style="Toolbar.TButton", command=self._move_selected_emails)),
-            ]
-        )
+        actions_menu_button = ttk.Menubutton(toolbar, text="Acciones", style="Toolbar.TButton")
+        actions_menu = tk.Menu(actions_menu_button, tearoff=0)
+        actions_menu.add_command(label="Crear nota", command=self._create_notes_from_selected_emails)
+        actions_menu.add_command(label="Crear evento", command=self._create_events_from_selected_emails)
+        actions_menu.add_command(label="Responder", command=self._create_outlook_draft)
+        actions_menu.add_command(label="Reenviar", command=self._forward_email)
+        actions_menu.add_separator()
+        actions_menu.add_command(label="Marcar ignoradas", command=self._mark_selected_as_ignored)
+        actions_menu.add_command(label="Eliminar", command=self._delete_selected_emails)
+        actions_menu_button.configure(menu=actions_menu)
+        actions_menu_button.pack(side="left")
 
-        for idx, (_name, widget) in enumerate(second_row_controls):
-            widget.grid(row=0, column=idx * 2, padx=(0, 6), sticky="ew")
-            toolbar_secondary.columnconfigure(idx * 2, weight=1, uniform="toolbar-second-row")
-            if idx < len(second_row_controls) - 1:
-                ttk.Separator(toolbar_secondary, orient="vertical").grid(row=0, column=idx * 2 + 1, sticky="ns", padx=(0, 6))
+        self._main_paned = ttk.PanedWindow(self, orient="vertical")
+        self._main_paned.pack(fill="both", expand=True, padx=10, pady=(0, 6))
 
-        tabs_frame = ttk.Frame(self)
-        tabs_frame.pack(fill="x", padx=10, pady=(0, 6))
-        self.notebook = ttk.Notebook(tabs_frame)
+        content_zone = ttk.Frame(self._main_paned)
+        self._logs_frame = ttk.LabelFrame(self._main_paned, text="Estado / Logs")
+        self._main_paned.add(content_zone, weight=7)
+        self._main_paned.add(self._logs_frame, weight=1)
+
+        # Layout principal UX: panel izquierdo de gestión y panel derecho de detalle dinámico.
+        content_paned = ttk.PanedWindow(content_zone, orient="horizontal")
+        content_paned.pack(fill="both", expand=True)
+
+        frame_left = ttk.Frame(content_paned, padding=(0, 0, 8, 0))
+        frame_right = ttk.Frame(content_paned)
+        content_paned.add(frame_left, weight=1)
+        content_paned.add(frame_right, weight=3)
+
+        frame_left.rowconfigure(3, weight=1)
+        frame_left.columnconfigure(0, weight=1)
+
+        self.notebook = ttk.Notebook(frame_left)
         self._rebuild_tabs()
-        self.notebook.pack(fill="x")
+        self.notebook.grid(row=0, column=0, sticky="ew", pady=(0, 6))
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
         self.notebook.bind("<Button-3>", self._open_tab_context_menu)
 
@@ -361,21 +357,38 @@ class EmailManagerWindow(tk.Toplevel):
         self.tab_menu.add_command(label="Renombrar categoría", command=self._rename_current_category)
         self.tab_menu.add_command(label="Eliminar categoría", command=self._delete_current_category)
 
-        self._main_paned = ttk.PanedWindow(self, orient="vertical")
-        self._main_paned.pack(fill="both", expand=True, padx=10, pady=(0, 6))
+        filters_row = ttk.Frame(frame_left)
+        filters_row.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+        self.filters_menu_button = ttk.Menubutton(filters_row, text="Filtros", style="Toolbar.TButton")
+        self.filters_menu = tk.Menu(self.filters_menu_button, tearoff=0)
+        self.filters_menu.add_command(label="Solo no leídos", command=self._select_unread_rows)
+        self.filters_menu.add_command(label="Solo pedidos", command=lambda: self._select_rows_by_type("order"))
+        self.filters_menu.add_command(label="Solo suscripciones", command=lambda: self._select_rows_by_type("subscription"))
+        self.filters_menu_button.configure(menu=self.filters_menu)
+        self.filters_menu_button.pack(side="left", padx=(0, 6))
+        ttk.Button(filters_row, text="Limpiar filtros", command=self._clear_filters).pack(side="left")
 
-        top_zone = ttk.Frame(self._main_paned)
-        middle_zone = ttk.Frame(self._main_paned)
-        self._logs_frame = ttk.LabelFrame(self._main_paned, text="Estado / Logs")
+        selection_row = ttk.Frame(frame_left)
+        selection_row.grid(row=2, column=0, sticky="ew", pady=(0, 6))
+        ttk.Button(selection_row, text="Seleccionar todo", command=self._select_all_rows).pack(side="left")
+        ttk.Button(selection_row, text="Deseleccionar todo", command=self._clear_selection).pack(side="left", padx=(6, 0))
 
-        self._main_paned.add(top_zone, weight=4)
-        self._main_paned.add(middle_zone, weight=3)
-        self._main_paned.add(self._logs_frame, weight=1)
+        self.move_target_combo = ttk.Combobox(
+            selection_row,
+            textvariable=self.move_target_var,
+            values=list(self._move_label_to_type.keys()),
+            state="readonly",
+            width=16,
+        )
+        self.move_target_combo.pack(side="left", padx=(12, 6))
+        ttk.Button(selection_row, text="Aplicar", command=self._move_selected_emails).pack(side="left")
 
-        table_frame = ttk.Frame(top_zone)
-        table_frame.pack(fill="both", expand=True)
+        table_frame = ttk.Frame(frame_left)
+        table_frame.grid(row=3, column=0, sticky="nsew")
+        table_frame.rowconfigure(0, weight=1)
+        table_frame.columnconfigure(0, weight=1)
 
-        self.tree = ttk.Treeview(table_frame, columns=self.columns, show="headings", height=12, selectmode="extended")
+        self.tree = ttk.Treeview(table_frame, columns=self.columns, show="headings", selectmode="extended")
         self.tree.tag_configure("email_new", background=_sanitize_tk_color("#E8F4FF"), font=("Segoe UI", 9, "bold"))
         self.tree.tag_configure("email_ignored", foreground=_sanitize_tk_color("#999999"))
         self.tree.tag_configure("email_converted", background=_sanitize_tk_color("#E8FFE8"))
@@ -383,18 +396,17 @@ class EmailManagerWindow(tk.Toplevel):
         for col in self.columns:
             self.tree.heading(col, text=self.column_titles.get(col, col))
 
-        self.tree.column("gmail_id", width=210, anchor="w")
-        self.tree.column("subject", width=280, anchor="w")
-        self.tree.column("real_sender", width=220, anchor="w")
+        self.tree.column("gmail_id", width=170, anchor="w")
+        self.tree.column("subject", width=260, anchor="w")
+        self.tree.column("real_sender", width=190, anchor="w")
         self.tree.column("type", width=110, anchor="w")
-        self.tree.column("received_at", width=160, anchor="w")
-        self.tree.column("status", width=120, anchor="w")
+        self.tree.column("received_at", width=140, anchor="w")
+        self.tree.column("status", width=90, anchor="w")
 
         y_scroll = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=y_scroll.set)
-        self.tree.pack(side="left", fill="both", expand=True)
-        y_scroll.pack(side="right", fill="y")
-
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        y_scroll.grid(row=0, column=1, sticky="ns")
         self.tree.bind("<<TreeviewSelect>>", lambda _event: self._refresh_preview())
 
         self.excel_filter = ExcelTreeFilter(
@@ -406,12 +418,14 @@ class EmailManagerWindow(tk.Toplevel):
             set_rows=self._set_filtered_rows,
         )
 
-        lower_panel = ttk.PanedWindow(middle_zone, orient="horizontal")
-        lower_panel.pack(fill="both", expand=True)
+        frame_right.rowconfigure(0, weight=1)
+        frame_right.columnconfigure(0, weight=1)
+        self.detail_notebook = ttk.Notebook(frame_right)
+        self.detail_notebook.grid(row=0, column=0, sticky="nsew")
 
-        preview_frame = ttk.LabelFrame(lower_panel, text="Vista previa")
-        html_preview_frame = ttk.Frame(preview_frame)
-        html_preview_frame.pack(fill="both", expand=True, padx=4, pady=(4, 2))
+        preview_tab = ttk.Frame(self.detail_notebook)
+        html_preview_frame = ttk.Frame(preview_tab, padding=4)
+        html_preview_frame.pack(fill="both", expand=True)
         from tkhtmlview import HTMLScrolledText
 
         self.preview_html = HTMLScrolledText(
@@ -421,43 +435,26 @@ class EmailManagerWindow(tk.Toplevel):
         )
         self.preview_html.pack(fill="both", expand=True)
 
-        attachments_frame = ttk.LabelFrame(preview_frame, text="Adjuntos")
-        attachments_frame.pack(fill="x", padx=4, pady=(0, 4))
-        self.attachments_list = tk.Listbox(attachments_frame, height=5, exportselection=False)
-        self.attachments_list.pack(fill="x", padx=6, pady=(6, 2))
-        attachments_actions = ttk.Frame(attachments_frame)
-        attachments_actions.pack(fill="x", padx=6, pady=(0, 6))
-        ttk.Button(attachments_actions, text="Abrir", command=self._open_selected_attachment).pack(side="left")
-        ttk.Button(attachments_actions, text="Guardar como…", command=self._save_selected_attachment).pack(side="left", padx=(6, 0))
-        ttk.Button(attachments_actions, text="Descargar", command=self._download_selected_attachment).pack(side="left", padx=(6, 0))
-        ttk.Button(attachments_actions, text="Adjuntar al borrador", command=self._attach_selected_to_draft).pack(side="left", padx=(6, 0))
-
-        preview_actions = ttk.Frame(preview_frame)
-        preview_actions.pack(fill="x", padx=4, pady=(0, 4))
+        preview_actions = ttk.Frame(preview_tab, padding=(4, 0, 4, 4))
+        preview_actions.pack(fill="x")
         ttk.Button(preview_actions, text="Expandir vista", command=self._expand_html_view).pack(side="left")
 
-        entities_frame = ttk.LabelFrame(preview_frame, text="Datos detectados")
-        entities_frame.pack(fill="x", padx=4, pady=(0, 4))
-        ttk.Label(entities_frame, text="Pedido:").grid(row=0, column=0, sticky="w", padx=4, pady=2)
-        ttk.Label(entities_frame, textvariable=self.detected_pedido_var).grid(row=0, column=1, sticky="w", padx=4, pady=2)
-        ttk.Label(entities_frame, text="Cliente:").grid(row=1, column=0, sticky="w", padx=4, pady=2)
-        ttk.Label(entities_frame, textvariable=self.detected_cliente_var).grid(row=1, column=1, sticky="w", padx=4, pady=2)
-        ttk.Label(entities_frame, text="Persona:").grid(row=2, column=0, sticky="w", padx=4, pady=2)
-        ttk.Label(entities_frame, textvariable=self.detected_persona_var).grid(row=2, column=1, sticky="w", padx=4, pady=2)
-        ttk.Label(entities_frame, text="Acción:").grid(row=3, column=0, sticky="w", padx=4, pady=2)
-        ttk.Label(entities_frame, textvariable=self.detected_accion_var).grid(row=3, column=1, sticky="w", padx=4, pady=2)
-
-        response_frame = ttk.LabelFrame(lower_panel, text="Respuesta / Resumen / Contenido preparado")
-        self.response_text = tk.Text(response_frame, wrap="word", height=12)
-        response_scroll = ttk.Scrollbar(response_frame, orient="vertical", command=self.response_text.yview)
+        response_tab = ttk.Frame(self.detail_notebook)
+        response_editor_container = ttk.Frame(response_tab)
+        response_editor_container.pack(fill="both", expand=True)
+        self.response_text = tk.Text(response_editor_container, wrap="word")
+        response_scroll = ttk.Scrollbar(response_editor_container, orient="vertical", command=self.response_text.yview)
         self.response_text.configure(yscrollcommand=response_scroll.set)
-        self.response_text.pack(side="top", fill="both", expand=True, padx=4, pady=4)
-        self.response_dictation_controls = attach_dictation(self.response_text, response_frame)
-        self.response_dictation_controls.pack(anchor="w", padx=4, pady=(0, 4))
-        response_scroll.pack(side="right", fill="y")
+        self.response_text.pack(side="left", fill="both", expand=True, padx=(4, 0), pady=4)
+        response_scroll.pack(side="right", fill="y", padx=(0, 4), pady=4)
 
-        response_actions = ttk.Frame(response_frame)
-        response_actions.pack(fill="x", padx=4, pady=(0, 4))
+        response_controls = ttk.Frame(response_tab, padding=(4, 0, 4, 4))
+        response_controls.pack(fill="x")
+        self.response_dictation_controls = attach_dictation(self.response_text, response_controls)
+        self.response_dictation_controls.pack(anchor="w", pady=(0, 4))
+
+        response_actions = ttk.Frame(response_controls)
+        response_actions.pack(fill="x")
         ttk.Button(response_actions, text="Generar respuesta", command=self._generate_response).pack(side="left", padx=(0, 6))
         ttk.Button(response_actions, text="Responder", command=self._create_outlook_draft).pack(side="left")
         ttk.Button(response_actions, text="Reenviar", command=self._forward_email).pack(side="left", padx=(6, 0))
@@ -465,8 +462,30 @@ class EmailManagerWindow(tk.Toplevel):
         ttk.Button(response_actions, text="Resumir adjuntos", command=self._summarize_attachments).pack(side="left", padx=(6, 0))
         ttk.Button(response_actions, text="Preparar contexto", command=self._prepare_context_for_selected_email).pack(side="left", padx=(6, 0))
 
-        lower_panel.add(preview_frame, weight=1)
-        lower_panel.add(response_frame, weight=1)
+        attachments_tab = ttk.Frame(self.detail_notebook)
+        self.attachments_list = tk.Listbox(attachments_tab, exportselection=False)
+        self.attachments_list.pack(fill="both", expand=True, padx=6, pady=(6, 2))
+        attachments_actions = ttk.Frame(attachments_tab)
+        attachments_actions.pack(fill="x", padx=6, pady=(0, 6))
+        ttk.Button(attachments_actions, text="Abrir", command=self._open_selected_attachment).pack(side="left")
+        ttk.Button(attachments_actions, text="Guardar como…", command=self._save_selected_attachment).pack(side="left", padx=(6, 0))
+        ttk.Button(attachments_actions, text="Descargar", command=self._download_selected_attachment).pack(side="left", padx=(6, 0))
+        ttk.Button(attachments_actions, text="Adjuntar al borrador", command=self._attach_selected_to_draft).pack(side="left", padx=(6, 0))
+
+        entities_tab = ttk.Frame(self.detail_notebook, padding=8)
+        ttk.Label(entities_tab, text="Pedido:").grid(row=0, column=0, sticky="w", padx=4, pady=2)
+        ttk.Label(entities_tab, textvariable=self.detected_pedido_var).grid(row=0, column=1, sticky="w", padx=4, pady=2)
+        ttk.Label(entities_tab, text="Cliente:").grid(row=1, column=0, sticky="w", padx=4, pady=2)
+        ttk.Label(entities_tab, textvariable=self.detected_cliente_var).grid(row=1, column=1, sticky="w", padx=4, pady=2)
+        ttk.Label(entities_tab, text="Persona:").grid(row=2, column=0, sticky="w", padx=4, pady=2)
+        ttk.Label(entities_tab, textvariable=self.detected_persona_var).grid(row=2, column=1, sticky="w", padx=4, pady=2)
+        ttk.Label(entities_tab, text="Acción:").grid(row=3, column=0, sticky="w", padx=4, pady=2)
+        ttk.Label(entities_tab, textvariable=self.detected_accion_var).grid(row=3, column=1, sticky="w", padx=4, pady=2)
+
+        self.detail_notebook.add(preview_tab, text="Vista previa")
+        self.detail_notebook.add(response_tab, text="Respuesta")
+        self.detail_notebook.add(attachments_tab, text="Adjuntos")
+        self.detail_notebook.add(entities_tab, text="Datos")
 
         status_frame = ttk.Frame(self)
         status_frame.pack(fill="x", padx=10, pady=(0, 10))
@@ -505,6 +524,12 @@ class EmailManagerWindow(tk.Toplevel):
 
     def system_log(self, message: str, level: str = "INFO") -> None:
         self.log(message, level=level)
+
+    def insert_text(self, text: str) -> None:
+        """Append text in the response editor preserving existing content (dictation-ready)."""
+        self.response_text.focus_set()
+        self.response_text.insert("end", text)
+        self.response_text.see("end")
 
     def _reload_category_maps(self) -> None:
         self._categories = self.category_manager.list_categories()
