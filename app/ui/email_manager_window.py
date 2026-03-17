@@ -34,7 +34,7 @@ from app.persistence.email_repository import EmailRepository
 from app.persistence.calendar_repository import CalendarRepository
 from app.persistence.training_repository import TrainingRepository
 from app.ml.continuous_learning_service import ContinuousLearningService
-from app.ml.email_summary_feedback_store import EmailSummaryFeedbackStore
+from app.ml.global_learning_store import GlobalLearningStore
 from app.ml.ml_training_manager import MLTrainingManager
 from app.ml.retraining_service import DatasetRetrainingService
 from app.persistence.user_profile_repository import UserProfileRepository
@@ -366,8 +366,8 @@ class EmailManagerWindow(tk.Toplevel):
         )
         dataset_dir = Path(os.getenv("ML_DATASET_DIR", "data/ml_datasets"))
         self.ml_training_manager = MLTrainingManager(base_dir=dataset_dir)
-        summary_feedback_path = Path(os.getenv("EMAIL_SUMMARY_FEEDBACK_PATH", "training_data_email_summary.json"))
-        self.email_summary_feedback_store = EmailSummaryFeedbackStore(file_path=summary_feedback_path)
+        global_training_path = Path(os.getenv("GLOBAL_TRAINING_DATA_PATH", "training_data.json"))
+        self.global_learning_store = GlobalLearningStore(file_path=global_training_path)
         self.outlook_service = OutlookService()
         self.attachment_cache = AttachmentCache(gmail_client=gmail_client)
         self.my_email = self._resolve_my_email()
@@ -1947,6 +1947,17 @@ class EmailManagerWindow(tk.Toplevel):
             return ""
 
     def _build_response_prompt(self, row: dict[str, str], examples: list[dict[str, str]]) -> str:
+        current_email = build_email_training_input_text(
+            subject=row.get("subject", ""),
+            sender=row.get("real_sender") or row.get("sender", ""),
+            body_text=row.get("body_text", ""),
+        )
+        learned_examples_context = self.global_learning_store.build_prompt_context(
+            tipo="email_reply",
+            input_actual=current_email,
+            max_ejemplos=EMAIL_SUMMARY_EXAMPLES_LIMIT,
+        )
+
         examples_lines = [
             "Eres un asistente que redacta correos en el estilo del usuario.",
             "",
@@ -1971,6 +1982,8 @@ class EmailManagerWindow(tk.Toplevel):
                     "",
                 ]
             )
+        if learned_examples_context:
+            examples_lines.extend([learned_examples_context, ""])
         entities = self._resolve_entities(row)
         examples_lines.extend(
             [
@@ -2190,7 +2203,11 @@ class EmailManagerWindow(tk.Toplevel):
             messagebox.showerror("OpenAI", f"No se pudo generar el resumen.\n\n{exc}")
 
     def _build_email_summary_prompt(self, preview_body: str) -> str:
-        examples_context = self.email_summary_feedback_store.build_prompt_context(limit=EMAIL_SUMMARY_EXAMPLES_LIMIT)
+        examples_context = self.global_learning_store.build_prompt_context(
+            tipo="email_summary",
+            input_actual=preview_body,
+            max_ejemplos=EMAIL_SUMMARY_EXAMPLES_LIMIT,
+        )
         sections = [
             "Analiza el siguiente email y extrae únicamente las ideas principales.\n\n"
             "Devuelve un resumen visual para lectura rápida.\n\n"
@@ -2538,6 +2555,12 @@ class EmailManagerWindow(tk.Toplevel):
             self.response_text.delete("1.0", "end")
             self.response_text.insert("1.0", final_text)
             self._save_email_response_feedback_async(row=row, output_text=final_text, edited_by_user=final_text != original_output)
+            self._save_email_reply_learning_async(
+                input_email=input_original,
+                ai_output=original_output,
+                user_final=final_text,
+                refinement_instructions="\n".join(refinement_instructions_used).strip(),
+            )
             dialog.destroy()
 
         def edit_and_use_response() -> None:
@@ -2548,6 +2571,12 @@ class EmailManagerWindow(tk.Toplevel):
             self.response_text.delete("1.0", "end")
             self.response_text.insert("1.0", edited_text)
             self._save_email_response_feedback_async(row=row, output_text=edited_text, edited_by_user=True)
+            self._save_email_reply_learning_async(
+                input_email=input_original,
+                ai_output=original_output,
+                user_final=edited_text,
+                refinement_instructions="\n".join(refinement_instructions_used).strip(),
+            )
             dialog.destroy()
 
         def save_final_version() -> None:
@@ -2558,11 +2587,17 @@ class EmailManagerWindow(tk.Toplevel):
             self.response_text.delete("1.0", "end")
             self.response_text.insert("1.0", final_text)
             self._save_email_response_feedback_async(row=row, output_text=final_text, edited_by_user=final_text != original_output)
+            self._save_email_reply_learning_async(
+                input_email=input_original,
+                ai_output=original_output,
+                user_final=final_text,
+                refinement_instructions="\n".join(refinement_instructions_used).strip(),
+            )
             dialog.destroy()
 
         ttk.Button(buttons, text="Confirmar respuesta", command=use_response).pack(side="left", padx=(6, 0))
         ttk.Button(buttons, text="Editar", command=edit_and_use_response).pack(side="left", padx=6)
-        ttk.Button(buttons, text="Guardar versión final", command=save_final_version).pack(side="left", padx=6)
+        ttk.Button(buttons, text="💾 Guardar aprendizaje", command=save_final_version).pack(side="left", padx=6)
         ttk.Button(buttons, text="Cancelar", command=dialog.destroy).pack(side="right")
 
         self.wait_window(dialog)
@@ -2726,7 +2761,7 @@ class EmailManagerWindow(tk.Toplevel):
 
         ttk.Button(buttons, text="Confirmar resumen", command=confirm_summary).pack(side="left", padx=(6, 0))
         ttk.Button(buttons, text="Editar", command=edit_summary).pack(side="left", padx=6)
-        ttk.Button(buttons, text="Guardar versión final", command=save_final_version).pack(side="left", padx=6)
+        ttk.Button(buttons, text="💾 Guardar aprendizaje", command=save_final_version).pack(side="left", padx=6)
         ttk.Button(buttons, text="Cancelar", command=dialog.destroy).pack(side="right")
 
         self.wait_window(dialog)
@@ -2757,17 +2792,19 @@ class EmailManagerWindow(tk.Toplevel):
             },
         )
 
-    def _save_email_summary_learning_async(
+    def _save_learning_feedback_async(
         self,
         *,
+        learning_type: str,
         input_email: str,
         ai_output: str,
         user_final: str,
         refinement_instructions: str,
     ) -> None:
         def worker() -> None:
-            result = self.email_summary_feedback_store.guardar_feedback(
-                email=input_email,
+            result = self.global_learning_store.guardar_feedback(
+                tipo=learning_type,
+                input_text=input_email,
                 ai_output=ai_output,
                 user_final=user_final,
                 instrucciones=refinement_instructions,
@@ -2780,6 +2817,38 @@ class EmailManagerWindow(tk.Toplevel):
             self.after(0, lambda: self.system_log(f"Aprendizaje omitido ({reason})", level="WARNING"))
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _save_email_summary_learning_async(
+        self,
+        *,
+        input_email: str,
+        ai_output: str,
+        user_final: str,
+        refinement_instructions: str,
+    ) -> None:
+        self._save_learning_feedback_async(
+            learning_type="email_summary",
+            input_email=input_email,
+            ai_output=ai_output,
+            user_final=user_final,
+            refinement_instructions=refinement_instructions,
+        )
+
+    def _save_email_reply_learning_async(
+        self,
+        *,
+        input_email: str,
+        ai_output: str,
+        user_final: str,
+        refinement_instructions: str,
+    ) -> None:
+        self._save_learning_feedback_async(
+            learning_type="email_reply",
+            input_email=input_email,
+            ai_output=ai_output,
+            user_final=user_final,
+            refinement_instructions=refinement_instructions,
+        )
 
     def _save_email_summary_feedback_async(
         self,
