@@ -129,7 +129,7 @@ class MainWindow(ttk.Frame):
         self.mail_ingestion_service: MailIngestionService | None = None
         self.email_repo: EmailRepository | None = None
         self._email_queue_after_id: str | None = None
-        self.config = load_config()
+        self.app_config = load_config()
         self.status_var = tk.StringVar(value="Listo")
         self.pack(fill="both", expand=True)
         self.notes_data: list[tuple[int, str, str, str, str]] = []
@@ -1012,11 +1012,11 @@ class MainWindow(ttk.Frame):
             gmail_client = GmailClient(str(credentials_path), str(token_path))
             self.mail_ingestion_service = MailIngestionService(gmail_client=gmail_client, db_connection=self.db_connection)
             self.seen_email_ids = self._get_saved_email_ids()
-            if self.config.get("enabled", True):
+            if self.app_config.get("enabled", True):
                 self.email_checker_thread = EmailCheckerThread(
                     check_callback=self.check_new_emails,
                     result_queue=self.email_queue,
-                    interval_seconds=int(self.config.get("check_interval", 60)),
+                    interval_seconds=int(self.app_config.get("check_interval", 60)),
                 )
                 self.email_checker_thread.start()
             self.process_email_queue()
@@ -1067,7 +1067,7 @@ class MainWindow(ttk.Frame):
             if self._email_window is not None and self._email_window.winfo_exists():
                 self._email_window.refresh_emails()
             self.status_var.set(f"Nuevos correos detectados: {len(processed_items)}")
-            if self.config.get("notifications", True):
+            if self.app_config.get("notifications", True):
                 self._show_desktop_notification(processed_items)
 
         self._email_queue_after_id = self.after(2000, self.process_email_queue)

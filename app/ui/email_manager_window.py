@@ -444,7 +444,7 @@ class EmailManagerWindow(tk.Toplevel):
         self._prepared_context_by_gmail_id: dict[str, dict[str, str]] = {}
         self.calendar_refresh_callback: Callable[[], None] | None = None
         self.tree_context_menu: tk.Menu | None = None
-        self.config = load_config()
+        self.app_config = load_config()
         self.email_queue: Queue[list[dict[str, str]]] = Queue()
         self.seen_email_ids: set[str] = set()
         self.email_checker_thread: EmailCheckerThread | None = None
@@ -453,7 +453,7 @@ class EmailManagerWindow(tk.Toplevel):
 
         self._build_layout()
         self.refresh_emails()
-        if enable_auto_checker and self.config.get("enabled", True):
+        if enable_auto_checker and self.app_config.get("enabled", True):
             self._inicializar_revisor_automatico()
         self.procesar_cola()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -969,7 +969,7 @@ class EmailManagerWindow(tk.Toplevel):
         self.email_checker_thread = EmailCheckerThread(
             check_callback=self.check_new_emails,
             result_queue=self.email_queue,
-            interval_seconds=int(self.config.get("check_interval", 60)),
+            interval_seconds=int(self.app_config.get("check_interval", 60)),
         )
         self.email_checker_thread.start()
 
@@ -1017,7 +1017,7 @@ class EmailManagerWindow(tk.Toplevel):
                 continue
             print("Nuevos emails:", nuevos)
             requires_refresh = True
-            if self.config.get("notifications", True):
+            if self.app_config.get("notifications", True):
                 self.notify_new_emails(nuevos)
 
         if requires_refresh:
@@ -1054,9 +1054,9 @@ class EmailManagerWindow(tk.Toplevel):
         dialog.transient(self)
         dialog.grab_set()
 
-        enabled_var = tk.BooleanVar(value=bool(self.config.get("enabled", True)))
-        notifications_var = tk.BooleanVar(value=bool(self.config.get("notifications", True)))
-        interval_var = tk.StringVar(value=str(self.config.get("check_interval", 60)))
+        enabled_var = tk.BooleanVar(value=bool(self.app_config.get("enabled", True)))
+        notifications_var = tk.BooleanVar(value=bool(self.app_config.get("notifications", True)))
+        interval_var = tk.StringVar(value=str(self.app_config.get("check_interval", 60)))
 
         ttk.Checkbutton(dialog, text="Activar revisión automática", variable=enabled_var).grid(row=0, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 6))
         ttk.Label(dialog, text="Intervalo (segundos)").grid(row=1, column=0, sticky="w", padx=10, pady=6)
@@ -1069,20 +1069,20 @@ class EmailManagerWindow(tk.Toplevel):
             except ValueError:
                 messagebox.showerror("Configuración Email", "El intervalo debe ser un número entero.")
                 return
-            self.config = {
+            self.app_config = {
                 "enabled": bool(enabled_var.get()),
                 "check_interval": interval,
                 "notifications": bool(notifications_var.get()),
             }
-            save_config(self.config)
+            save_config(self.app_config)
             if self.email_checker_thread is not None:
                 self.email_checker_thread.stop()
                 self.email_checker_thread = None
-            if self.config.get("enabled", True):
+            if self.app_config.get("enabled", True):
                 self.email_checker_thread = EmailCheckerThread(
                     check_callback=self.check_new_emails,
                     result_queue=self.email_queue,
-                    interval_seconds=int(self.config.get("check_interval", 60)),
+                    interval_seconds=int(self.app_config.get("check_interval", 60)),
                 )
                 self.email_checker_thread.start()
             dialog.destroy()
