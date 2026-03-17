@@ -17,6 +17,7 @@ from datetime import datetime
 from email.utils import getaddresses, parseaddr
 from pathlib import Path
 from typing import Callable
+from tkinter import font as tkfont
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from tkinter.scrolledtext import ScrolledText
 from tkcalendar import DateEntry
@@ -280,6 +281,9 @@ class EmailManagerWindow(tk.Toplevel):
         style = ttk.Style(self)
         style.theme_use("clam")
         style.configure("Toolbar.TButton", padding=(8, 6))
+        style.configure("Chip.TFrame", background="#EEF1F5", borderwidth=1, relief="solid", padding=(6, 3))
+        style.configure("ChipText.TLabel", background="#EEF1F5")
+        style.configure("ChipClose.TButton", padding=(2, 0))
         style.map(
             "Treeview",
             background=[("selected", _sanitize_tk_color("#2E6BD1"))],
@@ -2385,7 +2389,7 @@ class EmailManagerWindow(tk.Toplevel):
         refinement_controls = ttk.LabelFrame(dialog, text="Refinar resultado")
         refinement_controls.grid(row=2, column=0, sticky="nsew", padx=12, pady=(0, 8))
         refinement_controls.grid_columnconfigure(0, weight=1)
-        refinement_controls.grid_rowconfigure(4, weight=1)
+        refinement_controls.grid_rowconfigure(5, weight=1)
         refinement_input_frame = ttk.Frame(refinement_controls)
         refinement_input_frame.grid(row=0, column=0, sticky="nsew", padx=8, pady=(8, 4))
         refinement_input_frame.grid_columnconfigure(0, weight=1)
@@ -2398,15 +2402,71 @@ class EmailManagerWindow(tk.Toplevel):
         refine_text.configure(yscrollcommand=refine_scrollbar.set)
         register_dictation_focus(refine_text)
 
+        chips_frame = ttk.Frame(refinement_controls)
+        chips_frame.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 4))
+        chips_frame.grid_columnconfigure(0, weight=1)
+
+        frame_chips = ttk.Frame(chips_frame)
+        frame_chips.grid(row=0, column=0, sticky="ew")
+
         quick_actions = ttk.Frame(refinement_controls)
-        quick_actions.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 4))
+        quick_actions.grid(row=2, column=0, sticky="nsew", padx=8, pady=(0, 4))
 
         refinements: list[str] = []
+        rendering_chips = False
 
         def actualizar_input() -> None:
             refine_text.delete("1.0", "end")
             if refinements:
                 refine_text.insert("1.0", "\n".join(refinements))
+
+        def eliminar_chip(texto: str) -> None:
+            if texto in refinements:
+                refinements.remove(texto)
+                actualizar_input()
+                render_chips()
+
+        def render_chips() -> None:
+            nonlocal rendering_chips
+            if rendering_chips:
+                return
+            rendering_chips = True
+            try:
+                for widget in frame_chips.winfo_children():
+                    widget.destroy()
+                if not refinements:
+                    return
+
+                chips_font = tkfont.nametofont("TkDefaultFont")
+                available_width = frame_chips.winfo_width() or chips_frame.winfo_width() or 600
+                row_index = 0
+                col_index = 0
+                current_width = 0
+
+                for texto in refinements:
+                    chip_width = chips_font.measure(texto) + 52
+                    if col_index > 0 and current_width + chip_width > available_width:
+                        row_index += 1
+                        col_index = 0
+                        current_width = 0
+
+                    chip = ttk.Frame(frame_chips, style="Chip.TFrame")
+                    chip.grid(row=row_index, column=col_index, padx=(0, 6), pady=(0, 6), sticky="w")
+                    ttk.Label(chip, text=texto, style="ChipText.TLabel").pack(side="left", padx=(0, 4))
+                    ttk.Button(
+                        chip,
+                        text="✖",
+                        width=2,
+                        style="ChipClose.TButton",
+                        command=lambda t=texto: eliminar_chip(t),
+                    ).pack(side="left")
+
+                    current_width += chip_width + 6
+                    col_index += 1
+            finally:
+                rendering_chips = False
+
+        frame_chips.bind("<Configure>", lambda _event: render_chips())
 
         def add_refinement_lines(raw_value: str) -> bool:
             added = False
@@ -2418,6 +2478,7 @@ class EmailManagerWindow(tk.Toplevel):
                 added = True
             if added:
                 actualizar_input()
+                render_chips()
             return added
 
         def append_refinement(instruction: str) -> None:
@@ -2431,7 +2492,7 @@ class EmailManagerWindow(tk.Toplevel):
             ).pack(side="left", padx=(0, 4), pady=(0, 4))
 
         dictation_controls = ttk.Frame(refinement_controls)
-        dictation_controls.grid(row=2, column=0, sticky="nsew", padx=8, pady=(0, 4))
+        dictation_controls.grid(row=3, column=0, sticky="nsew", padx=8, pady=(0, 4))
 
         sender = row.get("real_sender") or row.get("sender", "")
         input_original = (
@@ -2490,12 +2551,14 @@ class EmailManagerWindow(tk.Toplevel):
         def add_manual_refinements() -> None:
             if add_refinement_lines(refine_text.get("1.0", "end")):
                 actualizar_input()
+                render_chips()
 
         def clear_refinements() -> None:
             nonlocal dictation_snapshot
             refinements.clear()
             dictation_snapshot = ""
             actualizar_input()
+            render_chips()
             _set_dictation_status("")
 
         dictation_button = ttk.Button(dictation_controls, text="🎤 Dictar", command=toggle_refinement_dictation)
@@ -2503,7 +2566,7 @@ class EmailManagerWindow(tk.Toplevel):
         ttk.Button(dictation_controls, text="➕ Añadir instrucciones", command=add_manual_refinements).pack(side="left", padx=6)
 
         history_frame = ttk.LabelFrame(refinement_controls, text="Historial de refinamiento")
-        history_frame.grid(row=4, column=0, sticky="nsew", padx=8, pady=(0, 8))
+        history_frame.grid(row=5, column=0, sticky="nsew", padx=8, pady=(0, 8))
         history_frame.grid_columnconfigure(0, weight=1)
         history_frame.grid_rowconfigure(0, weight=1)
         history_list = tk.Listbox(history_frame, height=4, exportselection=False)
@@ -2527,6 +2590,7 @@ class EmailManagerWindow(tk.Toplevel):
             refinements.clear()
             refinements.extend(history_refinements[restored_index])
             actualizar_input()
+            render_chips()
 
         history_list.bind("<<ListboxSelect>>", lambda _event: restore_selected_version())
 
@@ -2568,7 +2632,7 @@ class EmailManagerWindow(tk.Toplevel):
             )
 
         actions_row = ttk.Frame(refinement_controls)
-        actions_row.grid(row=5, column=0, sticky="nsew", padx=8, pady=(0, 8))
+        actions_row.grid(row=6, column=0, sticky="nsew", padx=8, pady=(0, 8))
         ttk.Button(actions_row, text="Mejorar resultado", command=refine_summary).pack(side="left")
         ttk.Button(actions_row, text="🧹 Limpiar instrucciones", command=clear_refinements).pack(side="left", padx=6)
         ttk.Button(
@@ -2579,10 +2643,12 @@ class EmailManagerWindow(tk.Toplevel):
                 editor.insert("1.0", original_output),
                 refinements.clear(),
                 actualizar_input(),
+                render_chips(),
             ),
         ).pack(side="left", padx=6)
         ttk.Button(actions_row, text="Restaurar versión", command=restore_selected_version).pack(side="left")
 
+        render_chips()
         refresh_history()
 
         buttons = ttk.Frame(dialog)
