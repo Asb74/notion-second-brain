@@ -284,48 +284,15 @@ class EmailManagerWindow(tk.Toplevel):
             foreground=[("selected", _sanitize_tk_color("white"))],
         )
 
+        # Arquitectura UX base reutilizable:
+        # 1) Menú superior para acciones globales
+        # 2) Toolbar para acciones rápidas y frecuentes
+        # 3) Área de trabajo principal con paneles + pestañas
+        self._build_menu_bar()
+
         toolbar_container = ttk.Frame(self, padding=(10, 10, 10, 6))
         toolbar_container.pack(fill="x")
-
-        # Toolbar agrupada por contexto para reducir ruido visual y mantener acciones.
-        toolbar = ttk.Frame(toolbar_container)
-        toolbar.pack(fill="x")
-
-        file_menu_button = ttk.Menubutton(toolbar, text="Archivo", style="Toolbar.TButton")
-        file_menu = tk.Menu(file_menu_button, tearoff=0)
-        file_menu.add_command(label="Descargar", command=self._download_new_emails)
-        file_menu.add_command(label="Recalcular remitentes", command=self._recompute_senders)
-        file_menu_button.configure(menu=file_menu)
-        file_menu_button.pack(side="left", padx=(0, 6))
-
-        process_menu_button = ttk.Menubutton(toolbar, text="Procesar", style="Toolbar.TButton")
-        process_menu = tk.Menu(process_menu_button, tearoff=0)
-        process_menu.add_command(label="Reentrenar modelo", command=self._retrain_model)
-        process_menu.add_command(label="Reclasificar emails", command=self._reclassify_current_emails)
-        process_menu.add_command(label="Nueva categoría", command=self._create_category)
-        process_menu_button.configure(menu=process_menu)
-        process_menu_button.pack(side="left", padx=(0, 6))
-
-        ia_menu_button = ttk.Menubutton(toolbar, text="IA", style="Toolbar.TButton")
-        ia_menu = tk.Menu(ia_menu_button, tearoff=0)
-        ia_menu.add_command(label="Generar respuesta", command=self._generate_response)
-        ia_menu.add_command(label="Resumir", command=self._summarize_email)
-        ia_menu.add_command(label="Resumir adjuntos", command=self._summarize_attachments)
-        ia_menu.add_command(label="Preparar contexto", command=self._prepare_context_for_selected_email)
-        ia_menu_button.configure(menu=ia_menu)
-        ia_menu_button.pack(side="left", padx=(0, 6))
-
-        actions_menu_button = ttk.Menubutton(toolbar, text="Acciones", style="Toolbar.TButton")
-        actions_menu = tk.Menu(actions_menu_button, tearoff=0)
-        actions_menu.add_command(label="Crear nota", command=self._create_notes_from_selected_emails)
-        actions_menu.add_command(label="Crear evento", command=self._create_events_from_selected_emails)
-        actions_menu.add_command(label="Responder", command=self._create_outlook_draft)
-        actions_menu.add_command(label="Reenviar", command=self._forward_email)
-        actions_menu.add_separator()
-        actions_menu.add_command(label="Marcar ignoradas", command=self._mark_selected_as_ignored)
-        actions_menu.add_command(label="Eliminar", command=self._delete_selected_emails)
-        actions_menu_button.configure(menu=actions_menu)
-        actions_menu_button.pack(side="left")
+        self._build_quick_toolbar(toolbar_container)
 
         self._main_paned = ttk.PanedWindow(self, orient="vertical")
         self._main_paned.pack(fill="both", expand=True, padx=10, pady=(0, 6))
@@ -500,6 +467,80 @@ class EmailManagerWindow(tk.Toplevel):
         self.system_status_text.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
         status_scroll.pack(side="right", fill="y", padx=(0, 6), pady=6)
         _SYSTEM_LOG_WIDGET = self.system_status_text
+
+    def _build_menu_bar(self) -> None:
+        menubar = tk.Menu(self)
+
+        archivo = tk.Menu(menubar, tearoff=0)
+        archivo.add_command(label="Nueva nota", command=self._create_notes_from_selected_emails)
+        archivo.add_command(label="Abrir", command=self._refresh_preview)
+        archivo.add_command(label="Guardar", command=self._create_outlook_draft)
+        archivo.add_separator()
+        archivo.add_command(label="Salir", command=self.destroy)
+        menubar.add_cascade(label="Archivo", menu=archivo)
+
+        edicion = tk.Menu(menubar, tearoff=0)
+        edicion.add_command(label="Copiar", command=lambda: self._clipboard_event("<<Copy>>"))
+        edicion.add_command(label="Pegar", command=lambda: self._clipboard_event("<<Paste>>"))
+        edicion.add_command(label="Limpiar", command=self._clear_active_text_widget)
+        menubar.add_cascade(label="Edición", menu=edicion)
+
+        herramientas = tk.Menu(menubar, tearoff=0)
+        herramientas.add_command(label="Descargar", command=self._download_new_emails)
+        herramientas.add_command(label="Reentrenar modelo", command=self._retrain_model)
+        herramientas.add_command(label="Reclasificar", command=self._reclassify_current_emails)
+        menubar.add_cascade(label="Herramientas", menu=herramientas)
+
+        maestros = tk.Menu(menubar, tearoff=0)
+        maestros.add_command(label="Perfiles", command=self._open_profiles_master)
+        maestros.add_command(label="Contextos", command=self._create_category)
+        maestros.add_command(label="Plantillas", command=self._open_templates_master)
+        menubar.add_cascade(label="Maestros", menu=maestros)
+
+        ia_menu = tk.Menu(menubar, tearoff=0)
+        ia_menu.add_command(label="Generar respuesta", command=self._generate_response)
+        ia_menu.add_command(label="Resumir", command=self._summarize_email)
+        ia_menu.add_command(label="Preparar contexto", command=self._prepare_context_for_selected_email)
+        menubar.add_cascade(label="IA", menu=ia_menu)
+
+        self.config(menu=menubar)
+
+    def _build_quick_toolbar(self, parent: ttk.Frame) -> None:
+        toolbar = ttk.Frame(parent)
+        toolbar.pack(fill="x")
+
+        quick_actions = [
+            ("⬇ Descargar", self._download_new_emails),
+            ("🧠 Reentrenar", self._retrain_model),
+            ("🔁 Reclasificar", self._reclassify_current_emails),
+            ("🏷 Nueva categoría", self._create_category),
+            ("📝 Crear nota", self._create_notes_from_selected_emails),
+            ("📅 Crear evento", self._create_events_from_selected_emails),
+        ]
+        for idx, (label, command) in enumerate(quick_actions):
+            ttk.Button(toolbar, text=label, command=command, style="Toolbar.TButton").pack(side="left", padx=(0, 6))
+            if idx < len(quick_actions) - 1:
+                ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=(0, 6))
+
+    def _clipboard_event(self, event_name: str) -> None:
+        widget = self.focus_get()
+        if widget is None:
+            return
+        try:
+            widget.event_generate(event_name)
+        except tk.TclError:
+            return
+
+    def _clear_active_text_widget(self) -> None:
+        widget = self.focus_get()
+        if isinstance(widget, (tk.Text, tk.Entry, ttk.Entry)):
+            widget.delete(0 if isinstance(widget, (tk.Entry, ttk.Entry)) else "1.0", "end")
+
+    def _open_profiles_master(self) -> None:
+        messagebox.showinfo("Perfiles", "La gestión de perfiles se administra desde la ventana principal.")
+
+    def _open_templates_master(self) -> None:
+        messagebox.showinfo("Plantillas", "El módulo de plantillas se habilitará en una siguiente iteración.")
 
     def _toggle_logs_panel(self) -> None:
         if self._main_paned is None or self._logs_frame is None:
