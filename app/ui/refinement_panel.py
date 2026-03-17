@@ -93,14 +93,21 @@ class RefinamientoPanel(ttk.LabelFrame):
         self.mic_state = ttk.Label(self.dictation_controls, text="")
         self.mic_state.pack(side="left", padx=(0, 6))
 
-        self.dictation_service = VoiceDictationService(
-            target_widget=self.refine_text,
-            status_callback=self._set_dictation_status,
-            error_callback=self._show_dictation_error,
-        )
+        try:
+            self.dictation_service = VoiceDictationService(
+                self,
+                status_callback=self._set_dictation_status,
+                error_callback=self._show_dictation_error,
+            )
+        except Exception as e:  # noqa: BLE001
+            print("⚠️ Error inicializando dictado:", e)
+            self.dictation_service = None
 
         self.dictation_button = ttk.Button(self.dictation_controls, text="🎤 Dictar", command=self.toggle_refinement_dictation)
         self.dictation_button.pack(side="left")
+        if self.dictation_service is None:
+            self.dictation_button.configure(state="disabled")
+            self._set_dictation_status("Dictado no disponible")
         ttk.Button(self.dictation_controls, text="➕ Añadir instrucciones", command=self.add_manual_refinements).pack(side="left", padx=6)
         ttk.Button(self.dictation_controls, text="🧹 Limpiar instrucciones", command=self.clear_refinements).pack(side="left", padx=6)
 
@@ -176,6 +183,10 @@ class RefinamientoPanel(ttk.LabelFrame):
         self.add_refinement_lines(self.refine_text.get("1.0", "end"))
 
     def toggle_refinement_dictation(self) -> None:
+        if self.dictation_service is None:
+            self._set_dictation_status("Dictado no disponible")
+            return
+
         try:
             if not self.dictation_service.recording:
                 self._dictation_snapshot = self.refine_text.get("1.0", "end").strip()
