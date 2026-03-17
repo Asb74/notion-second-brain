@@ -1,0 +1,5 @@
+{
+  "enabled": true,
+  "check_interval": 60,
+  "notifications": true
+}

@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import logging
 from queue import Queue
-from threading import Event, Thread
+from threading import Thread
+import time
 from typing import Callable
-
-logger = logging.getLogger(__name__)
 
 EmailCheckPayload = list[dict[str, str]] | dict[str, str]
 
@@ -25,25 +23,24 @@ class EmailCheckerThread(Thread):
         self.check_callback = check_callback
         self.result_queue = result_queue
         self.interval_seconds = max(10, int(interval_seconds))
-        self._stop_event = Event()
+        self.running = True
 
     def run(self) -> None:
-        logger.info("Email checker started")
-        while not self._stop_event.is_set():
+        while self.running:
             try:
-                logger.info("Checking emails...")
+                print("Checking emails...")
                 nuevos = self.check_callback()
                 if nuevos:
-                    logger.info("New emails detected: %s", len(nuevos))
+                    print(f"New emails detected: {len(nuevos)}")
                     self.result_queue.put(nuevos)
             except Exception as exc:  # noqa: BLE001
-                logger.exception("Background email checker failed")
-                self.result_queue.put({"type": "error", "error": str(exc)})
+                print(f"Email checker error: {exc}")
 
-            if self._stop_event.wait(self.interval_seconds):
-                break
-
-        logger.info("Email checker thread stopped")
+            remaining = float(self.interval_seconds)
+            while self.running and remaining > 0:
+                step = min(0.2, remaining)
+                time.sleep(step)
+                remaining -= step
 
     def stop(self) -> None:
-        self._stop_event.set()
+        self.running = False

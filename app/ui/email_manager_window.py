@@ -26,6 +26,7 @@ from tkinter.scrolledtext import ScrolledText
 from tkcalendar import DateEntry
 
 from app.config.mail_config import USER_EMAIL
+from app.config.email_runtime_config import load_config, save_config
 from app.core.email.category_manager import CategoryManager
 from app.core.email.gmail_client import GmailClient
 from app.core.email.attachment_cache import AttachmentCache
@@ -67,7 +68,7 @@ def _sanitize_tk_color(color: str | None, fallback: str = "#000000") -> str:
     value = str(color or "").strip()
     if not value:
         return fallback
-    if value.lower() in {"windowtext", "inherit"}:
+    if value.lower() in {"windowtext"}:
         return fallback
     return value
 
@@ -80,7 +81,6 @@ def _sanitize_html_colors(html_content: str) -> str:
         "window": "white",
         "buttontext": "black",
         "buttonface": "lightgray",
-        "inherit": "black",
     }
 
     for source, target in replacements.items():
@@ -444,16 +444,18 @@ class EmailManagerWindow(tk.Toplevel):
         self._prepared_context_by_gmail_id: dict[str, dict[str, str]] = {}
         self.calendar_refresh_callback: Callable[[], None] | None = None
         self.tree_context_menu: tk.Menu | None = None
-        self.email_queue: Queue[list[dict[str, str]] | dict[str, str]] = Queue()
-        self.emails_vistos: set[str] = set()
+        self.config = load_config()
+        self.email_queue: Queue[list[dict[str, str]]] = Queue()
+        self.seen_email_ids: set[str] = set()
         self.email_checker_thread: EmailCheckerThread | None = None
         self._queue_after_id: str | None = None
         self._last_email_check_error: str = ""
 
         self._build_layout()
         self.refresh_emails()
-        if enable_auto_checker:
+        if enable_auto_checker and self.config.get("enabled", True):
             self._inicializar_revisor_automatico()
+        self.procesar_cola()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     @staticmethod
@@ -746,6 +748,8 @@ class EmailManagerWindow(tk.Toplevel):
         herramientas.add_command(label="Reentrenar modelo", command=self._retrain_model)
         herramientas.add_command(label="Reclasificar", command=self._reclassify_current_emails)
         herramientas.add_command(label="Marcar ignoradas", command=self._mark_selected_as_ignored)
+        herramientas.add_separator()
+        herramientas.add_command(label="⚙ Configuración Email", command=self._open_email_config_dialog)
         menubar.add_cascade(label="Herramientas", menu=herramientas)
 
         maestros = tk.Menu(menubar, tearoff=0)
@@ -961,17 +965,13 @@ class EmailManagerWindow(tk.Toplevel):
 
     def _inicializar_revisor_automatico(self) -> None:
         self.system_log("Email checker started")
-        self.emails_vistos = self._obtener_ids_guardados()
+        self.seen_email_ids = self._obtener_ids_guardados()
         self.email_checker_thread = EmailCheckerThread(
-            check_callback=self.check_emails,
+            check_callback=self.check_new_emails,
             result_queue=self.email_queue,
-            interval_seconds=60,
+            interval_seconds=int(self.config.get("check_interval", 60)),
         )
         self.email_checker_thread.start()
-        self._programar_procesamiento_cola()
-
-    def _programar_procesamiento_cola(self) -> None:
-        self._queue_after_id = self.after(2000, self.procesar_cola)
 
     def _collect_new_email_items(self) -> list[dict[str, str]]:
         nuevos_ids = self.mail_ingestion_service.sync_unread_emails()
@@ -981,7 +981,7 @@ class EmailManagerWindow(tk.Toplevel):
         nuevos: list[dict[str, str]] = []
         for gmail_id in nuevos_ids:
             normalized_id = str(gmail_id or "").strip()
-            if not normalized_id or normalized_id in self.emails_vistos:
+            if not normalized_id or normalized_id in self.seen_email_ids:
                 continue
             row = self.email_repo.get_email_content(normalized_id)
             if row is None:
@@ -992,10 +992,10 @@ class EmailManagerWindow(tk.Toplevel):
                 "sender": str(row["sender"] or ""),
             }
             nuevos.append(email_item)
-            self.emails_vistos.add(normalized_id)
+            self.seen_email_ids.add(normalized_id)
         return nuevos
 
-    def check_emails(self) -> list[dict[str, str]]:
+    def check_new_emails(self) -> list[dict[str, str]]:
         self.after(0, lambda: self.system_log("Checking emails..."))
         try:
             nuevos = self._collect_new_email_items()
@@ -1013,40 +1013,84 @@ class EmailManagerWindow(tk.Toplevel):
         requires_refresh = False
         while not self.email_queue.empty():
             nuevos = self.email_queue.get()
-            if isinstance(nuevos, dict) and nuevos.get("type") == "error":
-                self.system_log(f"Error en revisión automática: {nuevos.get('error', 'desconocido')}", level="ERROR")
-                continue
             if not nuevos:
                 continue
             print("Nuevos emails:", nuevos)
             requires_refresh = True
-            for email_item in nuevos:
-                self._notificar_nuevo_email(email_item)
+            if self.config.get("notifications", True):
+                self.notify_new_emails(nuevos)
 
         if requires_refresh:
             self.refresh_emails()
             self.status_var.set("Nuevos correos detectados automáticamente")
 
-        self._programar_procesamiento_cola()
+        self._queue_after_id = self.after(2000, self.procesar_cola)
 
-    def _notificar_nuevo_email(self, email_item: dict[str, str]) -> None:
-        subject = str(email_item.get("subject", "(sin asunto)"))
-        sender = str(email_item.get("sender", ""))
-        self.system_log(f"Nuevo correo detectado: {subject}")
+    def notify_new_emails(self, emails: list[dict[str, str]]) -> None:
+        if not emails:
+            return
+
+        if len(emails) == 1:
+            email_item = emails[0]
+            sender = str(email_item.get("sender") or "Remitente desconocido")
+            subject = str(email_item.get("subject") or "(sin asunto)")
+            message = f"{sender}: {subject}"
+        else:
+            message = f"{len(emails)} nuevos correos"
 
         notification_sender = _resolve_notification_sender()
         if notification_sender is None:
             return
 
-        message = subject if not sender else f"{subject}\nDe: {sender}"
-        try:
-            notification_sender.notify(
-                title="Nuevo correo",
-                message=message,
-                timeout=5,
-            )
-        except Exception:  # noqa: BLE001
-            logger.debug("No se pudo lanzar notificación de escritorio", exc_info=True)
+        notification_sender.notify(
+            title="Nuevo correo",
+            message=message,
+            timeout=5,
+        )
+
+    def _open_email_config_dialog(self) -> None:
+        dialog = tk.Toplevel(self)
+        dialog.title("⚙ Configuración Email")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        enabled_var = tk.BooleanVar(value=bool(self.config.get("enabled", True)))
+        notifications_var = tk.BooleanVar(value=bool(self.config.get("notifications", True)))
+        interval_var = tk.StringVar(value=str(self.config.get("check_interval", 60)))
+
+        ttk.Checkbutton(dialog, text="Activar revisión automática", variable=enabled_var).grid(row=0, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 6))
+        ttk.Label(dialog, text="Intervalo (segundos)").grid(row=1, column=0, sticky="w", padx=10, pady=6)
+        ttk.Entry(dialog, textvariable=interval_var, width=12).grid(row=1, column=1, sticky="w", padx=10, pady=6)
+        ttk.Checkbutton(dialog, text="Activar notificaciones", variable=notifications_var).grid(row=2, column=0, columnspan=2, sticky="w", padx=10, pady=6)
+
+        def _save() -> None:
+            try:
+                interval = max(10, int(interval_var.get().strip()))
+            except ValueError:
+                messagebox.showerror("Configuración Email", "El intervalo debe ser un número entero.")
+                return
+            self.config = {
+                "enabled": bool(enabled_var.get()),
+                "check_interval": interval,
+                "notifications": bool(notifications_var.get()),
+            }
+            save_config(self.config)
+            if self.email_checker_thread is not None:
+                self.email_checker_thread.stop()
+                self.email_checker_thread = None
+            if self.config.get("enabled", True):
+                self.email_checker_thread = EmailCheckerThread(
+                    check_callback=self.check_new_emails,
+                    result_queue=self.email_queue,
+                    interval_seconds=int(self.config.get("check_interval", 60)),
+                )
+                self.email_checker_thread.start()
+            dialog.destroy()
+
+        buttons = ttk.Frame(dialog)
+        buttons.grid(row=3, column=0, columnspan=2, sticky="e", padx=10, pady=(8, 10))
+        ttk.Button(buttons, text="Cancelar", command=dialog.destroy).pack(side="right", padx=(6, 0))
+        ttk.Button(buttons, text="Guardar", command=_save).pack(side="right")
 
     def _obtener_ids_guardados(self) -> set[str]:
         rows = self.db_connection.execute("SELECT gmail_id FROM emails").fetchall()
@@ -1055,6 +1099,7 @@ class EmailManagerWindow(tk.Toplevel):
     def _on_close(self) -> None:
         if self.email_checker_thread is not None:
             self.email_checker_thread.stop()
+            self.email_checker_thread.join(timeout=2)
 
         if self._queue_after_id is not None:
             try:
