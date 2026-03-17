@@ -268,6 +268,7 @@ class EmailManagerWindow(tk.Toplevel):
         self._pending_note_id_by_gmail_id: dict[str, int] = {}
         self._prepared_context_by_gmail_id: dict[str, dict[str, str]] = {}
         self.calendar_refresh_callback: Callable[[], None] | None = None
+        self.tree_context_menu: tk.Menu | None = None
 
         self._build_layout()
         self.refresh_emails()
@@ -375,6 +376,10 @@ class EmailManagerWindow(tk.Toplevel):
         self.tree.grid(row=0, column=0, sticky="nsew")
         y_scroll.grid(row=0, column=1, sticky="ns")
         self.tree.bind("<<TreeviewSelect>>", lambda _event: self._refresh_preview())
+        self.tree.bind("<Button-3>", self._show_tree_context_menu)
+
+        self.tree_context_menu = tk.Menu(self.tree, tearoff=0)
+        self.tree_context_menu.add_command(label="Marcar como ignorado", command=self._mark_selected_as_ignored)
 
         self.excel_filter = ExcelTreeFilter(
             master=self,
@@ -489,6 +494,7 @@ class EmailManagerWindow(tk.Toplevel):
         herramientas.add_command(label="Descargar", command=self._download_new_emails)
         herramientas.add_command(label="Reentrenar modelo", command=self._retrain_model)
         herramientas.add_command(label="Reclasificar", command=self._reclassify_current_emails)
+        herramientas.add_command(label="Marcar ignoradas", command=self._mark_selected_as_ignored)
         menubar.add_cascade(label="Herramientas", menu=herramientas)
 
         maestros = tk.Menu(menubar, tearoff=0)
@@ -513,6 +519,7 @@ class EmailManagerWindow(tk.Toplevel):
             ("⬇ Descargar", self._download_new_emails),
             ("🧠 Reentrenar", self._retrain_model),
             ("🔁 Reclasificar", self._reclassify_current_emails),
+            ("🙈 Marcar ignoradas", self._mark_selected_as_ignored),
             ("🏷 Nueva categoría", self._create_category),
             ("📝 Crear nota", self._create_notes_from_selected_emails),
             ("📅 Crear evento", self._create_events_from_selected_emails),
@@ -1372,6 +1379,22 @@ class EmailManagerWindow(tk.Toplevel):
 
         self.email_repo.bulk_update_status(selected_ids, "ignored")
         self.refresh_emails()
+
+    def _show_tree_context_menu(self, event: tk.Event) -> None:
+        row_id = self.tree.identify_row(event.y)
+        if row_id:
+            selected = self.tree.selection()
+            if row_id not in selected:
+                self.tree.selection_set(row_id)
+                self._refresh_preview()
+
+        if self.tree_context_menu is None:
+            return
+
+        try:
+            self.tree_context_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.tree_context_menu.grab_release()
 
     def _selected_ids(self) -> list[str]:
         return [str(iid) for iid in self.tree.selection()]
