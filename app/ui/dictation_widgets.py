@@ -20,7 +20,7 @@ def _sanitize_tk_color(color: str | None, fallback: str = "#000000") -> str:
     value = str(color or "").strip()
     if not value:
         return fallback
-    if value.lower() in {"windowtext", "inherit"}:
+    if value.lower() in {"windowtext"}:
         return fallback
     return value
 

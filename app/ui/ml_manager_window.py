@@ -382,7 +382,7 @@ class MLManagerWindow(tk.Toplevel):
     def _retrain_selected_dataset(self) -> None:
         dataset = self.dataset_filter_var.get().strip() or self._dataset_selected
         if not dataset:
-            messagebox.showinfo("ML Manager", "Selecciona un dataset para reentrenar.")
+            messagebox.showinfo("ML Manager", "Selecciona un dataset para actualizar.")
             return
 
         result = self._trigger_retrain(dataset)
