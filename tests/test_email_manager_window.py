@@ -42,8 +42,11 @@ from app.ui.email_manager_window import (
     clean_markdown,
     clean_outlook_styles,
     copiar_tabla,
+    detect_kv_format,
     export_to_csv,
     is_real_html,
+    normalize_to_table,
+    parse_kv_to_table,
     parse_markdown_table,
 )
 
@@ -143,6 +146,30 @@ def test_parse_markdown_table_cleans_headers_and_cells() -> None:
 
     assert headers == ["Campo", "Detalles"]
     assert rows == [["valor", "ok"]]
+
+
+def test_detect_kv_format_requires_repeated_pairs_and_minimum_lines() -> None:
+    assert detect_kv_format("Cliente: EUROGROUP\nDestino: Alemania\nContenido: 648 cajas") is True
+    assert detect_kv_format("Cliente: EUROGROUP") is False
+    assert detect_kv_format("Texto libre\nSin pares\nNi valores") is False
+
+
+def test_parse_kv_to_table_normalizes_noise_and_preserves_order() -> None:
+    headers, rows = parse_kv_to_table("**Cliente**: EUROGROUP\n- **Destino**: Alemania\nContenido:: 648 cajas\nCampo vacío:\n")
+
+    assert headers == ["Campo", "Detalle"]
+    assert rows == [["Cliente", "EUROGROUP"], ["Destino", "Alemania"], ["Contenido", "648 cajas"]]
+
+
+def test_normalize_to_table_prefers_table_then_falls_back_to_kv() -> None:
+    markdown = "| Campo | Detalle |\n|---|---|\n| Cliente | EUROGROUP |"
+    table_result = normalize_to_table(markdown)
+    assert table_result == (["Campo", "Detalle"], [["Cliente", "EUROGROUP"]])
+
+    kv_result = normalize_to_table("Cliente: EUROGROUP\nDestino: Alemania\nContenido: 648 cajas")
+    assert kv_result == (["Campo", "Detalle"], [["Cliente", "EUROGROUP"], ["Destino", "Alemania"], ["Contenido", "648 cajas"]])
+
+    assert normalize_to_table("texto plano sin estructura") is None
 
 
 def test_export_to_csv_writes_headers_and_rows(tmp_path: Path) -> None:

@@ -170,6 +170,61 @@ def parse_markdown_table(text: str) -> tuple[list[str], list[list[str]]]:
     return headers, rows
 
 
+def detect_kv_format(text: str) -> bool:
+    """Detect repeated key:value structures across multiple lines."""
+    normalized_lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    if len(normalized_lines) < 3:
+        return False
+
+    kv_lines = 0
+    for line in normalized_lines:
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        cleaned_key = clean_markdown(key).strip("-•* ").rstrip(":").strip()
+        cleaned_value = clean_markdown(value)
+        if cleaned_key and cleaned_value:
+            kv_lines += 1
+
+    return kv_lines >= 2
+
+
+def parse_kv_to_table(text: str) -> tuple[list[str], list[list[str]]]:
+    """Parse noisy key:value text into a normalized 2-column table."""
+    cleaned_text = clean_markdown(text)
+    rows: list[list[str]] = []
+
+    for line in cleaned_text.splitlines():
+        candidate = line.strip()
+        if not candidate or ":" not in candidate:
+            continue
+
+        key, value = candidate.split(":", 1)
+        normalized_key = re.sub(r"\s+", " ", clean_markdown(key)).strip("-•* ").replace(":", "").strip()
+        normalized_value = re.sub(r"\s+", " ", clean_markdown(value)).lstrip(":").strip()
+        if not normalized_key or not normalized_value:
+            continue
+
+        rows.append([normalized_key, normalized_value])
+
+    return ["Campo", "Detalle"], rows
+
+
+def normalize_to_table(text: str) -> tuple[list[str], list[list[str]]] | None:
+    """Normalize markdown/csv/kv structures into a renderable table."""
+    if is_table(text):
+        headers, rows = parse_markdown_table(text)
+        if headers and rows:
+            return headers, rows
+
+    if detect_kv_format(text):
+        headers, rows = parse_kv_to_table(text)
+        if rows:
+            return headers, rows
+
+    return None
+
+
 def render_table(parent: tk.Misc, headers: list[str], rows: list[list[str]]) -> ttk.Treeview:
     """Render headers and rows into a table-like Treeview."""
     tree = ttk.Treeview(parent, columns=headers, show="headings")
@@ -395,32 +450,32 @@ class EmailManagerWindow(tk.Toplevel):
         self._clear_result_container(container)
         clean_output = clean_markdown(output_text)
 
-        if is_table(clean_output):
-            headers, rows = parse_markdown_table(clean_output)
-            if headers and rows:
-                wrapper = ttk.Frame(container)
-                wrapper.pack(fill="both", expand=True)
-                wrapper.rowconfigure(0, weight=1)
-                wrapper.columnconfigure(0, weight=1)
+        normalized_table = normalize_to_table(clean_output)
+        if normalized_table:
+            headers, rows = normalized_table
+            wrapper = ttk.Frame(container)
+            wrapper.pack(fill="both", expand=True)
+            wrapper.rowconfigure(0, weight=1)
+            wrapper.columnconfigure(0, weight=1)
 
-                table_frame = ttk.Frame(wrapper)
-                table_frame.grid(row=0, column=0, sticky="nsew")
-                table_frame.rowconfigure(0, weight=1)
-                table_frame.columnconfigure(0, weight=1)
+            table_frame = ttk.Frame(wrapper)
+            table_frame.grid(row=0, column=0, sticky="nsew")
+            table_frame.rowconfigure(0, weight=1)
+            table_frame.columnconfigure(0, weight=1)
 
-                tree = render_table(table_frame, headers, rows)
-                tree.grid(row=0, column=0, sticky="nsew")
-                y_scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
-                y_scrollbar.grid(row=0, column=1, sticky="ns")
-                x_scrollbar = ttk.Scrollbar(table_frame, orient="horizontal", command=tree.xview)
-                x_scrollbar.grid(row=1, column=0, sticky="ew")
-                tree.configure(yscrollcommand=y_scrollbar.set, xscrollcommand=x_scrollbar.set)
+            tree = render_table(table_frame, headers, rows)
+            tree.grid(row=0, column=0, sticky="nsew")
+            y_scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
+            y_scrollbar.grid(row=0, column=1, sticky="ns")
+            x_scrollbar = ttk.Scrollbar(table_frame, orient="horizontal", command=tree.xview)
+            x_scrollbar.grid(row=1, column=0, sticky="ew")
+            tree.configure(yscrollcommand=y_scrollbar.set, xscrollcommand=x_scrollbar.set)
 
-                actions = ttk.Frame(wrapper)
-                actions.grid(row=1, column=0, sticky="ew", pady=(6, 0))
-                ttk.Button(actions, text="📋 Copiar tabla", command=lambda: self._copy_treeview_as_csv(tree)).pack(side="left")
-                ttk.Button(actions, text="💾 Guardar como CSV", command=lambda: self._save_treeview_as_csv(tree)).pack(side="left", padx=(6, 0))
-                return None
+            actions = ttk.Frame(wrapper)
+            actions.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+            ttk.Button(actions, text="📋 Copiar tabla", command=lambda: self._copy_treeview_as_csv(tree)).pack(side="left")
+            ttk.Button(actions, text="💾 Guardar como CSV", command=lambda: self._save_treeview_as_csv(tree)).pack(side="left", padx=(6, 0))
+            return None
 
         editor = ScrolledText(container, wrap="word", height=14)
         editor.pack(fill="both", expand=True)
