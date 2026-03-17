@@ -115,7 +115,7 @@ def test_duplicate_listing_and_auto_cleanup() -> None:
     assert repo.count_duplicate_examples("email_classification") == 0
 
 
-def test_duplicates_use_normalized_input_and_label_only() -> None:
+def test_duplicates_follow_dataset_specific_dedupe_rules() -> None:
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     _seed(conn)
@@ -134,7 +134,4 @@ def test_duplicates_use_normalized_input_and_label_only() -> None:
     repo = MLTrainingRepository(conn)
 
     duplicates = repo.list_duplicate_examples("email_response")
-    assert len(duplicates) == 1
-    assert duplicates[0]["original_index"] == 2
-    assert duplicates[0]["duplicate_index"] == 3
-    assert duplicates[0]["label"] == "priority"
+    assert duplicates == []
