@@ -117,6 +117,7 @@ class Database:
                     output_original TEXT NOT NULL,
                     user_instruction TEXT NOT NULL,
                     refined_output TEXT NOT NULL,
+                    refinement_mode TEXT NOT NULL DEFAULT 'email_summary',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
                 """
@@ -142,6 +143,7 @@ class Database:
                 ON actions(status, area)
                 """
             )
+            self._ensure_column(conn, "refinement_history", "refinement_mode", "TEXT NOT NULL DEFAULT 'email_summary'")
             self._migrate_masters_table(conn)
             conn.execute(
                 """

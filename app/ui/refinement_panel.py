@@ -13,6 +13,107 @@ from app.ui.dictation_widgets import register_dictation_focus
 
 logger = logging.getLogger(__name__)
 
+REFINEMENT_MODE_RESPONSE = "response"
+REFINEMENT_MODE_EMAIL_SUMMARY = "email_summary"
+REFINEMENT_MODE_ATTACHMENT_SUMMARY = "attachment_summary"
+
+REFINEMENT_MODES = {
+    REFINEMENT_MODE_RESPONSE,
+    REFINEMENT_MODE_EMAIL_SUMMARY,
+    REFINEMENT_MODE_ATTACHMENT_SUMMARY,
+}
+
+
+def get_quick_refinements(refinement_mode: str) -> list[str]:
+    quick_refinements = {
+        REFINEMENT_MODE_RESPONSE: [
+            "más formal",
+            "más breve",
+            "más cordial",
+            "más directa",
+            "incluir agradecimiento",
+            "orientada a cierre",
+        ],
+        REFINEMENT_MODE_EMAIL_SUMMARY: [
+            "más breve",
+            "más detallado",
+            "formato tabla",
+            "incluir datos numéricos",
+            "orientado a acción",
+        ],
+        REFINEMENT_MODE_ATTACHMENT_SUMMARY: [
+            "más breve",
+            "más detallado",
+            "formato tabla",
+            "incluir datos numéricos",
+            "extraer campos clave",
+            "orientado a acción",
+        ],
+    }
+    normalized_mode = (refinement_mode or "").strip()
+    return list(quick_refinements.get(normalized_mode, quick_refinements[REFINEMENT_MODE_EMAIL_SUMMARY]))
+
+
+def build_refinement_prompt(
+    base_text: str,
+    refinements: list[str],
+    refinement_mode: str,
+    original_context: str | None = None,
+) -> str:
+    normalized_mode = (refinement_mode or "").strip()
+    context = (original_context or "").strip() or "No disponible"
+    current_text = (base_text or "").strip()
+    instruction_lines = [f"- {line.strip()}" for line in refinements if line and line.strip()]
+    instructions = "\n".join(instruction_lines) if instruction_lines else "- Sin instrucciones adicionales"
+
+    mode_prompts = {
+        REFINEMENT_MODE_RESPONSE: (
+            "Estás refinando una respuesta de email.\n"
+            "Tu prioridad es producir una respuesta final lista para enviar.\n"
+            "Las instrucciones del usuario deben interpretarse como criterios para rehacer, ajustar o mejorar la respuesta.\n"
+            "Mantén tono profesional, claridad y utilidad.",
+            "RESPUESTA ACTUAL",
+            "Reescribe la respuesta teniendo en cuenta las instrucciones.\n"
+            "Devuelve solo la respuesta final.",
+        ),
+        REFINEMENT_MODE_EMAIL_SUMMARY: (
+            "Estás refinando un resumen de email.\n"
+            "Tu prioridad es producir un resumen útil, fiel y claro.\n"
+            "Las instrucciones del usuario deben interpretarse como criterios para resumir, priorizar, extraer o reformatear información.\n"
+            "No respondas al email; solo resume.",
+            "RESUMEN ACTUAL",
+            "Refina el resumen teniendo en cuenta las instrucciones.\n"
+            "Devuelve solo el resumen final.",
+        ),
+        REFINEMENT_MODE_ATTACHMENT_SUMMARY: (
+            "Estás refinando un resumen de adjuntos o una extracción documental.\n"
+            "Tu prioridad es producir un resumen útil para trabajo operativo.\n"
+            "Las instrucciones del usuario deben interpretarse como criterios para extraer datos, priorizar campos, resumir o reformatear información.\n"
+            "No respondas al email; céntrate en el contenido documental.",
+            "RESUMEN ACTUAL",
+            "Refina el resumen de adjuntos teniendo en cuenta las instrucciones.\n"
+            "Si el usuario pide campos concretos, extráelos explícitamente.\n"
+            "Devuelve solo el resultado final.",
+        ),
+    }
+
+    base_instruction, current_text_title, task_instruction = mode_prompts.get(
+        normalized_mode,
+        mode_prompts[REFINEMENT_MODE_EMAIL_SUMMARY],
+    )
+
+    return (
+        f"{base_instruction}\n\n"
+        "CONTEXTO ORIGINAL\n"
+        f"{context}\n\n"
+        f"{current_text_title}\n"
+        f"{current_text}\n\n"
+        "INSTRUCCIONES DEL USUARIO\n"
+        f"{instructions}\n\n"
+        "TAREA\n"
+        f"{task_instruction}"
+    )
+
 
 def obtener_texto_dictado(text_widget: tk.Text, dictation_snapshot: str) -> str:
     """Return only the text fragment dictated after recording starts."""
@@ -30,13 +131,17 @@ class RefinamientoPanel(ttk.LabelFrame):
         parent: tk.Misc,
         *,
         texto_base: str,
-        quick_actions: dict[str, str],
+        refinement_mode: str,
+        original_context: str | None,
         on_restore_version: Callable[[str], None],
         max_refinements: int,
     ) -> None:
         super().__init__(parent, text="Refinar resultado")
         self.texto_base = (texto_base or "").strip()
-        self.quick_actions = quick_actions
+        self.refinement_mode = (refinement_mode or "").strip()
+        if self.refinement_mode not in REFINEMENT_MODES:
+            self.refinement_mode = REFINEMENT_MODE_EMAIL_SUMMARY
+        self.original_context = original_context
         self.on_restore_version = on_restore_version
         self.max_refinements = max_refinements
 
@@ -73,11 +178,11 @@ class RefinamientoPanel(ttk.LabelFrame):
 
         quick_actions_frame = ttk.Frame(self)
         quick_actions_frame.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 4))
-        for label, instruction in self.quick_actions.items():
+        for label in get_quick_refinements(self.refinement_mode):
             ttk.Button(
                 quick_actions_frame,
                 text=f"➕ {label}",
-                command=lambda value=instruction: self.append_refinement(value),
+                command=lambda value=label: self.append_refinement(value),
             ).pack(side="left", padx=(0, 4), pady=(0, 4))
 
         self.dictation_controls = ttk.Frame(self)
@@ -214,11 +319,11 @@ class RefinamientoPanel(ttk.LabelFrame):
         self._set_dictation_status("")
 
     def get_prompt_final(self) -> str:
-        return (
-            "Refina el siguiente contenido:\n\n"
-            f"{self.texto_base}\n\n"
-            "Aplicando:\n\n"
-            + "\n".join(f"* {instruction}" for instruction in self.refinamientos)
+        return build_refinement_prompt(
+            base_text=self.texto_base,
+            refinements=self.refinamientos,
+            refinement_mode=self.refinement_mode,
+            original_context=self.original_context,
         )
 
     def can_refine(self) -> bool:
@@ -236,6 +341,7 @@ class RefinamientoPanel(ttk.LabelFrame):
         self.historial.append(
             {
                 "version": len(self.historial) + 1,
+                "refinement_mode": self.refinement_mode,
                 "refinamientos": list(self.refinamientos),
                 "resultado": resultado,
             }
@@ -243,7 +349,14 @@ class RefinamientoPanel(ttk.LabelFrame):
         self.refresh_history()
 
     def seed_history(self, initial_result: str) -> None:
-        self.historial = [{"version": 1, "refinamientos": [], "resultado": initial_result}]
+        self.historial = [
+            {
+                "version": 1,
+                "refinement_mode": self.refinement_mode,
+                "refinamientos": [],
+                "resultado": initial_result,
+            }
+        ]
         self.refresh_history()
 
     def refresh_history(self) -> None:

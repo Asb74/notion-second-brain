@@ -20,6 +20,12 @@ class TrainingRepository:
         "calendar_event_generation",
     }
 
+    SUPPORTED_REFINEMENT_MODES = {
+        "response",
+        "email_summary",
+        "attachment_summary",
+    }
+
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
         self.ensure_table()
@@ -49,10 +55,16 @@ class TrainingRepository:
                 output_original TEXT NOT NULL,
                 user_instruction TEXT NOT NULL,
                 refined_output TEXT NOT NULL,
+                refinement_mode TEXT NOT NULL DEFAULT 'email_summary',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
+        columns = {row[1] for row in self.conn.execute("PRAGMA table_info(refinement_history)")}
+        if "refinement_mode" not in columns:
+            self.conn.execute(
+                "ALTER TABLE refinement_history ADD COLUMN refinement_mode TEXT NOT NULL DEFAULT 'email_summary'"
+            )
         self.conn.commit()
 
     def save_refinement_history(
@@ -63,10 +75,15 @@ class TrainingRepository:
         output_original: str,
         user_instruction: str,
         refined_output: str,
+        refinement_mode: str,
     ) -> int:
         normalized_dataset = (dataset or "").strip()
         if normalized_dataset not in {"email_response", "email_summary"}:
             raise ValueError(f"Dataset de refinamiento no soportado: {normalized_dataset}")
+
+        normalized_mode = (refinement_mode or "").strip()
+        if normalized_mode not in self.SUPPORTED_REFINEMENT_MODES:
+            raise ValueError(f"Modo de refinamiento no soportado: {normalized_mode}")
 
         cursor = self.conn.execute(
             """
@@ -75,9 +92,10 @@ class TrainingRepository:
                 input_original,
                 output_original,
                 user_instruction,
-                refined_output
+                refined_output,
+                refinement_mode
             )
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 normalized_dataset,
@@ -85,6 +103,7 @@ class TrainingRepository:
                 (output_original or "").strip(),
                 (user_instruction or "").strip(),
                 (refined_output or "").strip(),
+                normalized_mode,
             ),
         )
         self.conn.commit()
@@ -96,7 +115,7 @@ class TrainingRepository:
             return []
         return self.conn.execute(
             """
-            SELECT id, dataset, input_original, output_original, user_instruction, refined_output, created_at
+            SELECT id, dataset, input_original, output_original, user_instruction, refined_output, refinement_mode, created_at
             FROM refinement_history
             WHERE dataset = ? AND input_original = ?
             ORDER BY id DESC
