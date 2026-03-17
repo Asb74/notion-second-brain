@@ -2217,16 +2217,23 @@ class EmailManagerWindow(tk.Toplevel):
         dialog = tk.Toplevel(self)
         apply_app_icon(dialog)
         dialog.title("Respuesta propuesta por IA")
-        dialog.geometry("760x560")
+        dialog.geometry("900x700")
+        dialog.minsize(900, 700)
         dialog.transient(self)
         dialog.grab_set()
+        dialog.grid_columnconfigure(0, weight=1)
+        dialog.grid_rowconfigure(1, weight=1)
 
-        ttk.Label(dialog, text="RESPUESTA PROPUESTA POR IA", font=("Segoe UI", 11, "bold")).pack(
-            fill="x", padx=12, pady=(12, 6), anchor="w"
+        ttk.Label(dialog, text="RESPUESTA PROPUESTA POR IA", font=("Segoe UI", 11, "bold")).grid(
+            row=0,
+            column=0,
+            sticky="nsew",
+            padx=12,
+            pady=(12, 6),
         )
 
         editor = ScrolledText(dialog, wrap="word", height=14)
-        editor.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        editor.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
         editor.insert("1.0", self._apply_user_signature(draft_ai_response))
 
         original_output = self._apply_user_signature(draft_ai_response).strip()
@@ -2243,7 +2250,7 @@ class EmailManagerWindow(tk.Toplevel):
             on_restore_version=lambda value: (editor.delete("1.0", "end"), editor.insert("1.0", value)),
             max_refinements=MAX_REFINEMENTS,
         )
-        panel.pack(fill="x", padx=12, pady=(0, 8))
+        panel.grid(row=2, column=0, sticky="nsew", padx=12, pady=(0, 8))
         panel.seed_history(original_output)
 
         def refine_response() -> None:
@@ -2270,11 +2277,12 @@ class EmailManagerWindow(tk.Toplevel):
                 refined_output=refined,
             )
 
-        actions_row = ttk.Frame(panel)
-        actions_row.grid(row=6, column=0, sticky="nsew", padx=8, pady=(0, 8))
-        ttk.Button(actions_row, text="Mejorar resultado", command=refine_response).pack(side="left")
+        buttons = ttk.Frame(dialog)
+        buttons.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 12))
+
+        ttk.Button(buttons, text="Mejorar resultado", command=refine_response).pack(side="left")
         ttk.Button(
-            actions_row,
+            buttons,
             text="Restablecer",
             command=lambda: (
                 editor.delete("1.0", "end"),
@@ -2282,16 +2290,16 @@ class EmailManagerWindow(tk.Toplevel):
                 panel.clear_refinements(),
             ),
         ).pack(side="left", padx=6)
-        ttk.Button(actions_row, text="Restaurar versión", command=panel.restore_selected_version).pack(side="left")
-
-        buttons = ttk.Frame(dialog)
-        buttons.pack(fill="x", padx=12, pady=(0, 12))
+        ttk.Button(buttons, text="Restaurar versión", command=panel.restore_selected_version).pack(side="left")
 
         def use_response() -> None:
-            final_text = self._apply_user_signature(draft_ai_response).strip()
+            final_text = editor.get("1.0", "end").strip()
+            if not final_text:
+                messagebox.showwarning("Atención", "La respuesta no puede estar vacía.")
+                return
             self.response_text.delete("1.0", "end")
             self.response_text.insert("1.0", final_text)
-            self._save_email_response_feedback_async(row=row, output_text=final_text, edited_by_user=False)
+            self._save_email_response_feedback_async(row=row, output_text=final_text, edited_by_user=final_text != original_output)
             dialog.destroy()
 
         def edit_and_use_response() -> None:
@@ -2314,8 +2322,8 @@ class EmailManagerWindow(tk.Toplevel):
             self._save_email_response_feedback_async(row=row, output_text=final_text, edited_by_user=final_text != original_output)
             dialog.destroy()
 
-        ttk.Button(buttons, text="Usar respuesta", command=use_response).pack(side="left")
-        ttk.Button(buttons, text="Editar y usar", command=edit_and_use_response).pack(side="left", padx=6)
+        ttk.Button(buttons, text="Confirmar respuesta", command=use_response).pack(side="left", padx=(6, 0))
+        ttk.Button(buttons, text="Editar", command=edit_and_use_response).pack(side="left", padx=6)
         ttk.Button(buttons, text="Guardar versión final", command=save_final_version).pack(side="left", padx=6)
         ttk.Button(buttons, text="Cancelar", command=dialog.destroy).pack(side="right")
 
@@ -2391,23 +2399,25 @@ class EmailManagerWindow(tk.Toplevel):
                 refined_output=refined,
             )
 
-        actions_row = ttk.Frame(panel)
-        actions_row.grid(row=6, column=0, sticky="nsew", padx=8, pady=(0, 8))
-        ttk.Button(actions_row, text="Mejorar resultado", command=refine_summary).pack(side="left")
-        ttk.Button(actions_row, text="Restablecer", command=lambda: (editor.delete("1.0", "end"), editor.insert("1.0", original_output), panel.clear_refinements())).pack(side="left", padx=6)
-        ttk.Button(actions_row, text="Restaurar versión", command=panel.restore_selected_version).pack(side="left")
-
         buttons = ttk.Frame(dialog)
-        buttons.grid(row=3, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        buttons.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 12))
+
+        ttk.Button(buttons, text="Mejorar resultado", command=refine_summary).pack(side="left")
+        ttk.Button(buttons, text="Restablecer", command=lambda: (editor.delete("1.0", "end"), editor.insert("1.0", original_output), panel.clear_refinements())).pack(side="left", padx=6)
+        ttk.Button(buttons, text="Restaurar versión", command=panel.restore_selected_version).pack(side="left")
 
         def confirm_summary() -> None:
+            current_summary = editor.get("1.0", "end").strip()
+            if not current_summary:
+                messagebox.showwarning("Atención", "El resumen no puede estar vacío.")
+                return
             self.response_text.delete("1.0", "end")
-            self.response_text.insert("1.0", f"Resumen rápido:\n\n{ai_summary}\n")
-            self._update_prepared_context_summary(row=row, summary_source=summary_source, summary_value=ai_summary)
+            self.response_text.insert("1.0", f"Resumen rápido:\n\n{current_summary}\n")
+            self._update_prepared_context_summary(row=row, summary_source=summary_source, summary_value=current_summary)
             self._save_email_summary_feedback_async(
                 row=row,
-                output_text=ai_summary,
-                edited_by_user=False,
+                output_text=current_summary,
+                edited_by_user=current_summary != original_output,
                 preview_body=preview_body,
                 summary_source=summary_source,
                 attachment_types=attachment_types,
@@ -2450,8 +2460,8 @@ class EmailManagerWindow(tk.Toplevel):
             )
             dialog.destroy()
 
-        ttk.Button(buttons, text="Confirmar resumen", command=confirm_summary).pack(side="left")
-        ttk.Button(buttons, text="Editar resumen", command=edit_summary).pack(side="left", padx=6)
+        ttk.Button(buttons, text="Confirmar resumen", command=confirm_summary).pack(side="left", padx=(6, 0))
+        ttk.Button(buttons, text="Editar", command=edit_summary).pack(side="left", padx=6)
         ttk.Button(buttons, text="Guardar versión final", command=save_final_version).pack(side="left", padx=6)
         ttk.Button(buttons, text="Cancelar", command=dialog.destroy).pack(side="right")
 
