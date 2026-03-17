@@ -5,14 +5,13 @@ from __future__ import annotations
 import logging
 import sqlite3
 import tkinter as tk
-from datetime import datetime, timedelta, timezone
 from tkinter import messagebox, ttk
 
-from app.ml.retraining_service import AUTO_TRAIN_THRESHOLDS, MIN_TRAIN_INTERVAL_HOURS
 from app.persistence.email_repository import EmailRepository
 from app.persistence.ml_training_repository import MLTrainingRepository
 from app.ml.retraining_service import DatasetRetrainingService
 from app.ml.dataset_state_service import DatasetStateService
+from app.ml.few_shot_learning_service import FewShotLearningService
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +35,7 @@ class MLManagerWindow(tk.Toplevel):
         self.email_repo = EmailRepository(db_connection)
         self.retraining_service = DatasetRetrainingService(db_connection, self.email_repo)
         self.dataset_state_service = DatasetStateService(db_connection)
+        self.few_shot_learning_service = FewShotLearningService(db_connection)
 
         self._dataset_selected = ""
         self._example_id_by_item: dict[str, int] = {}
@@ -98,7 +98,7 @@ class MLManagerWindow(tk.Toplevel):
         summary_frame.pack(fill="x")
         self.dataset_tree = ttk.Treeview(
             summary_frame,
-            columns=("dataset", "estado_modelo", "pending_examples", "ultimo_entrenamiento", "auto_train_threshold", "proximo_entrenamiento_estimado"),
+            columns=("dataset", "estado_modelo", "pending_examples", "total_ejemplos", "duplicados", "ultima_actualizacion"),
             show="headings",
             height=6,
         )
@@ -106,9 +106,9 @@ class MLManagerWindow(tk.Toplevel):
             ("dataset", "dataset", 220),
             ("estado_modelo", "estado_modelo", 170),
             ("pending_examples", "pending_examples", 140),
-            ("ultimo_entrenamiento", "ultimo_entrenamiento", 190),
-            ("auto_train_threshold", "auto_train_threshold", 150),
-            ("proximo_entrenamiento_estimado", "proximo_entrenamiento_estimado", 260),
+            ("total_ejemplos", "total_ejemplos", 130),
+            ("duplicados", "duplicados", 110),
+            ("ultima_actualizacion", "ultima_actualizacion", 210),
         ]:
             self.dataset_tree.heading(column, text=label)
             self.dataset_tree.column(column, width=width, anchor="w")
@@ -183,7 +183,8 @@ class MLManagerWindow(tk.Toplevel):
         actions = ttk.Frame(wrapper)
         actions.pack(fill="x", pady=(8, 0))
         ttk.Button(actions, text="Eliminar ejemplo", command=self._delete_selected).pack(side="left")
-        ttk.Button(actions, text="Reentrenar dataset", command=self._retrain_selected_dataset).pack(side="left", padx=(8, 0))
+        self.retrain_button = ttk.Button(actions, text="🔄 Reentrenar modelo", command=self._retrain_selected_dataset)
+        self.retrain_button.pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="Limpieza automática", command=self._auto_clean_duplicates).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="Refrescar", command=self.refresh_all).pack(side="left", padx=(8, 0))
 
@@ -203,22 +204,26 @@ class MLManagerWindow(tk.Toplevel):
         for row in self.repo.list_datasets_summary():
             dataset = str(row["dataset"])
             state = self.dataset_state_service.get_state(dataset)
-            if state is None:
-                model_status = "sin estado"
-                pending = 0
-                last_trained = "-"
-                threshold = int(AUTO_TRAIN_THRESHOLDS.get(dataset, 0) or 0)
-                next_estimated = "-"
+            total_examples = int(row["total"] or 0)
+            duplicates = self.repo.count_duplicate_examples(dataset)
+            if dataset in {"email_summary", "email_response"}:
+                pending = int(state["pending_examples_count"] or 0) if state is not None else 0
+                model_status = "learning" if pending > 0 else "ready"
+                last_update = str(state["last_trained_at"] or row["last_updated"] or "-") if state is not None else str(row["last_updated"] or "-")
             else:
-                model_status = str(state["model_status"] or "dirty")
-                pending = int(state["pending_examples_count"] or 0)
-                threshold = int(AUTO_TRAIN_THRESHOLDS.get(dataset, 0) or 0)
-                last_trained = str(state["last_trained_at"] or "-")
-                next_estimated = self._estimate_next_training(dataset, state, pending, threshold)
+                if state is None:
+                    model_status = "sin estado"
+                    pending = 0
+                    last_update = "-"
+                else:
+                    model_status = str(state["model_status"] or "dirty")
+                    pending = int(state["pending_examples_count"] or 0)
+                    last_update = str(state["last_trained_at"] or "-")
+
             item = self.dataset_tree.insert(
                 "",
                 "end",
-                values=(dataset, model_status, pending, last_trained, threshold or "-", next_estimated),
+                values=(dataset, model_status, pending, total_examples, duplicates, last_update),
             )
             self._dataset_by_item[item] = dataset
 
@@ -240,6 +245,7 @@ class MLManagerWindow(tk.Toplevel):
         self.dataset_filter_var.set(dataset)
         self._dataset_selected = dataset
         self._refresh_label_and_source_filters()
+        self._update_retrain_button_text(dataset)
         self.refresh_examples()
 
     def refresh_examples(self) -> None:
@@ -290,12 +296,21 @@ class MLManagerWindow(tk.Toplevel):
 
             state = self.dataset_state_service.get_state(dataset_for_labels)
             if state is not None:
-                fragments.append(
-                    "Estado → "
-                    f"dirty={'sí' if bool(state['dirty']) else 'no'}, "
-                    f"pendientes={int(state['pending_examples_count'] or 0)}, "
-                    f"último_error={str(state['last_error'] or '-')}"
-                )
+                if dataset_for_labels in {"email_summary", "email_response"}:
+                    model_status = "learning" if int(state["pending_examples_count"] or 0) > 0 else "ready"
+                    fragments.append(
+                        "Estado → "
+                        f"modelo={model_status}, "
+                        f"pendientes={int(state['pending_examples_count'] or 0)}, "
+                        f"última_actualización={str(state['last_trained_at'] or '-')}"
+                    )
+                else:
+                    fragments.append(
+                        "Estado → "
+                        f"dirty={'sí' if bool(state['dirty']) else 'no'}, "
+                        f"pendientes={int(state['pending_examples_count'] or 0)}, "
+                        f"último_error={str(state['last_error'] or '-')}"
+                    )
 
         self.stats_label.configure(text=" | ".join(fragments))
 
@@ -374,31 +389,19 @@ class MLManagerWindow(tk.Toplevel):
         logger.info("Reentrenamiento lanzado para dataset: %s", dataset)
         messagebox.showinfo("ML Manager", result)
 
-    @staticmethod
-    def _estimate_next_training(dataset: str, state: sqlite3.Row, pending: int, threshold: int) -> str:
-        if threshold <= 0:
-            return "sin autoentrenamiento"
-        if pending < threshold:
-            return f"cuando pending >= {threshold}"
-
-        last_trained_at = str(state["last_trained_at"] or "")
-        if not last_trained_at:
-            return "inmediato"
-        try:
-            last_dt = datetime.fromisoformat(last_trained_at)
-        except ValueError:
-            return "inmediato"
-        if last_dt.tzinfo is None:
-            last_dt = last_dt.replace(tzinfo=timezone.utc)
-        next_dt = last_dt + timedelta(hours=MIN_TRAIN_INTERVAL_HOURS)
-        now = datetime.now(timezone.utc)
-        if now >= next_dt:
-            return "inmediato"
-        return next_dt.isoformat(timespec="seconds")
-
     def _trigger_retrain(self, dataset: str) -> str:
+        if dataset in {"email_summary", "email_response"}:
+            result = self.few_shot_learning_service.consolidar_aprendizaje(dataset)
+            return f"✔ Aprendizaje actualizado ({result['total_valid']} ejemplos válidos)"
+
         result = self.retraining_service.check_and_retrain_dataset(dataset, auto=False)
         return str(result.get("reason") or "No se pudo reentrenar el dataset.")
+
+    def _update_retrain_button_text(self, dataset: str | None) -> None:
+        if (dataset or "").strip() in {"email_summary", "email_response"}:
+            self.retrain_button.configure(text="🧠 Actualizar aprendizaje")
+            return
+        self.retrain_button.configure(text="🔄 Reentrenar modelo")
 
 
     def apply_filters(self, dataset: str | None = None, label: str | None = None) -> None:
@@ -411,6 +414,7 @@ class MLManagerWindow(tk.Toplevel):
             else:
                 logger.info("Filtro dataset ignorado por no existir: %s", dataset)
             self._refresh_label_and_source_filters()
+            self._update_retrain_button_text(self.dataset_filter_var.get().strip())
         if label is not None:
             label_values = tuple(str(value) for value in self.label_filter.cget("values"))
             normalized_label = label.strip()
@@ -430,6 +434,7 @@ class MLManagerWindow(tk.Toplevel):
         self.source_filter_var.set("")
         self.search_var.set("")
         self._refresh_label_and_source_filters()
+        self._update_retrain_button_text(None)
         self.refresh_examples()
 
     @staticmethod

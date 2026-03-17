@@ -7,9 +7,13 @@ from datetime import datetime, timezone
 
 MODEL_STATE_TRAINED = "trained"
 MODEL_STATE_DIRTY = "dirty"
+MODEL_STATE_READY = "ready"
+MODEL_STATE_LEARNING = "learning"
 MODEL_STATE_AUTO_SCHEDULED = "auto-training-scheduled"
 MODEL_STATE_TRAINING = "training"
 MODEL_STATE_ERROR = "error"
+
+FEW_SHOT_DATASETS = {"email_summary", "email_response"}
 
 
 class DatasetStateService:
@@ -64,6 +68,7 @@ class DatasetStateService:
 
     def mark_dirty(self, dataset: str) -> None:
         now = datetime.now(timezone.utc).isoformat()
+        dirty_status = self._pending_status_for(dataset)
         self.conn.execute(
             """
             INSERT INTO ml_dataset_state (dataset, dirty, updated_at, model_status)
@@ -73,12 +78,13 @@ class DatasetStateService:
                 updated_at = excluded.updated_at,
                 model_status = excluded.model_status
             """,
-            (dataset, now, MODEL_STATE_DIRTY),
+            (dataset, now, dirty_status),
         )
         self.conn.commit()
 
     def mark_example_added(self, dataset: str, count_as_pending: bool = True) -> None:
         now = datetime.now(timezone.utc).isoformat()
+        pending_status = self._pending_status_for(dataset)
         self.conn.execute(
             """
             INSERT INTO ml_dataset_state (dataset, dirty, examples_count, pending_examples_count, updated_at, last_error, model_status)
@@ -98,10 +104,10 @@ class DatasetStateService:
                 dataset,
                 1 if count_as_pending else 0,
                 now,
-                MODEL_STATE_DIRTY,
+                pending_status,
                 1 if count_as_pending else 0,
                 MODEL_STATE_TRAINING,
-                MODEL_STATE_DIRTY,
+                pending_status,
             ),
         )
         self.conn.commit()
@@ -278,6 +284,39 @@ class DatasetStateService:
         )
         self.conn.commit()
 
+    def mark_learning_updated(self, dataset: str, examples_count: int) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        safe_count = max(0, int(examples_count))
+        self.conn.execute(
+            """
+            INSERT INTO ml_dataset_state (
+                dataset,
+                dirty,
+                examples_count,
+                pending_examples_count,
+                last_trained_at,
+                updated_at,
+                last_error,
+                last_trained_examples_count,
+                model_status,
+                training_in_progress
+            )
+            VALUES (?, 0, ?, 0, ?, ?, NULL, ?, ?, 0)
+            ON CONFLICT(dataset) DO UPDATE SET
+                dirty = 0,
+                examples_count = excluded.examples_count,
+                pending_examples_count = 0,
+                last_trained_at = excluded.last_trained_at,
+                updated_at = excluded.updated_at,
+                last_error = NULL,
+                last_trained_examples_count = excluded.last_trained_examples_count,
+                model_status = excluded.model_status,
+                training_in_progress = 0
+            """,
+            (dataset, safe_count, now, now, safe_count, MODEL_STATE_READY),
+        )
+        self.conn.commit()
+
     def set_examples_count(self, dataset: str, count: int) -> None:
         now = datetime.now(timezone.utc).isoformat()
         safe_count = max(0, int(count))
@@ -316,3 +355,9 @@ class DatasetStateService:
             (dataset,),
         ).fetchone()
         return int(row["total"] if row else 0)
+
+    @staticmethod
+    def _pending_status_for(dataset: str) -> str:
+        if (dataset or "").strip() in FEW_SHOT_DATASETS:
+            return MODEL_STATE_LEARNING
+        return MODEL_STATE_DIRTY

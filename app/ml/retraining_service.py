@@ -16,8 +16,6 @@ logger = logging.getLogger(__name__)
 
 AUTO_TRAIN_THRESHOLDS = {
     "email_classification": 30,
-    "email_response": 10,
-    "email_summary": 10,
 }
 MIN_TRAIN_INTERVAL_HOURS = 6
 
@@ -47,9 +45,7 @@ class DatasetRetrainingService:
 
         try:
             if dataset != "email_classification":
-                reason = f"Reentrenamiento para {dataset} pendiente de integración."
-                self.state_service.mark_error(dataset, reason)
-                return {"trained": False, "reason": reason}
+                return {"trained": False, "reason": "Dataset sin entrenamiento clásico."}
 
             state = self.state_service.get_state(dataset)
             if auto:

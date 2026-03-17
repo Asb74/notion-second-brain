@@ -202,6 +202,60 @@ class MLTrainingRepository:
 
         return duplicates
 
+
+    def consolidate_few_shot_dataset(self, dataset: str, clean_text) -> dict[str, int]:
+        rows = self.conn.execute(
+            """
+            SELECT id, input_text, output_text
+            FROM ml_training_examples
+            WHERE dataset = ?
+            ORDER BY id ASC
+            """,
+            (dataset,),
+        ).fetchall()
+
+        seen: set[tuple[str, str]] = set()
+        duplicate_ids: list[int] = []
+        invalid_ids: list[int] = []
+        updates: list[tuple[str, str, int]] = []
+
+        for row in rows:
+            row_id = int(row["id"])
+            clean_input = clean_text(str(row["input_text"] or ""))
+            clean_output = clean_text(str(row["output_text"] or ""))
+            if not clean_input or not clean_output:
+                invalid_ids.append(row_id)
+                continue
+            dedupe_key = (normalize_text(clean_input), normalize_text(clean_output))
+            if dedupe_key in seen:
+                duplicate_ids.append(row_id)
+                continue
+            seen.add(dedupe_key)
+            if clean_input != str(row["input_text"] or "") or clean_output != str(row["output_text"] or ""):
+                updates.append((clean_input, clean_output, row_id))
+
+        for clean_input, clean_output, row_id in updates:
+            self.conn.execute(
+                """
+                UPDATE ml_training_examples
+                SET input_text = ?, output_text = ?
+                WHERE id = ?
+                """,
+                (clean_input, clean_output, row_id),
+            )
+
+        ids_to_delete = invalid_ids + duplicate_ids
+        if ids_to_delete:
+            placeholders = ", ".join("?" for _ in ids_to_delete)
+            self.conn.execute(f"DELETE FROM ml_training_examples WHERE id IN ({placeholders})", ids_to_delete)
+
+        self.conn.commit()
+        total_valid = self._dataset_total(dataset)
+        return {
+            "total_valid": total_valid,
+            "duplicates_removed": len(duplicate_ids),
+            "invalid_removed": len(invalid_ids),
+        }
     def remove_duplicate_examples(self, dataset: str) -> int:
         duplicates = self.list_duplicate_examples(dataset)
         duplicate_ids = [int(item["duplicate_id"]) for item in duplicates]
@@ -303,7 +357,11 @@ class MLTrainingRepository:
 
     @staticmethod
     def _duplicate_key(dataset: str, row: sqlite3.Row) -> tuple[str, ...]:
-        return (
-            normalize_text(row["input_text"]),
-            normalize_text(row["label"]),
-        )
+        rule = get_dataset_rule(dataset)
+        key_parts: list[str] = []
+        for field in rule.dedupe_on:
+            if field == "dataset":
+                key_parts.append((dataset or "").strip().lower())
+                continue
+            key_parts.append(normalize_text(row[field]))
+        return tuple(key_parts)
