@@ -8,8 +8,11 @@ import sqlite3
 import threading
 import tkinter as tk
 import webbrowser
+import importlib
+import importlib.util
 from datetime import datetime, timedelta
 from pathlib import Path
+from queue import Queue
 from tkinter import messagebox, ttk
 
 from tkcalendar import DateEntry
@@ -20,7 +23,16 @@ from app.core.calendar.google_calendar_client import (
 )
 from app.core.models import AppSettings, NoteCreateRequest
 from app.core.service import NoteService
+from app.core.email.gmail_client import GmailClient
+from app.core.email.mail_ingestion_service import MailIngestionService
 from app.persistence.calendar_repository import CalendarRepository
+from app.persistence.email_repository import EmailRepository
+from app.config.email_polling_config import (
+    EMAIL_CHECK_INTERVAL_SECONDS,
+    EMAIL_NOTIFICATIONS_ENABLED,
+    EMAIL_QUEUE_POLL_MS,
+)
+from app.services.email_background_checker import EmailCheckerThread, EmailCheckPayload
 from app.ui.excel_filter import ExcelTreeFilter
 from app.ui.masters_dialog import MastersDialog
 from app.ui.email_manager_window import EmailManagerWindow
@@ -33,6 +45,25 @@ from app.ui.app_icons import apply_app_icon
 from app.ui.dictation_widgets import attach_dictation
 
 logger = logging.getLogger(__name__)
+_PLYER_NOTIFICATION = None
+
+
+def _resolve_notification_sender():
+    global _PLYER_NOTIFICATION
+    if _PLYER_NOTIFICATION is not None:
+        return _PLYER_NOTIFICATION
+
+    if importlib.util.find_spec("plyer") is None:
+        _PLYER_NOTIFICATION = False
+        return None
+
+    try:
+        module = importlib.import_module("plyer")
+        _PLYER_NOTIFICATION = getattr(module, "notification", False)
+    except Exception:  # noqa: BLE001
+        _PLYER_NOTIFICATION = False
+
+    return _PLYER_NOTIFICATION if _PLYER_NOTIFICATION is not False else None
 
 
 def _sanitize_tk_color(color: str | None, fallback: str = "#000000") -> str:
@@ -96,6 +127,13 @@ class MainWindow(ttk.Frame):
         self.calendar_repo = CalendarRepository(db_connection) if db_connection is not None else None
         self.calendar_name_to_id: dict[str, str] = {}
         self.msg_queue: queue.Queue[tuple[str, str]] = queue.Queue()
+        self.email_queue: Queue[EmailCheckPayload] = Queue()
+        self.seen_email_ids: set[str] = set()
+        self.email_checker_thread: EmailCheckerThread | None = None
+        self.mail_ingestion_service: MailIngestionService | None = None
+        self.email_repo: EmailRepository | None = None
+        self._email_queue_after_id: str | None = None
+        self._notifications_enabled = EMAIL_NOTIFICATIONS_ENABLED
         self.status_var = tk.StringVar(value="Listo")
         self.pack(fill="both", expand=True)
         self.notes_data: list[tuple[int, str, str, str, str]] = []
@@ -131,6 +169,9 @@ class MainWindow(ttk.Frame):
         self.refresh_notes()
         self.refresh_actions()
         self.after(150, self._poll_queue)
+        self._initialize_background_email_checker()
+        self._schedule_email_queue_processing()
+        self.master.protocol("WM_DELETE_WINDOW", self._on_close_requested)
 
 
     def _build_menu(self) -> None:
@@ -142,7 +183,7 @@ class MainWindow(ttk.Frame):
         archivo.add_command(label="Abrir", command=self._open_selected_note)
         archivo.add_command(label="Guardar", command=self._save_note, accelerator="Ctrl+S")
         archivo.add_separator()
-        archivo.add_command(label="Salir", command=self.master.destroy)
+        archivo.add_command(label="Salir", command=self._on_close_requested)
         menubar.add_cascade(label="Archivo", menu=archivo)
 
         edicion = tk.Menu(menubar, tearoff=0)
@@ -294,7 +335,13 @@ class MainWindow(ttk.Frame):
             token_path = Path(self.gmail_token_path)
             token_path.parent.mkdir(parents=True, exist_ok=True)
             gmail_client = GmailClient(str(credentials_path), str(token_path))
-            self._email_window = EmailManagerWindow(self.master, self.service, self.db_connection, gmail_client)
+            self._email_window = EmailManagerWindow(
+                self.master,
+                self.service,
+                self.db_connection,
+                gmail_client,
+                enable_auto_checker=False,
+            )
             self._email_window.calendar_refresh_callback = self._refresh_calendar_if_open
             return self._email_window
         except Exception as exc:  # noqa: BLE001
@@ -957,6 +1004,126 @@ class MainWindow(ttk.Frame):
             self.refresh_notes()
             self.refresh_actions()
         self.after(150, self._poll_queue)
+
+    def _initialize_background_email_checker(self) -> None:
+        if self.db_connection is None:
+            return
+
+        try:
+            self.email_repo = EmailRepository(self.db_connection)
+            credentials_path = Path(self.gmail_credentials_path)
+            token_path = Path(self.gmail_token_path)
+            token_path.parent.mkdir(parents=True, exist_ok=True)
+            gmail_client = GmailClient(str(credentials_path), str(token_path))
+            self.mail_ingestion_service = MailIngestionService(gmail_client=gmail_client, db_connection=self.db_connection)
+            self.seen_email_ids = self._get_saved_email_ids()
+            self.email_checker_thread = EmailCheckerThread(
+                check_callback=self.check_new_emails,
+                result_queue=self.email_queue,
+                interval_seconds=EMAIL_CHECK_INTERVAL_SECONDS,
+            )
+            self.email_checker_thread.start()
+            logger.info("Background email checker initialized")
+        except Exception:  # noqa: BLE001
+            logger.exception("Background email checker could not be initialized")
+
+    def check_new_emails(self) -> list[dict[str, str]]:
+        if self.mail_ingestion_service is None or self.email_repo is None:
+            return []
+
+        new_ids = self.mail_ingestion_service.sync_unread_emails()
+        if not new_ids:
+            return []
+
+        new_emails: list[dict[str, str]] = []
+        for gmail_id in new_ids:
+            normalized_id = str(gmail_id or "").strip()
+            if not normalized_id or normalized_id in self.seen_email_ids:
+                continue
+
+            row = self.email_repo.get_email_content(normalized_id)
+            if row is None:
+                continue
+
+            self.seen_email_ids.add(normalized_id)
+            new_emails.append(
+                {
+                    "gmail_id": normalized_id,
+                    "subject": str(row["subject"] or "(sin asunto)"),
+                    "sender": str(row["real_sender"] or row["sender"] or ""),
+                    "received_at": str(row["received_at"] or ""),
+                }
+            )
+
+        return new_emails
+
+    def _schedule_email_queue_processing(self) -> None:
+        self._email_queue_after_id = self.after(EMAIL_QUEUE_POLL_MS, self.process_email_queue)
+
+    def process_email_queue(self) -> None:
+        try:
+            processed_items: list[dict[str, str]] = []
+            while not self.email_queue.empty():
+                item = self.email_queue.get_nowait()
+                if isinstance(item, dict) and item.get("type") == "error":
+                    logger.error("Background email checker error: %s", item.get("error", "Unknown error"))
+                    continue
+
+                if isinstance(item, list):
+                    processed_items.extend(item)
+
+            if processed_items:
+                logger.info("New emails detected: %s", len(processed_items))
+                if self._email_window is not None and self._email_window.winfo_exists():
+                    self._email_window.refresh_emails()
+                self.status_var.set(f"Nuevos correos detectados: {len(processed_items)}")
+                self._show_desktop_notification(processed_items)
+        except Exception:  # noqa: BLE001
+            logger.exception("Error processing email queue in main thread")
+        finally:
+            self._schedule_email_queue_processing()
+
+    def _show_desktop_notification(self, new_emails: list[dict[str, str]]) -> None:
+        if not self._notifications_enabled or not new_emails:
+            return
+
+        notification_sender = _resolve_notification_sender()
+        if notification_sender is None:
+            return
+
+        try:
+            if len(new_emails) == 1:
+                email_item = new_emails[0]
+                sender = str(email_item.get("sender") or "Remitente desconocido")
+                subject = str(email_item.get("subject") or "(sin asunto)")
+                message = f"{sender}: {subject}"
+                title = "Nuevo correo"
+            else:
+                title = "Nuevos correos"
+                message = f"Han llegado {len(new_emails)} correos nuevos"
+
+            notification_sender.notify(title=title, message=message, timeout=5)
+            logger.info("Desktop notification shown")
+        except Exception:  # noqa: BLE001
+            logger.debug("Desktop notification could not be shown", exc_info=True)
+
+    def _get_saved_email_ids(self) -> set[str]:
+        if self.db_connection is None:
+            return set()
+        rows = self.db_connection.execute("SELECT gmail_id FROM emails").fetchall()
+        return {str(row["gmail_id"] or "").strip() for row in rows if str(row["gmail_id"] or "").strip()}
+
+    def _on_close_requested(self) -> None:
+        if self.email_checker_thread is not None:
+            self.email_checker_thread.stop()
+            self.email_checker_thread.join(timeout=2)
+        if self._email_queue_after_id is not None:
+            try:
+                self.after_cancel(self._email_queue_after_id)
+            except tk.TclError:
+                pass
+            self._email_queue_after_id = None
+        self.master.destroy()
 
     def _refresh_database_button_state(self) -> None:
         database_id = self.service.get_setting("notion_database_id")
