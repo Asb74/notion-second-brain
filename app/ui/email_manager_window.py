@@ -168,7 +168,6 @@ AUDIO_MEETING_SUMMARY_REQUEST = (
 )
 MAX_REFINEMENTS = 5
 EMAIL_SUMMARY_EXAMPLES_LIMIT = 5
-ATTACHMENT_SUMMARY_FORMAT_OPTIONS = ("table", "paragraph", "bullets", "numbered", "+Pedido", "pedido")
 
 _SYSTEM_LOG_WIDGET: ScrolledText | None = None
 _WIN_TOASTER = None
@@ -540,7 +539,6 @@ class EmailManagerWindow(tk.Toplevel):
         self.email_checker_thread: EmailCheckerThread | None = None
         self._queue_after_id: str | None = None
         self._last_email_check_error: str = ""
-        self.attachment_summary_format_var = tk.StringVar(value="bullets")
 
         self._build_layout()
         self.refresh_emails()
@@ -589,6 +587,17 @@ class EmailManagerWindow(tk.Toplevel):
         if context_type == "email_response":
             return render_text_output(container, clean_output)
 
+        order_payload = None
+        try:
+            parsed_output = self._parse_order_json(clean_output)
+            if self._is_order_json_payload(parsed_output):
+                order_payload = parsed_output
+        except Exception:  # noqa: BLE001
+            order_payload = None
+        if order_payload is not None:
+            self._render_order_detail_table(container, order_payload)
+            return None
+
         normalized_table = normalize_to_table(clean_output) if is_probably_table(clean_output) else None
         if normalized_table:
             headers, rows = normalized_table
@@ -617,6 +626,94 @@ class EmailManagerWindow(tk.Toplevel):
             return None
 
         return render_text_output(container, clean_output)
+
+    @staticmethod
+    def _is_order_json_payload(parsed_json: object) -> bool:
+        if isinstance(parsed_json, list):
+            if not parsed_json:
+                return True
+            first = parsed_json[0]
+            if not isinstance(first, dict):
+                return False
+            return "Linea" in first or "PedidoID" in first or "Mercancia" in first
+        if not isinstance(parsed_json, dict):
+            return False
+        pedidos = parsed_json.get("Pedidos")
+        if isinstance(pedidos, list):
+            return True
+        return "Lineas" in parsed_json or "PedidoID" in parsed_json
+
+    @staticmethod
+    def _flatten_order_rows(parsed_json: dict[str, object] | list[object]) -> list[list[str]]:
+        rows: list[list[str]] = []
+
+        def append_section_header(title: str) -> None:
+            if rows:
+                rows.append(["", ""])
+            rows.append(["Campo", title])
+
+        def append_fields(prefix: str, payload: dict[str, object], excluded_keys: set[str] | None = None) -> None:
+            excluded = excluded_keys or set()
+            for key, value in payload.items():
+                if key in excluded:
+                    continue
+                display_value = "" if value is None else str(value).strip()
+                if not display_value:
+                    continue
+                field_name = f"{prefix}{key}" if prefix else str(key)
+                rows.append([field_name, display_value])
+
+        def normalize_orders(payload: dict[str, object] | list[object]) -> list[dict[str, object]]:
+            if isinstance(payload, list):
+                normalized_orders: list[dict[str, object]] = []
+                for item in payload:
+                    if not isinstance(item, dict):
+                        continue
+                    normalized_orders.append({"Lineas": [item], **{k: v for k, v in item.items() if k != "Lineas"}})
+                return normalized_orders
+            if not isinstance(payload, dict):
+                return []
+            orders = payload.get("Pedidos")
+            if isinstance(orders, list):
+                return [item for item in orders if isinstance(item, dict)]
+            return [payload]
+
+        orders = normalize_orders(parsed_json)
+        if not orders:
+            return [["Campo", "No se encontraron pedidos en el contenido JSON."]]
+
+        for order_index, order in enumerate(orders, start=1):
+            pedido_id = str(order.get("PedidoID") or f"Pedido {order_index}")
+            append_section_header(f"{pedido_id}")
+            append_fields("", order, excluded_keys={"Lineas"})
+
+            raw_lines = order.get("Lineas")
+            if isinstance(raw_lines, list) and raw_lines:
+                for line_index, line_item in enumerate(raw_lines, start=1):
+                    if not isinstance(line_item, dict):
+                        continue
+                    linea_value = str(line_item.get("Linea") or line_index)
+                    append_section_header(f"Línea {linea_value}")
+                    append_fields("", line_item)
+        return rows
+
+    def _render_order_detail_table(self, container: tk.Misc, parsed_json: dict[str, object] | list[object]) -> None:
+        rows = self._flatten_order_rows(parsed_json)
+        wrapper = ttk.Frame(container)
+        wrapper.pack(fill="both", expand=True)
+        wrapper.rowconfigure(0, weight=1)
+        wrapper.columnconfigure(0, weight=1)
+
+        table_frame = ttk.Frame(wrapper)
+        table_frame.grid(row=0, column=0, sticky="nsew")
+        table_frame.rowconfigure(0, weight=1)
+        table_frame.columnconfigure(0, weight=1)
+
+        tree = render_table(table_frame, ["Campo", "Detalle"], rows)
+        tree.grid(row=0, column=0, sticky="nsew")
+        y_scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
+        y_scrollbar.grid(row=0, column=1, sticky="ns")
+        tree.configure(yscrollcommand=y_scrollbar.set)
 
     def _build_layout(self) -> None:
         global _SYSTEM_LOG_WIDGET
@@ -781,15 +878,6 @@ class EmailManagerWindow(tk.Toplevel):
         ttk.Button(response_actions, text="Reenviar", command=self._forward_email).pack(side="left", padx=(6, 0))
         ttk.Button(response_actions, text="Resumir", command=self._summarize_email).pack(side="left", padx=(6, 0))
         ttk.Button(response_actions, text="Resumir adjuntos", command=self._summarize_attachments).pack(side="left", padx=(6, 0))
-        ttk.Label(response_actions, text="Formato adjunto:").pack(side="left", padx=(10, 4))
-        self.attachment_summary_format_combo = ttk.Combobox(
-            response_actions,
-            state="readonly",
-            textvariable=self.attachment_summary_format_var,
-            values=list(ATTACHMENT_SUMMARY_FORMAT_OPTIONS),
-            width=10,
-        )
-        self.attachment_summary_format_combo.pack(side="left")
         ttk.Button(response_actions, text="Preparar base", command=self._prepare_context_for_selected_email).pack(side="left", padx=(6, 0))
 
         attachments_tab = ttk.Frame(self.detail_notebook)
@@ -2603,8 +2691,8 @@ class EmailManagerWindow(tk.Toplevel):
             self.log("No se pudo extraer texto de los adjuntos")
             return
 
-        output_format = self._selected_attachment_summary_format()
-        is_order_mode = output_format == OUTPUT_FORMAT_PEDIDO
+        output_format = OUTPUT_FORMAT_DEFAULT
+        is_order_mode = False
         self.log("Generating attachment summary")
         primary_content_type = "audio_meeting" if "audio_meeting" in content_types else "attachment"
         summary = self._summarize_attachments_content(
@@ -2748,14 +2836,6 @@ class EmailManagerWindow(tk.Toplevel):
         except Exception as exc:  # noqa: BLE001
             self.log(f"No se pudo generar resumen de adjuntos: {exc}", level="WARNING")
             return ""
-
-    def _selected_attachment_summary_format(self) -> str:
-        format_var = getattr(self, "attachment_summary_format_var", None)
-        selected = str(format_var.get() if format_var is not None else "bullets").strip().lower()
-        normalized_options = {value.lower() for value in ATTACHMENT_SUMMARY_FORMAT_OPTIONS}
-        if selected not in normalized_options:
-            return OUTPUT_FORMAT_DEFAULT
-        return OUTPUT_FORMAT_PEDIDO if selected in {"pedido", "+pedido"} else selected
 
     @staticmethod
     def _looks_like_order_document(extracted_text: str) -> bool:
