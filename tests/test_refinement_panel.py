@@ -1,8 +1,11 @@
 from app.ui.refinement_panel import (
+    EMAIL_RESPONSE_PARAGRAPH_RULE,
     OUTPUT_FORMAT_PARAGRAPH,
     OUTPUT_FORMAT_TABLE,
+    REFINEMENT_MODE_RESPONSE,
     REFINEMENT_MODE_EMAIL_SUMMARY,
     build_refinement_prompt,
+    detect_format,
 )
 
 
@@ -29,3 +32,33 @@ def test_build_refinement_prompt_uses_paragraph_format_instruction_by_default() 
     )
 
     assert "No utilices tablas ni listas." in prompt
+
+
+def test_build_refinement_prompt_forces_paragraph_rule_for_email_response() -> None:
+    prompt = build_refinement_prompt(
+        base_text="Respuesta actual",
+        refinements=["formato tabla", "más formal"],
+        refinement_mode=REFINEMENT_MODE_RESPONSE,
+        original_context="Contexto",
+        output_format=OUTPUT_FORMAT_TABLE,
+    )
+
+    assert "No utilices tablas ni listas." in prompt
+    assert EMAIL_RESPONSE_PARAGRAPH_RULE in prompt
+    assert "Devuelve el resultado en formato tabla." not in prompt
+
+
+def test_detect_format_returns_table_for_pipe_multiline_content() -> None:
+    assert detect_format("Col A | Col B\nvalor 1 | valor 2") == "table"
+
+
+def test_detect_format_returns_bullets_for_dash_content() -> None:
+    assert detect_format("- punto uno\n- punto dos") == "bullets"
+
+
+def test_detect_format_returns_numbered_for_ordered_content() -> None:
+    assert detect_format("1. punto uno\n2. punto dos") == "numbered"
+
+
+def test_detect_format_returns_paragraph_for_plain_text() -> None:
+    assert detect_format("Este es un correo en párrafo.") == "paragraph"
