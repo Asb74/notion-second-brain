@@ -42,21 +42,43 @@ class SettingsDialog(tk.Toplevel):
             "ml_alerts": tk.BooleanVar(value=True),
         }
 
-        notebook = ttk.Notebook(self)
-        notebook.pack(fill="both", expand=True, padx=10, pady=(10, 6))
+        self.auto_check_var = tk.BooleanVar(value=True)
+        self.interval_var = tk.IntVar(value=60)
+        self.notifications_var = tk.BooleanVar(value=True)
+        self.areas_list: tk.Listbox | None = None
+        self.tipos_list: tk.Listbox | None = None
 
-        tab_general = ttk.Frame(notebook, padding=10)
-        tab_email = ttk.Frame(notebook, padding=10)
-        tab_notifications = ttk.Frame(notebook, padding=10)
-        tab_masters = ttk.Frame(notebook, padding=10)
+        self.notebook = ttk.Notebook(self)
+        self.notebook.pack(fill="both", expand=True, padx=10, pady=(10, 6))
 
-        notebook.add(tab_general, text="General")
-        notebook.add(tab_email, text="Email")
-        notebook.add(tab_notifications, text="Notificaciones")
-        notebook.add(tab_masters, text="Datos maestros")
+        self.tab_general = ttk.Frame(self.notebook, padding=10)
+        self.tab_email = ttk.Frame(self.notebook, padding=10)
+        self.tab_notifications = ttk.Frame(self.notebook, padding=10)
+        self.tab_master_data = ttk.Frame(self.notebook, padding=10)
 
+        self.notebook.add(self.tab_general, text="General")
+        self.notebook.add(self.tab_email, text="Email")
+        self.notebook.add(self.tab_notifications, text="Notificaciones")
+        self.notebook.add(self.tab_master_data, text="Datos maestros")
+
+        self._build_general_tab()
+        self._build_email_tab()
+        self._build_notifications_tab()
+        self._build_master_data_tab()
+
+        ttk.Button(self, text="Guardar", command=self._save).pack(anchor="e", padx=10, pady=(0, 10))
+
+        tab_map = {
+            "general": 0,
+            "email": 1,
+            "notificaciones": 2,
+            "datos maestros": 3,
+        }
+        self.notebook.select(tab_map.get(initial_tab.lower().strip(), 0))
+
+    def _build_general_tab(self) -> None:
         self._build_settings_fields(
-            tab_general,
+            self.tab_general,
             fields=[
                 ("notion_token", "Notion Token"),
                 ("notion_database_id", "Notion Database ID"),
@@ -68,8 +90,13 @@ class SettingsDialog(tk.Toplevel):
                 ("prop_prioridad", "Propiedad prioridad"),
             ],
         )
+
+    def _build_email_tab(self) -> None:
+        frame = ttk.Frame(self.tab_email)
+        frame.pack(fill="both", expand=True, padx=10, pady=10)
+
         self._build_settings_fields(
-            tab_email,
+            frame,
             fields=[
                 ("managed_email", "Correo gestionado"),
                 ("default_area", "Área por defecto"),
@@ -78,18 +105,13 @@ class SettingsDialog(tk.Toplevel):
                 ("default_prioridad", "Prioridad por defecto"),
             ],
         )
-        self._build_notifications_tab(tab_notifications)
-        self._build_masters_tab(tab_masters)
 
-        ttk.Button(self, text="Guardar", command=self._save).pack(anchor="e", padx=10, pady=(0, 10))
+        extra_row = 5
+        ttk.Label(frame, text="Revisión automática").grid(row=extra_row, column=0, sticky="w", padx=6, pady=4)
+        ttk.Checkbutton(frame, variable=self.auto_check_var).grid(row=extra_row, column=1, sticky="w", padx=6, pady=4)
 
-        tab_map = {
-            "general": 0,
-            "email": 1,
-            "notificaciones": 2,
-            "datos maestros": 3,
-        }
-        notebook.select(tab_map.get(initial_tab.lower().strip(), 0))
+        ttk.Label(frame, text="Intervalo (segundos)").grid(row=extra_row + 1, column=0, sticky="w", padx=6, pady=4)
+        ttk.Entry(frame, textvariable=self.interval_var, width=12).grid(row=extra_row + 1, column=1, sticky="w", padx=6, pady=4)
 
     def _build_settings_fields(self, parent: ttk.Frame, fields: list[tuple[str, str]]) -> None:
         parent.columnconfigure(1, weight=1)
@@ -102,29 +124,37 @@ class SettingsDialog(tk.Toplevel):
             controls = attach_dictation(entry, self)
             controls.grid(row=idx, column=2, sticky="w", padx=(0, 6), pady=4)
 
-    def _build_notifications_tab(self, parent: ttk.Frame) -> None:
-        parent.columnconfigure(0, weight=1)
+    def _build_notifications_tab(self) -> None:
+        frame = ttk.Frame(self.tab_notifications)
+        frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        frame.columnconfigure(0, weight=1)
+        frame.columnconfigure(1, weight=1)
+
         ttk.Label(
-            parent,
+            frame,
             text="Notificaciones del sistema",
             font=("TkDefaultFont", 10, "bold"),
         ).grid(row=0, column=0, sticky="w", padx=6, pady=(4, 8))
 
-        ttk.Checkbutton(parent, text="Nuevos emails descargados", variable=self.notification_vars["email_new"]).grid(
+        ttk.Label(frame, text="Activar notificaciones").grid(row=0, column=1, sticky="w", padx=6, pady=(4, 8))
+        ttk.Checkbutton(frame, variable=self.notifications_var).grid(row=1, column=1, sticky="w", padx=6, pady=4)
+
+        ttk.Checkbutton(frame, text="Nuevos emails descargados", variable=self.notification_vars["email_new"]).grid(
             row=1,
             column=0,
             sticky="w",
             padx=6,
             pady=4,
         )
-        ttk.Checkbutton(parent, text="Resumen diario", variable=self.notification_vars["daily_summary"]).grid(
+        ttk.Checkbutton(frame, text="Resumen diario", variable=self.notification_vars["daily_summary"]).grid(
             row=2,
             column=0,
             sticky="w",
             padx=6,
             pady=4,
         )
-        ttk.Checkbutton(parent, text="Alertas de ML", variable=self.notification_vars["ml_alerts"]).grid(
+        ttk.Checkbutton(frame, text="Alertas de ML", variable=self.notification_vars["ml_alerts"]).grid(
             row=3,
             column=0,
             sticky="w",
@@ -133,21 +163,48 @@ class SettingsDialog(tk.Toplevel):
         )
 
         ttk.Label(
-            parent,
+            frame,
             text="Estas opciones afectan solo avisos de UI y no cambian reglas de negocio.",
             foreground="#4b5563",
         ).grid(row=4, column=0, sticky="w", padx=6, pady=(10, 0))
 
-    def _build_masters_tab(self, parent: ttk.Frame) -> None:
-        ttk.Label(parent, text="Datos maestros de negocio", font=("TkDefaultFont", 10, "bold")).pack(anchor="w", padx=6, pady=(4, 8))
+    def _build_master_data_tab(self) -> None:
+        frame = ttk.Frame(self.tab_master_data)
+        frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        frame.columnconfigure(0, weight=1)
+        frame.columnconfigure(1, weight=1)
+        frame.rowconfigure(4, weight=1)
+
+        ttk.Label(frame, text="Datos maestros de negocio", font=("TkDefaultFont", 10, "bold")).grid(
+            row=0,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            padx=6,
+            pady=(4, 8),
+        )
         ttk.Label(
-            parent,
+            frame,
             text="Administra solo catálogos de negocio (Áreas, Tipos, Estados, Prioridades).",
             foreground="#4b5563",
-        ).pack(anchor="w", padx=6, pady=(0, 10))
+        ).grid(row=1, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 10))
 
-        actions = ttk.Frame(parent)
-        actions.pack(fill="x", padx=6)
+        ttk.Label(frame, text="Áreas").grid(row=2, column=0, sticky="w", padx=6, pady=(0, 4))
+        self.areas_list = tk.Listbox(frame, height=5)
+        self.areas_list.grid(row=3, column=0, sticky="nsew", padx=6, pady=(0, 10))
+
+        ttk.Label(frame, text="Tipos").grid(row=2, column=1, sticky="w", padx=6, pady=(0, 4))
+        self.tipos_list = tk.Listbox(frame, height=5)
+        self.tipos_list.grid(row=3, column=1, sticky="nsew", padx=6, pady=(0, 10))
+
+        for value in self._seed_master_values("Area"):
+            self.areas_list.insert(tk.END, value)
+        for value in self._seed_master_values("Tipo"):
+            self.tipos_list.insert(tk.END, value)
+
+        actions = ttk.Frame(frame)
+        actions.grid(row=4, column=0, columnspan=2, sticky="w", padx=6, pady=4)
         for label, category in [
             ("Áreas", "Area"),
             ("Tipos", "Tipo"),
@@ -159,6 +216,17 @@ class SettingsDialog(tk.Toplevel):
                 text=label,
                 command=lambda cat=category: self._open_master(cat),
             ).pack(side="left", padx=(0, 6))
+
+    def _seed_master_values(self, key: str) -> list[str]:
+        current_value = ""
+        if key == "Area":
+            current_value = self._current.default_area
+        elif key == "Tipo":
+            current_value = self._current.default_tipo
+        value = str(current_value or "").strip()
+        if not value:
+            return []
+        return [value]
 
     def _open_master(self, category: str) -> None:
         if self._on_open_master is None:
