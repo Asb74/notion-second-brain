@@ -49,6 +49,7 @@ class MLManagerWindow(tk.Toplevel):
         self.search_var = tk.StringVar(value="")
 
         self._build_layout()
+        self._build_menu_bar()
         self._bind_events()
         self.refresh_all()
         self._apply_initial_filters_if_needed()
@@ -66,6 +67,43 @@ class MLManagerWindow(tk.Toplevel):
             label_filter,
         )
         self.apply_filters(dataset=dataset_filter, label=label_filter)
+
+    def _build_menu_bar(self) -> None:
+        menubar = tk.Menu(self)
+
+        dataset_menu = tk.Menu(menubar, tearoff=0)
+        dataset_menu.add_command(label="Actualizar aprendizaje", command=self.refresh_all)
+        dataset_menu.add_command(label="Reentrenar clasificador", command=self._retrain_selected_dataset)
+        dataset_menu.add_command(label="Limpiar duplicados", command=self._auto_clean_duplicates)
+        menubar.add_cascade(label="Dataset", menu=dataset_menu)
+
+        vista_menu = tk.Menu(menubar, tearoff=0)
+        vista_menu.add_command(label="Ver ejemplos", command=self._focus_examples)
+        vista_menu.add_command(label="Ver métricas", command=self._show_dataset_summary_info)
+        vista_menu.add_command(label="Ver estado", command=self._show_dataset_state_info)
+        menubar.add_cascade(label="Vista", menu=vista_menu)
+
+        self.config(menu=menubar)
+
+    def _focus_examples(self) -> None:
+        self.examples_tree.focus_set()
+
+    def _show_dataset_summary_info(self) -> None:
+        total = len(self.examples_tree.get_children())
+        messagebox.showinfo("ML Manager", f"Ejemplos visibles: {total}")
+
+    def _show_dataset_state_info(self) -> None:
+        dataset = (self.dataset_filter_var.get().strip() or self._dataset_selected or "(sin selección)")
+        role = self._dataset_role_description(dataset) if dataset != "(sin selección)" else "Selecciona un dataset para ver el estado."
+        messagebox.showinfo("ML Manager", role)
+
+    @staticmethod
+    def _dataset_role_description(dataset: str) -> str:
+        if dataset == "email_classification":
+            return "email_classification: entrenamiento real del clasificador."
+        if dataset in {"email_summary", "email_response"}:
+            return f"{dataset}: consolidación de aprendizaje (no dispara entrenamiento del clasificador principal)."
+        return f"{dataset}: dataset auxiliar de aprendizaje."
 
     def _build_layout(self) -> None:
         main_frame = ttk.Frame(self)
@@ -208,7 +246,7 @@ class MLManagerWindow(tk.Toplevel):
             duplicates = self.repo.count_duplicate_examples(dataset)
             if dataset in {"email_summary", "email_response"}:
                 pending = int(state["pending_examples_count"] or 0) if state is not None else 0
-                model_status = "learning" if pending > 0 else "ready"
+                model_status = "consolidación" if pending > 0 else "consolidado"
                 last_update = str(state["last_trained_at"] or row["last_updated"] or "-") if state is not None else str(row["last_updated"] or "-")
             else:
                 if state is None:

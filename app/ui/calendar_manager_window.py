@@ -222,26 +222,57 @@ class CalendarManagerWindow(ttk.Frame):
         toolbar.columnconfigure(7, weight=1)
 
     def _build_menu_bar(self) -> None:
-        """Menú superior para igualar la arquitectura UX de Emails."""
+        """Menú local de Agenda con acciones del dominio calendario."""
         menubar = tk.Menu(self.winfo_toplevel())
 
-        archivo = tk.Menu(menubar, tearoff=0)
-        archivo.add_command(label="Actualizar", command=self.refresh_calendar)
-        archivo.add_command(label="Hoy", command=self._go_today)
-        archivo.add_separator()
-        archivo.add_command(label="Cerrar", command=self.winfo_toplevel().destroy)
-        menubar.add_cascade(label="Archivo", menu=archivo)
-
         vista = tk.Menu(menubar, tearoff=0)
-        vista.add_command(label="Lista", command=self._show_list_overview)
-        vista.add_command(label="Calendario", command=self._show_calendar_overview)
-        vista.add_separator()
         vista.add_command(label="Día", command=self._set_view_day)
         vista.add_command(label="Semana", command=self._set_view_week)
         vista.add_command(label="Mes", command=self._set_view_month)
+        vista.add_command(label="Lista", command=self._show_list_overview)
         menubar.add_cascade(label="Vista", menu=vista)
 
+        navegacion = tk.Menu(menubar, tearoff=0)
+        navegacion.add_command(label="Anterior", command=self._go_previous_month)
+        navegacion.add_command(label="Hoy", command=self._go_today)
+        navegacion.add_command(label="Siguiente", command=self._go_next_month)
+        navegacion.add_command(label="Actualizar", command=self.refresh_calendar)
+        menubar.add_cascade(label="Navegación", menu=navegacion)
+
+        acciones = tk.Menu(menubar, tearoff=0)
+        acciones.add_command(label="Editar", command=self._edit_selected_record)
+        acciones.add_command(label="Completar", command=self._complete_selected_record)
+        acciones.add_command(label="Nueva acción", command=self._create_action_for_current_note)
+        acciones.add_command(label="Abrir email", command=self.abrir_email)
+        menubar.add_cascade(label="Acciones", menu=acciones)
+
         self.winfo_toplevel().config(menu=menubar)
+
+
+    def _edit_selected_record(self) -> None:
+        if self._selected_record is None:
+            messagebox.showwarning("Agenda", "Selecciona un elemento para editar.")
+            return
+
+        kind = str(self._selected_record.get("kind") or "").upper()
+        if kind == "EVENT":
+            self._edit_event()
+            return
+        if kind == "ACTION":
+            self._start_inline_title_edit()
+            return
+        self._start_inline_title_edit()
+
+    def _complete_selected_record(self) -> None:
+        if self._selected_record is None:
+            messagebox.showwarning("Agenda", "Selecciona un elemento para completar.")
+            return
+
+        kind = str(self._selected_record.get("kind") or "").upper()
+        if kind == "ACTION":
+            self._complete_current_action()
+            return
+        self._complete_current_note()
 
     def _build_filter_bar(self) -> None:
         self.filters_frame = ttk.LabelFrame(self, text="Filtros")
@@ -350,10 +381,10 @@ class CalendarManagerWindow(ttk.Frame):
             ttk.Label(item, text=label_text).pack(side="left")
 
         legend_frame.columnconfigure(len(legend_items), weight=1)
-        self.label_contexto = ttk.Label(legend_frame, text="", font=("Segoe UI", 10, "bold"), foreground="#2f2f2f")
-        self.label_contexto.grid(row=0, column=len(legend_items) + 1, sticky="e", padx=(10, 0))
+        self.label_periodo = ttk.Label(legend_frame, text="", font=("Segoe UI", 10, "bold"), foreground="#2f2f2f")
+        self.label_periodo.grid(row=0, column=len(legend_items) + 1, sticky="e", padx=(10, 0))
 
-    def actualizar_label_contexto(self, fecha: date, vista: str) -> None:
+    def actualizar_label_periodo(self, fecha: date, vista: str) -> None:
         if vista == "semana":
             semana = fecha.isocalendar().week
             texto = f"SEMANA {semana}"
@@ -370,10 +401,10 @@ class CalendarManagerWindow(ttk.Frame):
         else:
             texto = ""
 
-        self.label_contexto.config(text=texto)
+        self.label_periodo.config(text=texto)
 
     def _update_week_label(self, reference_date: date) -> None:
-        self.actualizar_label_contexto(reference_date, "semana")
+        self.actualizar_label_periodo(reference_date, "semana")
 
     def _build_layout(self) -> None:
         self.crm_paned = ttk.PanedWindow(self, orient="vertical")
@@ -1639,7 +1670,7 @@ class CalendarManagerWindow(ttk.Frame):
             child.destroy()
 
     def render_calendar(self) -> None:
-        self.actualizar_label_contexto(self.current_date, self.vista_actual)
+        self.actualizar_label_periodo(self.current_date, self.vista_actual)
         if self.view_mode == "week":
             self._render_week_view()
             return
