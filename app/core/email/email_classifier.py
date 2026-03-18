@@ -44,6 +44,7 @@ class EmailClassifier:
     RULE_THRESHOLD = 3
     ML_CONFIDENCE_THRESHOLD = 0.55
     MIN_TRAINING_SAMPLES = 10
+    FIXED_CLASSES = ["marketing", "order", "other", "priority", "subscription", "notificaciones", "reclamaciones", "spam"]
 
     ORDER_PATTERNS = [
         r"\bpedido\b",
@@ -100,6 +101,7 @@ class EmailClassifier:
         self.examples_count = 0
         self.categories_count = 0
         self.last_training_warning: str | None = None
+        self.all_classes = list(self.FIXED_CLASSES)
         self._known_categories: list[str] = []
         self.ml_model.load()
         categories = self._sync_categories_state()
@@ -200,7 +202,7 @@ class EmailClassifier:
                     self.ml_model = candidate_model
             else:
                 logger.info("Entrenamiento email classifier: ejecutando partial_fit")
-                self.ml_model.partial_fit(texts, labels)
+                self.ml_model.partial_fit(texts, labels, classes=self.all_classes)
         except Exception as exc:  # noqa: BLE001
             detail = str(exc).strip()
             if detail.startswith("Entrenamiento"):
@@ -274,7 +276,7 @@ class EmailClassifier:
 
         try:
             features = self.ml_model.vectorizer.transform(texts)
-            self.ml_model.classifier.partial_fit(features, normalized_labels)
+            self.ml_model.classifier.partial_fit(features, normalized_labels, classes=self.all_classes)
             self.ml_model.last_warning = None
             self.ml_model.save()
             self.last_training_warning = None
@@ -327,10 +329,7 @@ class EmailClassifier:
         return categories
 
     def _available_categories(self) -> list[str]:
-        if self.email_repo is None:
-            return list(MLEmailModel.DEFAULT_CLASSES)
-        names = self.email_repo.get_category_names()
-        return names or list(MLEmailModel.DEFAULT_CLASSES)
+        return list(self.all_classes)
 
     def _classify_by_rules(self, subject: str, sender: str) -> str | None:
         scores = {"priority": 0, "order": 0, "subscription": 0, "marketing": 0, "other": 0}
