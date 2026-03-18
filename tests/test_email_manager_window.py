@@ -220,6 +220,38 @@ def test_is_probably_table_detects_pipe_or_tab_delimiters() -> None:
     assert not is_probably_table("texto plano sin separadores")
 
 
+def test_is_order_json_payload_detects_supported_order_shapes() -> None:
+    assert EmailManagerWindow._is_order_json_payload({"Pedidos": []}) is True
+    assert EmailManagerWindow._is_order_json_payload({"PedidoID": "25/109774/1", "Lineas": []}) is True
+    assert EmailManagerWindow._is_order_json_payload([{"Linea": 1, "Mercancia": "Naranjas"}]) is True
+    assert EmailManagerWindow._is_order_json_payload({"foo": "bar"}) is False
+
+
+def test_flatten_order_rows_expands_order_and_lines_for_vertical_table() -> None:
+    parsed_json = {
+        "Pedidos": [
+            {
+                "PedidoID": "25/109774/1",
+                "Cliente": "LIDL Alemania",
+                "Comercial": "Francisco José",
+                "Lineas": [
+                    {"Linea": 1, "Palets": "360", "Mercancia": "Naranjas Navel Lane Late"},
+                    {"Linea": 2, "Palets": "120", "Mercancia": "Mandarinas"},
+                ],
+            }
+        ]
+    }
+
+    rows = EmailManagerWindow._flatten_order_rows(parsed_json)
+
+    assert ["Campo", "25/109774/1"] in rows
+    assert ["Cliente", "LIDL Alemania"] in rows
+    assert ["Comercial", "Francisco José"] in rows
+    assert ["Campo", "Línea 1"] in rows
+    assert ["Palets", "360"] in rows
+    assert ["Mercancia", "Naranjas Navel Lane Late"] in rows
+
+
 def test_export_to_csv_writes_headers_and_rows(tmp_path: Path) -> None:
     output_path = tmp_path / "tabla.csv"
     export_to_csv(["Campo", "Detalles"], [["A", "B"]], str(output_path))

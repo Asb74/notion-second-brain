@@ -247,18 +247,21 @@ class RefinamientoPanel(ttk.LabelFrame):
 
         format_frame = ttk.Frame(self)
         format_frame.grid(row=3, column=0, sticky="ew", padx=8, pady=(0, 4))
-        self.current_format_var = tk.StringVar()
-        self.requested_format_var = tk.StringVar()
-        ttk.Label(format_frame, textvariable=self.current_format_var).pack(side="left", padx=(0, 8))
-        ttk.Label(format_frame, textvariable=self.requested_format_var).pack(side="left", padx=(0, 8))
         if self._supports_output_format():
-            for output_format, label in OUTPUT_FORMAT_TAGS.items():
-                ttk.Button(
-                    format_frame,
-                    text=f"➕ {label}",
+            self.format_selector_var = tk.StringVar(value=OUTPUT_FORMAT_DEFAULT)
+            self.format_menu_button = ttk.Menubutton(format_frame, text="Formato")
+            format_menu = tk.Menu(self.format_menu_button, tearoff=0)
+            for output_format in OUTPUT_FORMAT_TAGS:
+                display_label = output_format.title() if output_format != OUTPUT_FORMAT_PEDIDO else "Pedido"
+                format_menu.add_radiobutton(
+                    label=display_label,
+                    value=output_format,
+                    variable=self.format_selector_var,
                     command=lambda value=output_format: self.set_output_format(value),
-                ).pack(side="left", padx=(0, 4), pady=(0, 4))
-        self._update_current_format_indicator()
+                )
+            self.format_menu_button.configure(menu=format_menu)
+            self.format_menu_button.pack(side="left")
+        self._update_format_button_label()
         self.set_output_format(OUTPUT_FORMAT_DEFAULT)
 
         self.dictation_controls = ttk.Frame(self)
@@ -313,25 +316,23 @@ class RefinamientoPanel(ttk.LabelFrame):
         return self.refinement_mode in {REFINEMENT_MODE_EMAIL_SUMMARY, REFINEMENT_MODE_ATTACHMENT_SUMMARY}
 
     def _update_current_format_indicator(self) -> None:
-        if not hasattr(self, "current_format_var"):
-            return
         self.update_ui_format(self.output_format)
 
-    def update_ui_format(self, output_format: str) -> None:
-        if not hasattr(self, "current_format_var"):
+    def _update_format_button_label(self) -> None:
+        if not hasattr(self, "format_menu_button"):
             return
+        selected = (self.output_format or OUTPUT_FORMAT_DEFAULT).strip().lower()
+        display_label = selected.title() if selected != OUTPUT_FORMAT_PEDIDO else "Pedido"
+        self.format_menu_button.configure(text=f"Formato: {display_label}")
+
+    def update_ui_format(self, output_format: str) -> None:
         normalized_format = (output_format or "").strip().lower()
         if normalized_format not in OUTPUT_FORMAT_TAGS:
             normalized_format = OUTPUT_FORMAT_DEFAULT
         self.output_format = normalized_format
-        generated_label = OUTPUT_FORMAT_TAGS.get(self.output_format, OUTPUT_FORMAT_TAGS[OUTPUT_FORMAT_DEFAULT]).replace("formato ", "").title()
-        self.current_format_var.set(f"Formato generado: [{generated_label}]")
-        if hasattr(self, "requested_format_var"):
-            requested_label = OUTPUT_FORMAT_TAGS.get(
-                self.requested_output_format,
-                OUTPUT_FORMAT_TAGS[OUTPUT_FORMAT_DEFAULT],
-            ).replace("formato ", "").title()
-            self.requested_format_var.set(f"Formato solicitado: [{requested_label}]")
+        if hasattr(self, "format_selector_var"):
+            self.format_selector_var.set(self.output_format)
+        self._update_format_button_label()
 
     def _remove_existing_format_tags(self) -> None:
         format_tags = set(OUTPUT_FORMAT_TAGS.values())
@@ -469,9 +470,12 @@ class RefinamientoPanel(ttk.LabelFrame):
         super().destroy()
 
     def get_prompt_final(self) -> str:
+        refinamientos_prompt = list(self.refinamientos)
+        if self.output_format == OUTPUT_FORMAT_PEDIDO:
+            refinamientos_prompt = [OUTPUT_FORMAT_TAGS[OUTPUT_FORMAT_PEDIDO]]
         return build_refinement_prompt(
             base_text=self.texto_base,
-            refinements=self.refinamientos,
+            refinements=refinamientos_prompt,
             refinement_mode=self.refinement_mode,
             original_context=self.original_context,
             output_format=self.output_format,
