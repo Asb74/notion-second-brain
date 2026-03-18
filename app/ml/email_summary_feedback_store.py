@@ -22,6 +22,7 @@ class EmailSummaryFeedbackStore:
         ai_output: str,
         user_final: str,
         instrucciones: str,
+        output_format: str = "paragraph",
     ) -> dict[str, Any]:
         return self._store.guardar_feedback(
             tipo="email_summary",
@@ -29,6 +30,7 @@ class EmailSummaryFeedbackStore:
             ai_output=ai_output,
             user_final=user_final,
             instrucciones=instrucciones,
+            output_format=output_format,
         )
 
     def load_recent_examples(self, limit: int = 5) -> list[dict[str, str]]:

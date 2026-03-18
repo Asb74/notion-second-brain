@@ -50,6 +50,8 @@ from app.ui.app_icons import apply_app_icon
 from app.ui.excel_filter import ExcelTreeFilter
 from app.ui.dictation_widgets import attach_dictation
 from app.ui.refinement_panel import (
+    OUTPUT_FORMAT_DEFAULT,
+    OUTPUT_FORMAT_PROMPTS,
     REFINEMENT_MODE_ATTACHMENT_SUMMARY,
     REFINEMENT_MODE_EMAIL_SUMMARY,
     REFINEMENT_MODE_RESPONSE,
@@ -2445,24 +2447,25 @@ class EmailManagerWindow(tk.Toplevel):
             self.log(f"Error generando resumen: {exc}", level="ERROR")
             messagebox.showerror("OpenAI", f"No se pudo generar el resumen.\n\n{exc}")
 
-    def _build_email_summary_prompt(self, preview_body: str) -> str:
+    def _build_email_summary_prompt(self, preview_body: str, output_format: str = OUTPUT_FORMAT_DEFAULT) -> str:
         examples_context = self.global_learning_store.build_prompt_context(
             tipo="email_summary",
             input_actual=preview_body,
             max_ejemplos=EMAIL_SUMMARY_EXAMPLES_LIMIT,
+            include_outputs=False,
         )
+        format_instruction = OUTPUT_FORMAT_PROMPTS.get(output_format, OUTPUT_FORMAT_PROMPTS[OUTPUT_FORMAT_DEFAULT])
         sections = [
             "Analiza el siguiente email y extrae únicamente las ideas principales.\n\n"
-            "Devuelve un resumen visual para lectura rápida.\n\n"
+            "Devuelve un resumen fiel, claro y accionable.\n\n"
             "Reglas:\n"
-            "- máximo 6 líneas\n"
-            "- cada línea una idea independiente\n"
-            "- usar viñetas (•)\n"
-            "- frases muy cortas\n"
+            "- prioriza hechos, fechas, responsables y próximos pasos\n"
             "- no incluir saludos ni despedidas\n"
             "- no copiar frases completas del email\n"
             "- lenguaje claro y directo\n\n"
-            "El objetivo es que el contenido del email se entienda en menos de 5 segundos."
+            "El objetivo es que el contenido del email se entienda rápidamente.",
+            "FORMATO DE SALIDA (OBLIGATORIO):\n"
+            f"{format_instruction}",
         ]
         if examples_context:
             sections.append(examples_context)
@@ -2987,6 +2990,7 @@ class EmailManagerWindow(tk.Toplevel):
                 ai_output=original_output,
                 user_final=current_summary,
                 refinement_instructions="\n".join(refinement_instructions_used).strip(),
+                output_format=panel.output_format,
             )
             dialog.destroy()
 
@@ -3067,6 +3071,7 @@ class EmailManagerWindow(tk.Toplevel):
         ai_output: str,
         user_final: str,
         refinement_instructions: str,
+        output_format: str = OUTPUT_FORMAT_DEFAULT,
     ) -> None:
         def worker() -> None:
             result = self.global_learning_store.guardar_feedback(
@@ -3075,6 +3080,7 @@ class EmailManagerWindow(tk.Toplevel):
                 ai_output=ai_output,
                 user_final=user_final,
                 instrucciones=refinement_instructions,
+                output_format=output_format,
             )
             if bool(result.get("saved")):
                 self.after(0, lambda: self.status_var.set("✔ Aprendizaje guardado correctamente"))
@@ -3092,6 +3098,7 @@ class EmailManagerWindow(tk.Toplevel):
         ai_output: str,
         user_final: str,
         refinement_instructions: str,
+        output_format: str = OUTPUT_FORMAT_DEFAULT,
     ) -> None:
         self._save_learning_feedback_async(
             learning_type="email_summary",
@@ -3099,6 +3106,7 @@ class EmailManagerWindow(tk.Toplevel):
             ai_output=ai_output,
             user_final=user_final,
             refinement_instructions=refinement_instructions,
+            output_format=output_format,
         )
 
     def _save_email_reply_learning_async(
@@ -3108,6 +3116,7 @@ class EmailManagerWindow(tk.Toplevel):
         ai_output: str,
         user_final: str,
         refinement_instructions: str,
+        output_format: str = OUTPUT_FORMAT_DEFAULT,
     ) -> None:
         self._save_learning_feedback_async(
             learning_type="email_reply",
@@ -3115,6 +3124,7 @@ class EmailManagerWindow(tk.Toplevel):
             ai_output=ai_output,
             user_final=user_final,
             refinement_instructions=refinement_instructions,
+            output_format=output_format,
         )
 
     def _save_email_summary_feedback_async(
