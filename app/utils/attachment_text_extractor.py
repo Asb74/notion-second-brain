@@ -15,9 +15,15 @@ except Exception:  # noqa: BLE001
 MAX_ATTACHMENT_TEXT = 20_000
 MAX_CSV_CHARS = 12_000
 MAX_SPREADSHEET_ROWS = 2_000
-SUPPORTED_ATTACHMENT_EXTENSIONS = {".pdf", ".docx", ".txt", ".csv", ".xlsx", ".xls"}
+AUDIO_EXT = {".mp3", ".m4a", ".wav", ".mp4", ".webm"}
+PDF_EXT = {".pdf"}
+DOC_EXT = {".doc", ".docx"}
+EXCEL_EXT = {".xls", ".xlsx"}
+TEXT_EXT = {".txt", ".csv"}
+SUPPORTED_ATTACHMENT_EXTENSIONS = PDF_EXT | DOC_EXT | EXCEL_EXT | TEXT_EXT | AUDIO_EXT
 PDF_OCR_MIN_TEXT_LENGTH = 50
 POPPLER_PATH = r"C:\poppler\Library\bin"
+MAX_AUDIO_FILE_SIZE_BYTES = 25 * 1024 * 1024
 
 logger = logging.getLogger(__name__)
 
@@ -56,18 +62,18 @@ def extract_text_from_attachment(file_path: str, filename: str = "") -> str:
         return ""
 
     try:
-        if suffix == ".pdf":
-            return _extract_pdf(path)
-        if suffix == ".docx":
-            return _extract_docx(path)
+        if suffix in AUDIO_EXT:
+            return transcribe_audio(str(path))
+        if suffix in PDF_EXT:
+            return extract_pdf_text(str(path))
+        if suffix in DOC_EXT:
+            return extract_doc_text(str(path))
+        if suffix in EXCEL_EXT:
+            return extract_excel_summary(str(path))
         if suffix == ".txt":
             return _extract_txt(path)
         if suffix == ".csv":
             return _extract_csv(path)
-        if suffix == ".xlsx":
-            return _extract_xlsx(path)
-        if suffix == ".xls":
-            return _extract_xls(path)
     except Exception:  # noqa: BLE001
         logger.exception("Attachment extraction failed: %s", path.name)
         return ""
@@ -76,8 +82,14 @@ def extract_text_from_attachment(file_path: str, filename: str = "") -> str:
 
 
 def extract_text_from_attachments(attachments: list[dict[str, str]]) -> str:
+    combined_text, _content_types = extract_text_and_types_from_attachments(attachments)
+    return combined_text
+
+
+def extract_text_and_types_from_attachments(attachments: list[dict[str, str]]) -> tuple[str, list[str]]:
     """Extract and combine text from multiple supported attachments."""
     blocks: list[str] = []
+    content_types: list[str] = []
     for attachment in attachments or []:
         local_path = str(attachment.get("file_path") or attachment.get("local_path") or "").strip()
         filename = str(attachment.get("filename") or Path(local_path).name or "adjunto").strip() or "adjunto"
@@ -90,10 +102,17 @@ def extract_text_from_attachments(attachments: list[dict[str, str]]) -> str:
 
         logger.info("Extracting text from attachment: %s", filename)
         logger.info("Attachment type supported: %s", suffix.lstrip("."))
-        extracted = extract_text_from_attachment(local_path, filename=filename).strip()
+        try:
+            extracted, content_type = process_attachment(local_path)
+        except Exception:  # noqa: BLE001
+            logger.exception("Attachment extraction failed: %s", filename)
+            continue
+        extracted = extracted.strip()
         logger.info("Attachment text extracted: %s characters", len(extracted))
         if not extracted:
             continue
+        if content_type not in content_types:
+            content_types.append(content_type)
 
         blocks.append(
             f"ATTACHMENT: {filename}\n"
@@ -103,8 +122,82 @@ def extract_text_from_attachments(attachments: list[dict[str, str]]) -> str:
 
     combined = "\n\n".join(blocks).strip()
     if len(combined) > MAX_ATTACHMENT_TEXT:
-        return combined[:MAX_ATTACHMENT_TEXT]
-    return combined
+        return combined[:MAX_ATTACHMENT_TEXT], content_types
+    return combined, content_types
+
+
+def process_attachment(file_path: str) -> tuple[str, str]:
+    """Process one attachment and return extracted text plus normalized content type."""
+    path = Path(str(file_path or "").strip())
+    ext = get_extension(str(path))
+
+    if ext in AUDIO_EXT:
+        text = transcribe_audio(str(path))
+        return text, "audio_meeting"
+    if ext in PDF_EXT:
+        return extract_pdf_text(str(path)), "pdf"
+    if ext in DOC_EXT:
+        return extract_doc_text(str(path)), "doc"
+    if ext in EXCEL_EXT:
+        return extract_excel_summary(str(path)), "excel"
+    if ext == ".txt":
+        return _extract_txt(path), "txt"
+    if ext == ".csv":
+        return _extract_csv(path), "csv"
+    raise ValueError("Tipo de adjunto no soportado")
+
+
+def transcribe_audio(file_path: str) -> str:
+    """Transcribe audio attachments and cache transcript alongside the source file."""
+    path = Path(str(file_path or "").strip())
+    cached_transcript_path = path.with_suffix(".txt")
+    if cached_transcript_path.exists():
+        logger.info("Using cached audio transcript for %s", path.name)
+        return _read_text_with_fallback(cached_transcript_path).strip()
+
+    if path.stat().st_size > MAX_AUDIO_FILE_SIZE_BYTES:
+        raise ValueError("Audio demasiado grande")
+
+    from openai import OpenAI
+
+    from app.utils.openai_client import load_api_key
+
+    client = OpenAI(api_key=load_api_key())
+    with path.open("rb") as audio_file:
+        transcription = client.audio.transcriptions.create(
+            model="gpt-4o-mini-transcribe",
+            file=audio_file,
+            response_format="text",
+        )
+
+    transcript_text = str(getattr(transcription, "text", transcription) or "").strip()
+    if transcript_text:
+        cached_transcript_path.write_text(transcript_text, encoding="utf-8")
+    return transcript_text
+
+
+def get_extension(file_path: str) -> str:
+    """Return normalized attachment extension."""
+    return Path(file_path or "").suffix.lower().strip()
+
+
+def extract_pdf_text(file_path: str) -> str:
+    return _extract_pdf(Path(file_path))
+
+
+def extract_doc_text(file_path: str) -> str:
+    path = Path(file_path)
+    if path.suffix.lower() == ".docx":
+        return _extract_docx(path)
+    logger.warning("Legacy DOC extraction not available for %s", path.name)
+    return ""
+
+
+def extract_excel_summary(file_path: str) -> str:
+    path = Path(file_path)
+    if path.suffix.lower() == ".xlsx":
+        return _extract_xlsx(path)
+    return _extract_xls(path)
 
 
 def _extract_pdf(path: Path) -> str:
@@ -219,10 +312,22 @@ def _detect_extension(filename: str, file_path: str) -> str:
             return ".xls"
         if candidate.endswith(".docx"):
             return ".docx"
+        if candidate.endswith(".doc"):
+            return ".doc"
         if candidate.endswith(".txt"):
             return ".txt"
         if candidate.endswith(".csv"):
             return ".csv"
+        if candidate.endswith(".mp3"):
+            return ".mp3"
+        if candidate.endswith(".m4a"):
+            return ".m4a"
+        if candidate.endswith(".wav"):
+            return ".wav"
+        if candidate.endswith(".mp4"):
+            return ".mp4"
+        if candidate.endswith(".webm"):
+            return ".webm"
     return ""
 
 
