@@ -9,7 +9,7 @@ from tkinter import messagebox, ttk
 from typing import Callable
 
 from app.services.voice_dictation import VoiceDictationError, VoiceDictationService
-from app.ui.dictation_widgets import register_dictation_focus
+from app.ui.dictation_widgets import register_dictation_focus, safe_configure
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +120,8 @@ def build_refinement_prompt(
 
 def obtener_texto_dictado(text_widget: tk.Text, dictation_snapshot: str) -> str:
     """Return only the text fragment dictated after recording starts."""
+    if not text_widget or not text_widget.winfo_exists():
+        return ""
     dictated_text = text_widget.get("1.0", "end").strip()
     if dictated_text.startswith(dictation_snapshot):
         dictated_text = dictated_text[len(dictation_snapshot):].strip()
@@ -220,11 +222,18 @@ class RefinamientoPanel(ttk.LabelFrame):
         ttk.Button(self.dictation_controls, text="🧹 Limpiar instrucciones", command=self.clear_refinements).pack(side="left", padx=6)
 
     def _set_dictation_status(self, text: str) -> None:
-        self.mic_state.configure(text=text)
+        try:
+            safe_configure(self.mic_state, text=text)
+        except Exception:  # noqa: BLE001
+            logger.debug("No se pudo actualizar estado de dictado de refinamiento", exc_info=True)
 
     def _show_dictation_error(self, msg: str) -> None:
-        if msg:
+        if not msg or not self.winfo_exists():
+            return
+        try:
             messagebox.showerror("Dictado", msg)
+        except Exception:  # noqa: BLE001
+            logger.debug("No se pudo mostrar error de dictado de refinamiento", exc_info=True)
 
     def append_refinement(self, instruction: str) -> None:
         self.add_refinement_lines(instruction)
@@ -243,6 +252,8 @@ class RefinamientoPanel(ttk.LabelFrame):
         return changed
 
     def actualizar_input(self) -> None:
+        if not self.refine_text.winfo_exists():
+            return
         self.refine_text.delete("1.0", "end")
         if self.refinamientos:
             self.refine_text.insert("1.0", "\n".join(self.refinamientos))
@@ -288,6 +299,8 @@ class RefinamientoPanel(ttk.LabelFrame):
             self.render_chips()
 
     def add_manual_refinements(self) -> None:
+        if not self.refine_text.winfo_exists():
+            return
         self.add_refinement_lines(self.refine_text.get("1.0", "end"))
 
     def toggle_refinement_dictation(self) -> None:
@@ -297,17 +310,18 @@ class RefinamientoPanel(ttk.LabelFrame):
 
         try:
             if not self.dictation_service.recording:
-                self._dictation_snapshot = self.refine_text.get("1.0", "end").strip()
-                self.refine_text.focus_set()
+                if self.refine_text.winfo_exists():
+                    self._dictation_snapshot = self.refine_text.get("1.0", "end").strip()
+                    self.refine_text.focus_set()
                 self.dictation_service.toggle_recording()
-                self.dictation_button.configure(text="⏹ Detener dictado")
+                safe_configure(self.dictation_button, text="⏹ Detener dictado")
                 return
             self.dictation_service.toggle_recording()
-            self.dictation_button.configure(text="🎤 Dictar")
+            safe_configure(self.dictation_button, text="🎤 Dictar")
         except VoiceDictationError as exc:
             logger.exception("Error en dictado de refinamiento")
             self._show_dictation_error(str(exc))
-            self.dictation_button.configure(text="🎤 Dictar")
+            safe_configure(self.dictation_button, text="🎤 Dictar")
             return
 
         dictated_text = obtener_texto_dictado(self.refine_text, self._dictation_snapshot)
@@ -318,8 +332,14 @@ class RefinamientoPanel(ttk.LabelFrame):
         self.refinamientos.clear()
         self._dictation_snapshot = ""
         self.actualizar_input()
-        self.render_chips()
-        self._set_dictation_status("")
+
+    def destroy(self) -> None:
+        if hasattr(self, "dictation_service") and self.dictation_service is not None:
+            try:
+                self.dictation_service.destroy()
+            except Exception:  # noqa: BLE001
+                logger.debug("No se pudo detener servicio de dictado en destroy", exc_info=True)
+        super().destroy()
 
     def get_prompt_final(self) -> str:
         return build_refinement_prompt(

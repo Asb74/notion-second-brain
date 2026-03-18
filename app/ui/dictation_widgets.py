@@ -31,6 +31,24 @@ def _es_widget_texto(widget: tk.Widget | object) -> bool:
     )
 
 
+def _widget_exists(widget: tk.Widget | tk.Misc | object | None) -> bool:
+    if widget is None or not hasattr(widget, "winfo_exists"):
+        return False
+    try:
+        return bool(widget.winfo_exists())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def safe_configure(widget: tk.Widget | object | None, **kwargs: object) -> None:
+    if not _widget_exists(widget) or not hasattr(widget, "configure"):
+        return
+    try:
+        widget.configure(**kwargs)
+    except Exception:  # noqa: BLE001
+        logger.debug("safe_configure ignoró error en widget destruido", exc_info=True)
+
+
 def register_dictation_focus(widget: tk.Widget) -> None:
     """Registra un widget para que sea considerado destino de dictado cuando reciba foco."""
 
@@ -62,14 +80,25 @@ def attach_dictation(widget: tk.Widget, parent_frame: tk.Misc) -> ttk.Frame:
     indicator.pack(side="left", padx=(6, 0))
 
     def _set_status(text: str) -> None:
-        indicator.configure(text="" if text == "Listo" else text)
+        try:
+            safe_configure(indicator, text="" if text == "Listo" else text)
+        except Exception:  # noqa: BLE001
+            logger.debug("No se pudo actualizar indicador de dictado", exc_info=True)
 
     def _set_button_state(recording: bool) -> None:
-        mic_button.configure(style="DictationRecording.TButton" if recording else "TButton")
-        mic_button.configure(text="⏹" if recording else "🎙")
+        try:
+            safe_configure(mic_button, style="DictationRecording.TButton" if recording else "TButton")
+            safe_configure(mic_button, text="⏹" if recording else "🎙")
+        except Exception:  # noqa: BLE001
+            logger.debug("No se pudo actualizar botón de dictado", exc_info=True)
 
     def _show_error(msg: str) -> None:
-        messagebox.showwarning("Dictado", msg, parent=controls.winfo_toplevel())
+        if not msg or not _widget_exists(controls):
+            return
+        try:
+            messagebox.showwarning("Dictado", msg, parent=controls.winfo_toplevel())
+        except Exception:  # noqa: BLE001
+            logger.debug("No se pudo mostrar error de dictado", exc_info=True)
 
     voice_service = VoiceDictationService(
         controls.winfo_toplevel(),
@@ -85,5 +114,12 @@ def attach_dictation(widget: tk.Widget, parent_frame: tk.Misc) -> ttk.Frame:
             logger.exception("Error en dictado")
             _show_error(str(exc))
 
+    def _on_controls_destroy(_event: tk.Event | None = None) -> None:
+        try:
+            voice_service.destroy()
+        except Exception:  # noqa: BLE001
+            logger.debug("No se pudo destruir servicio de dictado", exc_info=True)
+
+    controls.bind("<Destroy>", _on_controls_destroy, add="+")
     mic_button.configure(command=_on_mic_click)
     return controls
