@@ -19,6 +19,7 @@ def test_guardar_feedback_persists_samples(tmp_path) -> None:
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert len(payload["email_summary"]) == 1
     assert payload["email_summary"][0]["instructions"] == "Incluye cliente"
+    assert payload["email_summary"][0]["format"] == "paragraph"
 
 
 def test_guardar_feedback_rejects_empty_or_short(tmp_path) -> None:
@@ -52,6 +53,29 @@ def test_build_prompt_context_returns_last_n_examples(tmp_path) -> None:
     assert "Contenido 2" in context
     assert "Contenido 3" in context
     assert "RESPUESTA CORRECTA" in context
+
+
+def test_build_prompt_context_can_exclude_learned_outputs(tmp_path) -> None:
+    store = GlobalLearningStore(tmp_path / "training_data.json")
+    store.guardar_feedback(
+        tipo="email_summary",
+        input_text="EMAIL_BODY:\nContenido",
+        ai_output="Resumen IA",
+        user_final="• salida en viñetas",
+        instrucciones="prioriza fechas",
+        output_format="bullets",
+    )
+
+    context = store.build_prompt_context(
+        tipo="email_summary",
+        input_actual="",
+        max_ejemplos=3,
+        include_outputs=False,
+    )
+
+    assert "RESPUESTA CORRECTA" not in context
+    assert "INSTRUCCIONES DE AJUSTE:" in context
+    assert "prioriza fechas" in context
 
 
 def test_global_learning_store_limits_and_deduplicates(tmp_path) -> None:

@@ -13,6 +13,7 @@ DEFAULT_TRAINING_DATA_FILE = "training_data.json"
 MAX_RECORDS_PER_TYPE = 500
 MIN_USER_FINAL_LENGTH = 12
 SUPPORTED_TYPES = ("email_summary", "email_reply", "email_classification")
+DEFAULT_OUTPUT_FORMAT = "paragraph"
 
 
 class GlobalLearningStore:
@@ -29,6 +30,7 @@ class GlobalLearningStore:
         ai_output: str,
         user_final: str,
         instrucciones: str,
+        output_format: str = DEFAULT_OUTPUT_FORMAT,
     ) -> dict[str, Any]:
         dataset_type = str(tipo or "").strip().lower()
         if dataset_type not in SUPPORTED_TYPES:
@@ -38,6 +40,7 @@ class GlobalLearningStore:
         cleaned_ai_output = self._normalize_text(ai_output)
         cleaned_user_final = self._normalize_text(user_final)
         cleaned_instructions = self._normalize_text(instrucciones)
+        cleaned_format = self._normalize_format(output_format)
 
         if not cleaned_input or not cleaned_ai_output or not cleaned_user_final:
             return {"saved": False, "reason": "empty"}
@@ -49,6 +52,7 @@ class GlobalLearningStore:
             "ai_output": cleaned_ai_output,
             "user_final": cleaned_user_final,
             "instructions": cleaned_instructions,
+            "format": cleaned_format,
             "timestamp": datetime.now().isoformat(timespec="seconds"),
         }
 
@@ -92,28 +96,41 @@ class GlobalLearningStore:
                     "ai_output": self._normalize_text(item.get("ai_output")),
                     "user_final": user_final,
                     "instructions": self._normalize_text(item.get("instructions")),
+                    "format": self._normalize_format(item.get("format")),
                     "timestamp": str(item.get("timestamp") or "").strip(),
                 }
             )
         return normalized[-limit:]
 
-    def build_prompt_context(self, tipo: str, input_actual: str, max_ejemplos: int = 5) -> str:
+    def build_prompt_context(self, tipo: str, input_actual: str, max_ejemplos: int = 5, include_outputs: bool = True) -> str:
         rows = self.obtener_ejemplos(tipo=tipo, input_actual=input_actual, max_ejemplos=max_ejemplos)
         if not rows:
             return ""
 
         chunks = ["Ejemplos previos correctos:"]
         for sample in rows:
-            chunks.extend(
-                [
-                    "---",
-                    "EMAIL:",
-                    sample["input"],
-                    "",
-                    "RESPUESTA CORRECTA:",
-                    sample["user_final"],
-                ]
-            )
+            if include_outputs:
+                chunks.extend(
+                    [
+                        "---",
+                        "EMAIL:",
+                        sample["input"],
+                        "",
+                        "RESPUESTA CORRECTA:",
+                        sample["user_final"],
+                    ]
+                )
+            else:
+                chunks.extend(
+                    [
+                        "---",
+                        "EMAIL:",
+                        sample["input"],
+                        "",
+                        "INSTRUCCIONES DE AJUSTE:",
+                        sample["instructions"] or "(sin instrucciones)",
+                    ]
+                )
         return "\n".join(chunks).strip()
 
     def _is_simple_duplicate(self, rows: list[dict[str, Any]], new_row: dict[str, str]) -> bool:
@@ -132,6 +149,7 @@ class GlobalLearningStore:
                 self._normalize_text(row.get("ai_output")),
                 self._normalize_text(row.get("user_final")),
                 self._normalize_text(row.get("instructions")),
+                self._normalize_format(row.get("format")),
             ]
         )
 
@@ -166,3 +184,7 @@ class GlobalLearningStore:
         text = re.sub(r"[ \t]+", " ", text)
         text = re.sub(r"\n{3,}", "\n\n", text)
         return text.strip()
+
+    def _normalize_format(self, value: Any) -> str:
+        normalized = str(value or "").strip().lower()
+        return normalized or DEFAULT_OUTPUT_FORMAT
