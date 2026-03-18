@@ -21,6 +21,7 @@ OUTPUT_FORMAT_PARAGRAPH = "paragraph"
 OUTPUT_FORMAT_BULLETS = "bullets"
 OUTPUT_FORMAT_NUMBERED = "numbered"
 OUTPUT_FORMAT_SENTENCES = "sentences"
+OUTPUT_FORMAT_PEDIDO = "pedido"
 OUTPUT_FORMAT_DEFAULT = OUTPUT_FORMAT_PARAGRAPH
 
 OUTPUT_FORMAT_TAGS: dict[str, str] = {
@@ -29,6 +30,7 @@ OUTPUT_FORMAT_TAGS: dict[str, str] = {
     OUTPUT_FORMAT_BULLETS: "formato viñetas",
     OUTPUT_FORMAT_NUMBERED: "formato numerado",
     OUTPUT_FORMAT_SENTENCES: "formato frases cortas",
+    OUTPUT_FORMAT_PEDIDO: "formato pedido",
 }
 
 OUTPUT_FORMAT_PROMPTS: dict[str, str] = {
@@ -37,6 +39,12 @@ OUTPUT_FORMAT_PROMPTS: dict[str, str] = {
     OUTPUT_FORMAT_BULLETS: "Devuelve el resultado como lista de viñetas. No utilices tablas.",
     OUTPUT_FORMAT_NUMBERED: "Devuelve el resultado como lista numerada.",
     OUTPUT_FORMAT_SENTENCES: "Devuelve el resultado como frases cortas independientes. Una idea por línea.",
+    OUTPUT_FORMAT_PEDIDO: (
+        "Devuelve SOLO JSON válido para pedidos. "
+        "Estructura esperada: {'Pedidos':[{'PedidoID':'','Cliente':'','Comercial':'','Lineas':[...]}]}. "
+        "Cada línea debe incluir: Linea, Palets, NombrePalet, TCajas, CP, NombreCaja, Mercancia, Confeccion, "
+        "Calibre, Categoria, Marca, PO, Lote, Observaciones, Cliente, Comercial, FCarga, Plataforma, Pais, PCarga, Estado."
+    ),
 }
 EMAIL_RESPONSE_PARAGRAPH_RULE = (
     "IMPORTANTE: Devuelve el resultado en texto tipo email (párrafos). "
@@ -82,6 +90,7 @@ def get_quick_refinements(refinement_mode: str) -> list[str]:
             "más breve",
             "más detallado",
             "formato tabla",
+            "formato pedido",
             "incluir datos numéricos",
             "extraer campos clave",
             "orientado a acción",

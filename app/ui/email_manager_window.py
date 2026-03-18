@@ -39,6 +39,7 @@ from app.core.service import NoteService
 from app.persistence.email_repository import EmailRepository
 from app.persistence.calendar_repository import CalendarRepository
 from app.persistence.training_repository import TrainingRepository
+from app.persistence.pedidos_repository import PedidosRepository
 from app.ml.continuous_learning_service import ContinuousLearningService
 from app.ml.global_learning_store import GlobalLearningStore
 from app.ml.ml_training_manager import MLTrainingManager
@@ -52,6 +53,7 @@ from app.ui.dictation_widgets import attach_dictation
 from app.ui.refinement_panel import (
     EMAIL_RESPONSE_PARAGRAPH_RULE,
     OUTPUT_FORMAT_DEFAULT,
+    OUTPUT_FORMAT_PEDIDO,
     OUTPUT_FORMAT_PROMPTS,
     REFINEMENT_MODE_ATTACHMENT_SUMMARY,
     REFINEMENT_MODE_EMAIL_SUMMARY,
@@ -139,6 +141,16 @@ ATTACHMENT_SUMMARY_REQUEST = (
     "- no inventar información\n"
     "- si falta información, indícalo brevemente\n"
 )
+ATTACHMENT_ORDER_REQUEST = (
+    "Analiza el contenido consolidado de adjuntos y extrae pedidos en formato JSON estructurado.\n"
+    "Devuelve SOLO JSON válido sin texto adicional.\n"
+    "Estructura:\n"
+    "{\"Pedidos\":[{\"PedidoID\":\"\",\"Cliente\":\"\",\"Comercial\":\"\",\"Lineas\":[{...}]}]}\n"
+    "Cada línea debe incluir exactamente: Linea, Palets, NombrePalet, TCajas, CP, NombreCaja, Mercancia, "
+    "Confeccion, Calibre, Categoria, Marca, PO, Lote, Observaciones, Cliente, Comercial, FCarga, Plataforma, Pais, PCarga, Estado.\n"
+    "Estado permitido: Nuevo, Modificado, Cancelado.\n"
+    "No inventes datos: si no existe un valor, usa cadena vacía."
+)
 AUDIO_MEETING_SUMMARY_REQUEST = (
     "Resume la siguiente transcripción de una reunión.\n\n"
     "Extrae:\n"
@@ -153,6 +165,7 @@ AUDIO_MEETING_SUMMARY_REQUEST = (
 )
 MAX_REFINEMENTS = 5
 EMAIL_SUMMARY_EXAMPLES_LIMIT = 5
+ATTACHMENT_SUMMARY_FORMAT_OPTIONS = ("table", "paragraph", "bullets", "numbered", "pedido")
 
 _SYSTEM_LOG_WIDGET: ScrolledText | None = None
 _WIN_TOASTER = None
@@ -453,6 +466,7 @@ class EmailManagerWindow(tk.Toplevel):
         self.email_repo = EmailRepository(db_connection)
         self.calendar_repo = CalendarRepository(db_connection)
         self.training_repo = TrainingRepository(db_connection)
+        self.pedidos_repo = PedidosRepository(db_connection)
         self.user_profile_repo = UserProfileRepository(db_connection)
         self.config_manager = ConfigManager()
         self.category_manager = CategoryManager(self.email_repo)
@@ -523,6 +537,7 @@ class EmailManagerWindow(tk.Toplevel):
         self.email_checker_thread: EmailCheckerThread | None = None
         self._queue_after_id: str | None = None
         self._last_email_check_error: str = ""
+        self.attachment_summary_format_var = tk.StringVar(value="bullets")
 
         self._build_layout()
         self.refresh_emails()
@@ -763,6 +778,15 @@ class EmailManagerWindow(tk.Toplevel):
         ttk.Button(response_actions, text="Reenviar", command=self._forward_email).pack(side="left", padx=(6, 0))
         ttk.Button(response_actions, text="Resumir", command=self._summarize_email).pack(side="left", padx=(6, 0))
         ttk.Button(response_actions, text="Resumir adjuntos", command=self._summarize_attachments).pack(side="left", padx=(6, 0))
+        ttk.Label(response_actions, text="Formato adjunto:").pack(side="left", padx=(10, 4))
+        self.attachment_summary_format_combo = ttk.Combobox(
+            response_actions,
+            state="readonly",
+            textvariable=self.attachment_summary_format_var,
+            values=list(ATTACHMENT_SUMMARY_FORMAT_OPTIONS),
+            width=10,
+        )
+        self.attachment_summary_format_combo.pack(side="left")
         ttk.Button(response_actions, text="Preparar base", command=self._prepare_context_for_selected_email).pack(side="left", padx=(6, 0))
 
         attachments_tab = ttk.Frame(self.detail_notebook)
@@ -2211,11 +2235,31 @@ class EmailManagerWindow(tk.Toplevel):
                     {"role": "user", "content": prompt},
                 ],
             )
-            return str(response.output_text or "").strip()
+            return self._ensure_plain_email_response(str(response.output_text or ""))
         except Exception as exc:  # noqa: BLE001
             logger.exception("No se pudo generar la respuesta con IA: %s", exc)
             self.status_var.set("No se pudo usar IA; se generó una respuesta base.")
             return ""
+
+    @staticmethod
+    def _ensure_plain_email_response(text: str) -> str:
+        normalized = (text or "").strip()
+        if not is_probably_table(normalized):
+            return normalized
+        table = normalize_to_table(normalized)
+        if not table:
+            return normalized
+        headers, rows = table
+        lines: list[str] = []
+        for row in rows:
+            pairs = []
+            for index, header in enumerate(headers):
+                value = row[index] if index < len(row) else ""
+                if str(value).strip():
+                    pairs.append(f"{header}: {value}")
+            if pairs:
+                lines.append(" • " + " | ".join(pairs))
+        return "\n".join(lines).strip() or normalized
 
     def _build_response_prompt(self, row: dict[str, str], examples: list[dict[str, str]]) -> str:
         current_email = build_email_training_input_text(
@@ -2556,16 +2600,28 @@ class EmailManagerWindow(tk.Toplevel):
             self.log("No se pudo extraer texto de los adjuntos")
             return
 
+        output_format = self._selected_attachment_summary_format()
+        is_order_mode = output_format == OUTPUT_FORMAT_PEDIDO or self._looks_like_order_document(extracted_text)
         self.log("Generating attachment summary")
         primary_content_type = "audio_meeting" if "audio_meeting" in content_types else "attachment"
         summary = self._summarize_attachments_content(
             row=row,
             extracted_text=extracted_text,
             content_type=primary_content_type,
+            output_format=OUTPUT_FORMAT_PEDIDO if is_order_mode else output_format,
         )
         if not summary:
             messagebox.showwarning("Atención", "No se pudo generar el resumen de adjuntos.")
             return
+
+        if is_order_mode:
+            filename = self._resolve_primary_attachment_filename(prepared_attachments)
+            persisted_rows, preview_table = self._persist_order_summary(summary, filename)
+            if persisted_rows <= 0:
+                messagebox.showwarning("Pedido", "No se detectaron líneas de pedido válidas para guardar.")
+                return
+            summary = preview_table
+            self.log(f"Pedido persistido: {persisted_rows} líneas ({filename})")
 
         self._open_summary_review_dialog(
             row=row,
@@ -2656,9 +2712,16 @@ class EmailManagerWindow(tk.Toplevel):
         row: dict[str, str],
         extracted_text: str,
         content_type: str = "attachment",
+        output_format: str = OUTPUT_FORMAT_DEFAULT,
     ) -> str:
         sender = row.get("real_sender") or row.get("sender", "")
-        summary_request = AUDIO_MEETING_SUMMARY_REQUEST if content_type == "audio_meeting" else ATTACHMENT_SUMMARY_REQUEST
+        if output_format == OUTPUT_FORMAT_PEDIDO:
+            summary_request = ATTACHMENT_ORDER_REQUEST
+        else:
+            summary_request = AUDIO_MEETING_SUMMARY_REQUEST if content_type == "audio_meeting" else ATTACHMENT_SUMMARY_REQUEST
+        if output_format != OUTPUT_FORMAT_PEDIDO:
+            format_instruction = OUTPUT_FORMAT_PROMPTS.get(output_format, OUTPUT_FORMAT_PROMPTS[OUTPUT_FORMAT_DEFAULT])
+            summary_request = f"{summary_request}\n{format_instruction}"
         prompt = (
             f"{summary_request}\n\n"
             "EMAIL_SUBJECT:\n"
@@ -2675,6 +2738,60 @@ class EmailManagerWindow(tk.Toplevel):
         except Exception as exc:  # noqa: BLE001
             self.log(f"No se pudo generar resumen de adjuntos: {exc}", level="WARNING")
             return ""
+
+    def _selected_attachment_summary_format(self) -> str:
+        format_var = getattr(self, "attachment_summary_format_var", None)
+        selected = str(format_var.get() if format_var is not None else "bullets").strip().lower()
+        if selected not in ATTACHMENT_SUMMARY_FORMAT_OPTIONS:
+            return OUTPUT_FORMAT_DEFAULT
+        return OUTPUT_FORMAT_PEDIDO if selected == "pedido" else selected
+
+    @staticmethod
+    def _looks_like_order_document(extracted_text: str) -> bool:
+        normalized = (extracted_text or "").lower()
+        hints = ("pedido", "palets", "mercancia", "cliente", "linea", "cajas")
+        matches = sum(1 for token in hints if token in normalized)
+        return matches >= 3
+
+    @staticmethod
+    def _resolve_primary_attachment_filename(prepared_attachments: list[dict[str, str]]) -> str:
+        if not prepared_attachments:
+            return "adjunto"
+        return str(prepared_attachments[0].get("filename") or "adjunto")
+
+    def _persist_order_summary(self, ai_json: str, archivo_nombre: str) -> tuple[int, str]:
+        parsed = self._parse_order_json(ai_json)
+        inserted = self.pedidos_repo.guardar_pedidos_desde_json(parsed, archivo_nombre)
+        rows = self.pedidos_repo.obtener_ultima_version_lineas()
+        return inserted, self._build_order_preview_table(rows)
+
+    @staticmethod
+    def _parse_order_json(ai_json: str) -> dict[str, object] | list[object]:
+        normalized = (ai_json or "").strip()
+        if normalized.startswith("```"):
+            normalized = re.sub(r"^```(?:json)?\\s*", "", normalized, flags=re.IGNORECASE)
+            normalized = re.sub(r"\\s*```$", "", normalized)
+        return json.loads(normalized)
+
+    @staticmethod
+    def _build_order_preview_table(rows: list[sqlite3.Row]) -> str:
+        headers = ["PedidoID", "Linea", "Cliente", "Mercancia", "Palets", "Estado", "Fecha carga"]
+        markdown_lines = [
+            "| " + " | ".join(headers) + " |",
+            "| " + " | ".join(["---"] * len(headers)) + " |",
+        ]
+        for row in rows:
+            values = [
+                str(row["pedido_id"] or ""),
+                str(row["linea"] or ""),
+                str(row["cliente"] or ""),
+                str(row["mercancia"] or ""),
+                str(row["palets"] or ""),
+                str(row["estado"] or ""),
+                str(row["fecha_carga"] or ""),
+            ]
+            markdown_lines.append("| " + " | ".join(values) + " |")
+        return "\\n".join(markdown_lines)
 
     def _resolve_reply_attachment_paths(self, gmail_id: str, attachments: list[dict[str, str]]) -> list[str] | None:
         if not attachments:
@@ -2847,7 +2964,7 @@ class EmailManagerWindow(tk.Toplevel):
         ttk.Button(buttons, text="Restaurar versión", command=panel.restore_selected_version).pack(side="left")
 
         def use_response() -> None:
-            final_text = get_current_output()
+            final_text = self._ensure_plain_email_response(get_current_output())
             if not final_text:
                 messagebox.showwarning("Atención", "La respuesta no puede estar vacía.")
                 return
@@ -2864,7 +2981,7 @@ class EmailManagerWindow(tk.Toplevel):
             dialog.destroy()
 
         def edit_and_use_response() -> None:
-            edited_text = get_current_output()
+            edited_text = self._ensure_plain_email_response(get_current_output())
             if not edited_text:
                 messagebox.showwarning("Atención", "La respuesta no puede estar vacía.")
                 return
@@ -2881,7 +2998,7 @@ class EmailManagerWindow(tk.Toplevel):
             dialog.destroy()
 
         def save_final_version() -> None:
-            final_text = get_current_output()
+            final_text = self._ensure_plain_email_response(get_current_output())
             if not final_text:
                 messagebox.showwarning("Atención", "La respuesta no puede estar vacía.")
                 return
