@@ -2,6 +2,8 @@ from app.ui.refinement_panel import (
     EMAIL_RESPONSE_PARAGRAPH_RULE,
     OUTPUT_FORMAT_PARAGRAPH,
     OUTPUT_FORMAT_TABLE,
+    RefinamientoPanel,
+    REFINEMENT_MODE_ATTACHMENT_SUMMARY,
     REFINEMENT_MODE_RESPONSE,
     REFINEMENT_MODE_EMAIL_SUMMARY,
     build_refinement_prompt,
@@ -62,3 +64,30 @@ def test_detect_format_returns_numbered_for_ordered_content() -> None:
 
 def test_detect_format_returns_paragraph_for_plain_text() -> None:
     assert detect_format("Este es un correo en párrafo.") == "paragraph"
+
+
+def test_sync_output_format_with_content_keeps_selected_format_for_summaries() -> None:
+    panel = RefinamientoPanel.__new__(RefinamientoPanel)
+    panel.refinement_mode = REFINEMENT_MODE_ATTACHMENT_SUMMARY
+    panel.output_format = OUTPUT_FORMAT_PARAGRAPH
+    panel.formato_seleccionado = "bullets"
+
+    synced_format = panel.sync_output_format_with_content("Texto cualquiera")
+
+    assert synced_format == "bullets"
+    assert panel.output_format == "bullets"
+    assert panel.formato_seleccionado == "bullets"
+
+
+def test_sync_output_format_with_content_forces_paragraph_for_response_mode() -> None:
+    panel = RefinamientoPanel.__new__(RefinamientoPanel)
+    panel.refinement_mode = REFINEMENT_MODE_RESPONSE
+    panel.output_format = "table"
+    panel.formato_seleccionado = "table"
+    panel.requested_output_format = "table"
+
+    synced_format = panel.sync_output_format_with_content("1. Punto")
+
+    assert synced_format == OUTPUT_FORMAT_PARAGRAPH
+    assert panel.output_format == OUTPUT_FORMAT_PARAGRAPH
+    assert panel.formato_seleccionado == OUTPUT_FORMAT_PARAGRAPH

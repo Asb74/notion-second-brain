@@ -184,6 +184,13 @@ ATTACHMENT_ORDER_REQUEST = (
     "* \"Observaciones\" debe incluir TODO el texto libre\n"
     "* Si un campo no existe → \"\"\n"
     "* \"Palets\" y \"TCajas\" deben ser numéricos si es posible\n"
+    "* Extracción de \"Palets\" (CRÍTICO):\n"
+    "  1) Busca primero el número que aparece inmediatamente antes del tipo de pallet (Euro, Chep, Girsac, etc.).\n"
+    "  2) \"Palets\" también puede venir asociado a unidades logísticas en la misma línea.\n"
+    "  3) Si aparece \"Total Cajas\", NO lo confundas con \"Palets\".\n"
+    "  4) Prioridad: número delante del tipo de pallet; si no existe, estimar desde el contexto de la línea.\n"
+    "  5) El valor final de \"Palets\" debe ser numérico.\n"
+    "  6) Ejemplo: \"10 Euro.Retor.X36\" -> \"Palets\": 10\n"
     "* NO calcular el estado → dejar vacío"
 )
 AUDIO_MEETING_SUMMARY_REQUEST = (
