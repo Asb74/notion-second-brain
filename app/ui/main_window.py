@@ -672,13 +672,7 @@ class MainWindow(ttk.Frame):
 
     def _load_master_values(self) -> None:
         area_values = self.service.get_master_values("Area")
-        tipo_values = (
-            "Nota",
-            "Evento",
-            "Decisión",
-            "Incidencia",
-            "Tarea",
-        )
+        tipo_values = self.service.get_master_values("Tipo")
         estado_values = self.service.get_master_values("Estado")
         prioridad_values = self.service.get_master_values("Prioridad")
 
@@ -714,6 +708,9 @@ class MainWindow(ttk.Frame):
             self.master,
             current,
             on_save,
+            load_master_values=self.service.get_master_values,
+            add_master_value=self.service.add_master,
+            delete_master_value=self.service.deactivate_master,
             on_open_master=self._open_masters_dialog,
             initial_tab=initial_tab,
         )
