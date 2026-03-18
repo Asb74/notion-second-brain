@@ -57,9 +57,10 @@ from app.ui.refinement_panel import (
 )
 from app.utils.openai_client import MODEL_NAME, build_openai_client
 from app.utils.attachment_text_extractor import (
+    AUDIO_EXT,
     MAX_ATTACHMENT_TEXT,
     SUPPORTED_ATTACHMENT_EXTENSIONS,
-    extract_text_from_attachments,
+    extract_text_and_types_from_attachments,
 )
 
 logger = logging.getLogger(__name__)
@@ -134,6 +135,18 @@ ATTACHMENT_SUMMARY_REQUEST = (
     "- destacar datos, fechas, importes y riesgos relevantes\n"
     "- no inventar información\n"
     "- si falta información, indícalo brevemente\n"
+)
+AUDIO_MEETING_SUMMARY_REQUEST = (
+    "Resume la siguiente transcripción de una reunión.\n\n"
+    "Extrae:\n"
+    "- objetivo de la reunión\n"
+    "- decisiones tomadas\n"
+    "- tareas acordadas\n"
+    "- responsables (si aparecen)\n"
+    "- fechas o plazos\n"
+    "- bloqueos o problemas\n"
+    "- resumen ejecutivo final\n\n"
+    "Adapta la longitud según el parámetro indicado."
 )
 MAX_REFINEMENTS = 5
 EMAIL_SUMMARY_EXAMPLES_LIMIT = 5
@@ -2505,9 +2518,7 @@ class EmailManagerWindow(tk.Toplevel):
             self.log("No se pudieron preparar adjuntos resumibles")
             return
 
-        extracted_text = extract_text_from_attachments(prepared_attachments)
-        if len(extracted_text) > MAX_ATTACHMENT_TEXT:
-            extracted_text = extracted_text[:MAX_ATTACHMENT_TEXT]
+        extracted_text, content_types = self._extract_attachment_content_with_type(prepared_attachments)
 
         if not extracted_text.strip():
             messagebox.showinfo("Adjuntos", "No se pudo extraer texto de los adjuntos.")
@@ -2515,7 +2526,12 @@ class EmailManagerWindow(tk.Toplevel):
             return
 
         self.log("Generating attachment summary")
-        summary = self._summarize_attachments_content(row=row, extracted_text=extracted_text)
+        primary_content_type = "audio_meeting" if "audio_meeting" in content_types else "attachment"
+        summary = self._summarize_attachments_content(
+            row=row,
+            extracted_text=extracted_text,
+            content_type=primary_content_type,
+        )
         if not summary:
             messagebox.showwarning("Atención", "No se pudo generar el resumen de adjuntos.")
             return
@@ -2526,6 +2542,7 @@ class EmailManagerWindow(tk.Toplevel):
             preview_body=extracted_text,
             summary_source="attachment",
             attachment_types=attachment_types,
+            content_type=primary_content_type,
         )
 
     @staticmethod
@@ -2590,10 +2607,29 @@ class EmailManagerWindow(tk.Toplevel):
 
         return value.strip()
 
-    def _summarize_attachments_content(self, row: dict[str, str], extracted_text: str) -> str:
+    def _extract_attachment_content_with_type(self, prepared_attachments: list[dict[str, str]]) -> tuple[str, list[str]]:
+        has_audio_attachment = any(
+            Path(str(attachment.get("filename") or attachment.get("file_path") or "")).suffix.lower() in AUDIO_EXT
+            for attachment in prepared_attachments
+        )
+        if has_audio_attachment:
+            self.log("Transcribiendo audio...")
+
+        extracted_text, content_types = extract_text_and_types_from_attachments(prepared_attachments)
+        if len(extracted_text) > MAX_ATTACHMENT_TEXT:
+            extracted_text = extracted_text[:MAX_ATTACHMENT_TEXT]
+        return extracted_text, content_types
+
+    def _summarize_attachments_content(
+        self,
+        row: dict[str, str],
+        extracted_text: str,
+        content_type: str = "attachment",
+    ) -> str:
         sender = row.get("real_sender") or row.get("sender", "")
+        summary_request = AUDIO_MEETING_SUMMARY_REQUEST if content_type == "audio_meeting" else ATTACHMENT_SUMMARY_REQUEST
         prompt = (
-            f"{ATTACHMENT_SUMMARY_REQUEST}\n\n"
+            f"{summary_request}\n\n"
             "EMAIL_SUBJECT:\n"
             f"{(row.get('subject') or '').strip()}\n\n"
             "EMAIL_SENDER:\n"
@@ -2839,6 +2875,7 @@ class EmailManagerWindow(tk.Toplevel):
         preview_body: str,
         summary_source: str = "email",
         attachment_types: list[str] | None = None,
+        content_type: str = "attachment",
     ) -> None:
         dialog = tk.Toplevel(self)
         apply_app_icon(dialog)
@@ -3569,12 +3606,15 @@ class EmailManagerWindow(tk.Toplevel):
 
         if not prepared_attachments:
             return ""
-        extracted_text = extract_text_from_attachments(prepared_attachments)
-        if len(extracted_text) > MAX_ATTACHMENT_TEXT:
-            extracted_text = extracted_text[:MAX_ATTACHMENT_TEXT]
+        extracted_text, content_types = self._extract_attachment_content_with_type(prepared_attachments)
         if not extracted_text.strip():
             return ""
-        return self._summarize_attachments_content(row=dict(row), extracted_text=extracted_text)
+        primary_content_type = "audio_meeting" if "audio_meeting" in content_types else "attachment"
+        return self._summarize_attachments_content(
+            row=dict(row),
+            extracted_text=extracted_text,
+            content_type=primary_content_type,
+        )
 
     def _update_prepared_context_summary(self, row: dict[str, str], summary_source: str, summary_value: str) -> None:
         gmail_id = str(row.get("gmail_id") or "").strip()

@@ -29,7 +29,7 @@ def test_extract_text_from_attachment_uses_filename_extension(tmp_path) -> None:
 
 def test_extract_text_from_attachments_combines_and_truncates(monkeypatch) -> None:
     monkeypatch.setattr(extractor, "MAX_ATTACHMENT_TEXT", 20)
-    monkeypatch.setattr(extractor, "extract_text_from_attachment", lambda *_args, **_kwargs: "x" * 30)
+    monkeypatch.setattr(extractor, "process_attachment", lambda *_args, **_kwargs: ("x" * 30, "txt"))
 
     text = extractor.extract_text_from_attachments(
         [{"file_path": "/tmp/a", "filename": "a.txt", "mime_type": "application/octet-stream"}]
@@ -37,6 +37,42 @@ def test_extract_text_from_attachments_combines_and_truncates(monkeypatch) -> No
 
     assert len(text) == 20
     assert text.startswith("ATTACHMENT: a.txt")
+
+
+def test_process_attachment_audio_uses_transcription(monkeypatch, tmp_path) -> None:
+    audio_file = tmp_path / "meeting.mp3"
+    audio_file.write_bytes(b"audio")
+
+    monkeypatch.setattr(extractor, "transcribe_audio", lambda _path: "transcripcion")
+
+    text, content_type = extractor.process_attachment(str(audio_file))
+
+    assert text == "transcripcion"
+    assert content_type == "audio_meeting"
+
+
+def test_transcribe_audio_uses_cached_txt(tmp_path) -> None:
+    audio_file = tmp_path / "meeting.m4a"
+    audio_file.write_bytes(b"audio")
+    cached = tmp_path / "meeting.txt"
+    cached.write_text("ya transcrito", encoding="utf-8")
+
+    result = extractor.transcribe_audio(str(audio_file))
+
+    assert result == "ya transcrito"
+
+
+def test_transcribe_audio_rejects_large_file(monkeypatch, tmp_path) -> None:
+    audio_file = tmp_path / "huge.wav"
+    audio_file.write_bytes(b"audio")
+    monkeypatch.setattr(extractor, "MAX_AUDIO_FILE_SIZE_BYTES", 1)
+
+    try:
+        extractor.transcribe_audio(str(audio_file))
+    except ValueError as exc:
+        assert str(exc) == "Audio demasiado grande"
+    else:
+        raise AssertionError("Expected ValueError for oversized audio")
 
 
 def test_extract_pdf_runs_ocr_when_text_is_too_short(monkeypatch, caplog) -> None:
