@@ -23,6 +23,14 @@ OUTPUT_FORMAT_NUMBERED = "numbered"
 OUTPUT_FORMAT_SENTENCES = "sentences"
 OUTPUT_FORMAT_PEDIDO = "pedido"
 OUTPUT_FORMAT_DEFAULT = OUTPUT_FORMAT_PARAGRAPH
+OUTPUT_FORMAT_LABELS: dict[str, str] = {
+    OUTPUT_FORMAT_TABLE: "Tabla",
+    OUTPUT_FORMAT_PARAGRAPH: "Párrafo",
+    OUTPUT_FORMAT_BULLETS: "Viñetas",
+    OUTPUT_FORMAT_NUMBERED: "Numerado",
+    OUTPUT_FORMAT_SENTENCES: "Frases cortas",
+    OUTPUT_FORMAT_PEDIDO: "Pedido",
+}
 
 OUTPUT_FORMAT_TAGS: dict[str, str] = {
     OUTPUT_FORMAT_TABLE: "formato tabla",
@@ -205,6 +213,7 @@ class RefinamientoPanel(ttk.LabelFrame):
 
         self.refinamientos: list[str] = []
         self.output_format = OUTPUT_FORMAT_DEFAULT
+        self.formato_seleccionado = OUTPUT_FORMAT_DEFAULT
         self.requested_output_format = OUTPUT_FORMAT_DEFAULT
         self.historial: list[dict[str, object]] = []
         self.refinements_used = 0
@@ -249,12 +258,11 @@ class RefinamientoPanel(ttk.LabelFrame):
         format_frame.grid(row=3, column=0, sticky="ew", padx=8, pady=(0, 4))
         if self._supports_output_format():
             self.format_selector_var = tk.StringVar(value=OUTPUT_FORMAT_DEFAULT)
-            self.format_menu_button = ttk.Menubutton(format_frame, text="Formato")
+            self.format_menu_button = ttk.Menubutton(format_frame, text="")
             format_menu = tk.Menu(self.format_menu_button, tearoff=0)
             for output_format in OUTPUT_FORMAT_TAGS:
-                display_label = output_format.title() if output_format != OUTPUT_FORMAT_PEDIDO else "Pedido"
                 format_menu.add_radiobutton(
-                    label=display_label,
+                    label=OUTPUT_FORMAT_LABELS.get(output_format, output_format.title()),
                     value=output_format,
                     variable=self.format_selector_var,
                     command=lambda value=output_format: self.set_output_format(value),
@@ -321,17 +329,18 @@ class RefinamientoPanel(ttk.LabelFrame):
     def _update_format_button_label(self) -> None:
         if not hasattr(self, "format_menu_button"):
             return
-        selected = (self.output_format or OUTPUT_FORMAT_DEFAULT).strip().lower()
-        display_label = selected.title() if selected != OUTPUT_FORMAT_PEDIDO else "Pedido"
-        self.format_menu_button.configure(text=f"Formato: {display_label}")
+        selected = (self.formato_seleccionado or OUTPUT_FORMAT_DEFAULT).strip().lower()
+        display_label = OUTPUT_FORMAT_LABELS.get(selected, selected.title())
+        self.format_menu_button.configure(text=f"+ {display_label}")
 
     def update_ui_format(self, output_format: str) -> None:
         normalized_format = (output_format or "").strip().lower()
         if normalized_format not in OUTPUT_FORMAT_TAGS:
             normalized_format = OUTPUT_FORMAT_DEFAULT
         self.output_format = normalized_format
+        self.formato_seleccionado = normalized_format
         if hasattr(self, "format_selector_var"):
-            self.format_selector_var.set(self.output_format)
+            self.format_selector_var.set(self.formato_seleccionado)
         self._update_format_button_label()
 
     def _remove_existing_format_tags(self) -> None:
@@ -342,20 +351,22 @@ class RefinamientoPanel(ttk.LabelFrame):
         normalized_format = (output_format or "").strip().lower()
         if normalized_format not in OUTPUT_FORMAT_TAGS:
             normalized_format = OUTPUT_FORMAT_DEFAULT
+        self.formato_seleccionado = normalized_format
         self.requested_output_format = normalized_format
-        self.output_format = normalized_format
+        self.output_format = self.formato_seleccionado
         self._remove_existing_format_tags()
-        self.refinamientos.append(OUTPUT_FORMAT_TAGS[self.output_format])
+        self.refinamientos.append(OUTPUT_FORMAT_TAGS[self.formato_seleccionado])
         self._update_current_format_indicator()
         self.actualizar_input()
         self.render_chips()
 
     def sync_output_format_with_content(self, output_text: str) -> str:
         if self.refinement_mode == REFINEMENT_MODE_RESPONSE:
+            self.update_ui_format(OUTPUT_FORMAT_PARAGRAPH)
             self.requested_output_format = OUTPUT_FORMAT_PARAGRAPH
-        detected_format = detect_format(output_text)
-        self.update_ui_format(detected_format)
-        return detected_format
+            return OUTPUT_FORMAT_PARAGRAPH
+        self.update_ui_format(self.formato_seleccionado)
+        return self.formato_seleccionado
 
     def add_refinement_lines(self, raw_value: str) -> bool:
         changed = False
@@ -478,7 +489,7 @@ class RefinamientoPanel(ttk.LabelFrame):
             refinements=refinamientos_prompt,
             refinement_mode=self.refinement_mode,
             original_context=self.original_context,
-            output_format=self.output_format,
+            output_format=self.formato_seleccionado,
         )
 
     def can_refine(self) -> bool:
@@ -499,7 +510,7 @@ class RefinamientoPanel(ttk.LabelFrame):
                 "version": len(self.historial) + 1,
                 "refinement_mode": self.refinement_mode,
                 "refinamientos": list(self.refinamientos),
-                "output_format": self.output_format,
+                "output_format": self.formato_seleccionado,
                 "resultado": resultado,
             }
         )
@@ -512,7 +523,7 @@ class RefinamientoPanel(ttk.LabelFrame):
                 "version": 1,
                 "refinement_mode": self.refinement_mode,
                 "refinamientos": [],
-                "output_format": self.output_format,
+                "output_format": self.formato_seleccionado,
                 "resultado": initial_result,
             }
         ]
@@ -534,7 +545,8 @@ class RefinamientoPanel(ttk.LabelFrame):
         selected_item = self.historial[restored_index]
         resultado = str(selected_item.get("resultado") or "")
         refinamientos = selected_item.get("refinamientos") or []
-        self.sync_output_format_with_content(resultado)
+        restored_format = str(selected_item.get("output_format") or OUTPUT_FORMAT_DEFAULT).strip().lower()
+        self.update_ui_format(restored_format)
         self.on_restore_version(resultado)
         self.refinamientos.clear()
         self.refinamientos.extend(str(value) for value in refinamientos)

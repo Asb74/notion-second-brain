@@ -38,6 +38,7 @@ sys.modules.setdefault("googleapiclient.discovery", discovery)
 sys.modules.setdefault("googleapiclient.errors", errors)
 
 from app.ui.email_manager_window import (
+    ATTACHMENT_ORDER_REQUEST,
     EmailManagerWindow,
     clean_markdown,
     clean_outlook_styles,
@@ -76,6 +77,12 @@ class _PreviewTextStub:
 
     def insert(self, _index: str, text: str) -> None:
         self.value = text
+
+
+def test_attachment_order_request_prioritizes_numeric_palets_extraction() -> None:
+    assert "Busca primero el número que aparece inmediatamente antes del tipo de pallet" in ATTACHMENT_ORDER_REQUEST
+    assert "NO lo confundas con \"Palets\"" in ATTACHMENT_ORDER_REQUEST
+    assert "\"10 Euro.Retor.X36\" -> \"Palets\": 10" in ATTACHMENT_ORDER_REQUEST
 
 
 def test_create_notes_no_row_get() -> None:
