@@ -20,6 +20,9 @@ class SettingsDialog(tk.Toplevel):
         parent: tk.Misc,
         current: AppSettings,
         on_save: Callable[[AppSettings], None],
+        load_master_values: Callable[[str], list[str]],
+        add_master_value: Callable[[str, str], None],
+        delete_master_value: Callable[[str, str], None],
         on_open_master: Callable[[str], None] | None = None,
         initial_tab: str = "General",
     ):
@@ -34,6 +37,9 @@ class SettingsDialog(tk.Toplevel):
 
         self._current = current
         self._on_save = on_save
+        self._load_master_values = load_master_values
+        self._add_master = add_master_value
+        self._delete_master = delete_master_value
         self._on_open_master = on_open_master
         self.config_manager = ConfigManager()
 
@@ -168,11 +174,7 @@ class SettingsDialog(tk.Toplevel):
 
         self.tipos_list = tk.Listbox(body, height=10)
         self.tipos_list.grid(row=1, column=1, sticky="nsew", padx=(6, 0), pady=(0, 8))
-
-        if self.config_vars["default_area"].get().strip():
-            self.areas_list.insert(tk.END, self.config_vars["default_area"].get().strip())
-        if self.config_vars["default_tipo"].get().strip():
-            self.tipos_list.insert(tk.END, self.config_vars["default_tipo"].get().strip())
+        self._reload_master_lists()
 
         actions = ttk.Frame(body)
         actions.grid(row=2, column=0, columnspan=2, sticky="e")
@@ -220,20 +222,25 @@ class SettingsDialog(tk.Toplevel):
             var.set(config.get(key))
 
     def _add_master_item(self) -> None:
-        target = self._get_active_master_list()
+        target = self._get_active_master_target()
         if target is None:
             messagebox.showinfo("Datos maestros", "Selecciona la lista de Áreas o Tipos para añadir elementos.", parent=self)
             return
-        value = simpledialog.askstring("Añadir", "Nuevo valor:", parent=self)
+        category, _ = target
+        value = simpledialog.askstring("Añadir", f"Nuevo valor para {category}:", parent=self)
         if value is None:
             return
         clean = value.strip()
         if not clean:
             return
-        target.insert(tk.END, clean)
+        try:
+            self._add_master(category, clean)
+            self._reload_master_lists()
+        except Exception as exc:  # pragma: no cover - defensive UI safeguard
+            messagebox.showerror("Error", f"No se pudo añadir el valor: {exc}", parent=self)
 
     def _remove_master_item(self) -> None:
-        target = self._get_active_master_list()
+        target = self._get_active_master_target()
         if target is None:
             messagebox.showinfo(
                 "Datos maestros",
@@ -241,21 +248,41 @@ class SettingsDialog(tk.Toplevel):
                 parent=self,
             )
             return
-        selected = target.curselection()
+        category, list_widget = target
+        selected = list_widget.curselection()
         if not selected:
             return
-        target.delete(selected[0])
+        value = str(list_widget.get(selected[0])).strip()
+        if not value:
+            return
+        try:
+            self._delete_master(category, value)
+            self._reload_master_lists()
+        except Exception as exc:  # pragma: no cover - defensive UI safeguard
+            messagebox.showerror("Error", f"No se pudo eliminar el valor: {exc}", parent=self)
 
-    def _get_active_master_list(self) -> tk.Listbox | None:
+    def _reload_master_lists(self) -> None:
+        if not self.areas_list or not self.tipos_list:
+            return
+        self.areas_list.delete(0, tk.END)
+        self.tipos_list.delete(0, tk.END)
+
+        for value in self._load_master_values("Area"):
+            self.areas_list.insert(tk.END, value)
+
+        for value in self._load_master_values("Tipo"):
+            self.tipos_list.insert(tk.END, value)
+
+    def _get_active_master_target(self) -> tuple[str, tk.Listbox] | None:
         if self.areas_list and self.areas_list.curselection():
-            return self.areas_list
+            return ("Area", self.areas_list)
         if self.tipos_list and self.tipos_list.curselection():
-            return self.tipos_list
+            return ("Tipo", self.tipos_list)
         focus_widget = self.focus_get()
         if focus_widget is self.areas_list:
-            return self.areas_list
+            return ("Area", self.areas_list)
         if focus_widget is self.tipos_list:
-            return self.tipos_list
+            return ("Tipo", self.tipos_list)
         return None
 
     def _validate_config(self) -> bool:
@@ -286,10 +313,6 @@ class SettingsDialog(tk.Toplevel):
                 return
 
             config = {key: var.get() for key, var in self.config_vars.items()}
-            if self.areas_list and self.areas_list.size() > 0:
-                config["default_area"] = str(self.areas_list.get(0)).strip()
-            if self.tipos_list and self.tipos_list.size() > 0:
-                config["default_tipo"] = str(self.tipos_list.get(0)).strip()
 
             settings = AppSettings(
                 notion_token=str(config["notion_token"]).strip(),
