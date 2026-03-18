@@ -51,10 +51,10 @@ class SettingsDialog(tk.Toplevel):
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill="both", expand=True, padx=10, pady=(10, 6))
 
-        self.tab_general = ttk.Frame(self.notebook, padding=10)
-        self.tab_email = ttk.Frame(self.notebook, padding=10)
-        self.tab_notifications = ttk.Frame(self.notebook, padding=10)
-        self.tab_master_data = ttk.Frame(self.notebook, padding=10)
+        self.tab_general = ttk.Frame(self.notebook)
+        self.tab_email = ttk.Frame(self.notebook)
+        self.tab_notifications = ttk.Frame(self.notebook)
+        self.tab_master_data = ttk.Frame(self.notebook)
 
         self.notebook.add(self.tab_general, text="General")
         self.notebook.add(self.tab_email, text="Email")
@@ -76,9 +76,15 @@ class SettingsDialog(tk.Toplevel):
         }
         self.notebook.select(tab_map.get(initial_tab.lower().strip(), 0))
 
+    def _create_tab_body(self, tab: ttk.Frame) -> ttk.Frame:
+        body = ttk.Frame(tab)
+        body.pack(fill="both", expand=True, padx=10, pady=10)
+        return body
+
     def _build_general_tab(self) -> None:
+        body = self._create_tab_body(self.tab_general)
         self._build_settings_fields(
-            self.tab_general,
+            body,
             fields=[
                 ("notion_token", "Notion Token"),
                 ("notion_database_id", "Notion Database ID"),
@@ -92,8 +98,7 @@ class SettingsDialog(tk.Toplevel):
         )
 
     def _build_email_tab(self) -> None:
-        frame = ttk.Frame(self.tab_email)
-        frame.pack(fill="both", expand=True, padx=10, pady=10)
+        frame = self._create_tab_body(self.tab_email)
 
         self._build_settings_fields(
             frame,
@@ -121,12 +126,11 @@ class SettingsDialog(tk.Toplevel):
             entry.insert(0, str(getattr(self._current, key, "") or ""))
             entry.grid(row=idx, column=1, sticky="ew", padx=6, pady=4)
             self.entries[key] = entry
-            controls = attach_dictation(entry, self)
+            controls = attach_dictation(entry, parent)
             controls.grid(row=idx, column=2, sticky="w", padx=(0, 6), pady=4)
 
     def _build_notifications_tab(self) -> None:
-        frame = ttk.Frame(self.tab_notifications)
-        frame.pack(fill="both", expand=True, padx=10, pady=10)
+        frame = self._create_tab_body(self.tab_notifications)
 
         frame.columnconfigure(0, weight=1)
         frame.columnconfigure(1, weight=1)
@@ -169,8 +173,7 @@ class SettingsDialog(tk.Toplevel):
         ).grid(row=4, column=0, sticky="w", padx=6, pady=(10, 0))
 
     def _build_master_data_tab(self) -> None:
-        frame = ttk.Frame(self.tab_master_data)
-        frame.pack(fill="both", expand=True, padx=10, pady=10)
+        frame = self._create_tab_body(self.tab_master_data)
 
         frame.columnconfigure(0, weight=1)
         frame.columnconfigure(1, weight=1)
