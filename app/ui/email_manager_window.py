@@ -20,7 +20,7 @@ from datetime import datetime
 from email.utils import getaddresses, parseaddr
 from pathlib import Path
 from queue import Queue
-from typing import Callable
+from typing import Callable, Literal
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from tkinter.scrolledtext import ScrolledText
 from tkcalendar import DateEntry
@@ -306,6 +306,11 @@ def normalize_to_table(text: str) -> tuple[list[str], list[list[str]]] | None:
     return None
 
 
+def is_probably_table(text: str) -> bool:
+    """Heuristic guard to detect content that likely represents a table."""
+    return "|" in (text or "") or "\t" in (text or "")
+
+
 def render_table(parent: tk.Misc, headers: list[str], rows: list[list[str]]) -> ttk.Treeview:
     """Render headers and rows into a table-like Treeview."""
     tree = ttk.Treeview(parent, columns=headers, show="headings")
@@ -319,6 +324,18 @@ def render_table(parent: tk.Misc, headers: list[str], rows: list[list[str]]) -> 
 
     tree.pack(fill="both", expand=True)
     return tree
+
+
+def render_text_output(parent: tk.Misc, text: str) -> tk.Text:
+    """Render output as plain text, preserving formatting and avoiding tabular widgets."""
+    for widget in parent.winfo_children():
+        widget.destroy()
+
+    text_widget = tk.Text(parent, wrap="word")
+    text_widget.insert("1.0", text or "")
+    text_widget.config(state="disabled")
+    text_widget.pack(fill="both", expand=True)
+    return text_widget
 
 
 def is_real_html(content: str | None) -> bool:
@@ -543,11 +560,18 @@ class EmailManagerWindow(tk.Toplevel):
 
         messagebox.showinfo("Tabla", f"Tabla guardada en:\n{file_path}")
 
-    def _render_output_widget(self, container: tk.Misc, output_text: str) -> tk.Text | None:
+    def _render_output_widget(
+        self,
+        container: tk.Misc,
+        output_text: str,
+        context_type: Literal["summary", "email_response"],
+    ) -> tk.Text | None:
         self._clear_result_container(container)
         clean_output = clean_markdown(output_text)
+        if context_type == "email_response":
+            return render_text_output(container, clean_output)
 
-        normalized_table = normalize_to_table(clean_output)
+        normalized_table = normalize_to_table(clean_output) if is_probably_table(clean_output) else None
         if normalized_table:
             headers, rows = normalized_table
             wrapper = ttk.Frame(container)
@@ -574,10 +598,7 @@ class EmailManagerWindow(tk.Toplevel):
             ttk.Button(actions, text="💾 Guardar como CSV", command=lambda: self._save_treeview_as_csv(tree)).pack(side="left", padx=(6, 0))
             return None
 
-        editor = ScrolledText(container, wrap="word", height=14)
-        editor.pack(fill="both", expand=True)
-        editor.insert("1.0", clean_output)
-        return editor
+        return render_text_output(container, clean_output)
 
     def _build_layout(self) -> None:
         global _SYSTEM_LOG_WIDGET
@@ -2751,7 +2772,7 @@ class EmailManagerWindow(tk.Toplevel):
 
         original_output = self._apply_user_signature(draft_ai_response).strip()
         current_output = original_output
-        editor = self._render_output_widget(output_frame, current_output)
+        editor = self._render_output_widget(output_frame, current_output, context_type="email_response")
         input_original = build_email_training_input_text(
             subject=row.get("subject", ""),
             sender=row.get("real_sender") or row.get("sender", ""),
@@ -2780,7 +2801,7 @@ class EmailManagerWindow(tk.Toplevel):
         def set_current_output(value: str) -> None:
             nonlocal current_output, editor
             current_output = (value or "").strip()
-            editor = self._render_output_widget(output_frame, current_output)
+            editor = self._render_output_widget(output_frame, current_output, context_type="email_response")
             panel.sync_output_format_with_content(current_output)
 
         panel.on_restore_version = set_current_output
@@ -2916,7 +2937,7 @@ class EmailManagerWindow(tk.Toplevel):
         output_frame.grid_columnconfigure(0, weight=1)
         output_frame.grid_rowconfigure(0, weight=1)
         current_output = original_output
-        editor = self._render_output_widget(output_frame, current_output)
+        editor = self._render_output_widget(output_frame, current_output, context_type="summary")
 
         input_original = preview_body.strip() or build_email_training_input_text(
             subject=row.get("subject", ""),
@@ -2946,7 +2967,7 @@ class EmailManagerWindow(tk.Toplevel):
         def set_current_output(value: str) -> None:
             nonlocal current_output, editor
             current_output = (value or "").strip()
-            editor = self._render_output_widget(output_frame, current_output)
+            editor = self._render_output_widget(output_frame, current_output, context_type="summary")
             panel.sync_output_format_with_content(current_output)
 
         panel.on_restore_version = set_current_output

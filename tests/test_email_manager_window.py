@@ -44,6 +44,7 @@ from app.ui.email_manager_window import (
     copiar_tabla,
     detect_kv_format,
     export_to_csv,
+    is_probably_table,
     is_real_html,
     normalize_to_table,
     parse_kv_to_table,
@@ -211,6 +212,12 @@ def test_normalize_to_table_prefers_table_then_falls_back_to_kv() -> None:
     assert kv_result == (["Campo", "Detalle"], [["Cliente", "EUROGROUP"], ["Destino", "Alemania"], ["Contenido", "648 cajas"]])
 
     assert normalize_to_table("texto plano sin estructura") is None
+
+
+def test_is_probably_table_detects_pipe_or_tab_delimiters() -> None:
+    assert is_probably_table("col1|col2")
+    assert is_probably_table("col1\tcol2")
+    assert not is_probably_table("texto plano sin separadores")
 
 
 def test_export_to_csv_writes_headers_and_rows(tmp_path: Path) -> None:
