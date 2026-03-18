@@ -36,7 +36,6 @@ from app.ui.calendar_manager_window import CalendarManagerWindow
 from app.ui.ml_manager_window import MLManagerWindow
 from app.ui.ml_quality_metrics_window import MLQualityMetricsWindow
 from app.ui.settings_dialog import SettingsDialog
-from app.ui.user_profile_window import UserProfileWindow
 from app.ui.app_icons import apply_app_icon
 from app.ui.dictation_widgets import attach_dictation
 
@@ -115,7 +114,6 @@ class MainWindow(ttk.Frame):
         self.gmail_credentials_path = gmail_credentials_path
         self.gmail_token_path = gmail_token_path
         self._email_window: EmailManagerWindow | None = None
-        self._profile_window: UserProfileWindow | None = None
         self._calendar_toplevel: tk.Toplevel | None = None
         self._calendar_window: CalendarManagerWindow | None = None
         self._ml_manager_window: MLManagerWindow | None = None
@@ -176,50 +174,29 @@ class MainWindow(ttk.Frame):
 
         archivo = tk.Menu(menubar, tearoff=0)
         archivo.add_command(label="Nueva nota", command=self._new_note, accelerator="Ctrl+N")
-        archivo.add_command(label="Abrir", command=self._open_selected_note)
-        archivo.add_command(label="Guardar", command=self._save_note, accelerator="Ctrl+S")
-        archivo.add_separator()
         archivo.add_command(label="Salir", command=self._on_close_requested)
         menubar.add_cascade(label="Archivo", menu=archivo)
 
-        edicion = tk.Menu(menubar, tearoff=0)
-        edicion.add_command(label="Copiar", command=self._copy_selected_text, accelerator="Ctrl+C")
-        edicion.add_command(label="Pegar", command=self._paste_text, accelerator="Ctrl+V")
-        edicion.add_separator()
-        edicion.add_command(label="Limpiar campos", command=self._clear_note_fields)
-        menubar.add_cascade(label="Edición", menu=edicion)
-
         herramientas = tk.Menu(menubar, tearoff=0)
-        herramientas.add_command(label="Reentrenar modelo", command=self._retrain_model_from_menu)
-        herramientas.add_command(label="Reclasificar emails", command=self._reclassify_emails_from_menu)
-        herramientas.add_command(label="Descargar", command=self._download_emails_from_menu)
-        herramientas.add_command(label="Procesos automáticos", command=self._auto_process_from_menu)
-        herramientas.add_separator()
-        herramientas.add_command(label="Configuración", command=self._open_settings)
+        herramientas.add_command(label="Configuración general", command=self._open_settings)
         herramientas.add_command(label="Gestión de Emails", command=self._open_email_manager)
         herramientas.add_command(label="Agenda", command=self._open_calendar_manager)
         herramientas.add_command(label="ML Manager", command=self._open_ml_manager)
         herramientas.add_command(label="ML Metrics", command=self._open_ml_quality_metrics)
-        herramientas.add_command(label="Abrir en Notion", command=self._open_notion)
-        herramientas.add_command(label="Abrir evento", command=self._open_selected_note_google_event)
         menubar.add_cascade(label="Herramientas", menu=herramientas)
 
-        maestros = tk.Menu(menubar, tearoff=0)
-        maestros.add_command(label="Perfiles", command=self._open_user_profile)
-        maestros.add_command(label="Contextos", command=lambda: self._open_masters_dialog("Area"))
-        maestros.add_command(label="Plantillas", command=lambda: self._open_masters_dialog("Tipo"))
-        maestros.add_separator()
-        maestros.add_command(label="Importar CSV", command=lambda: self._open_masters_dialog("Origen"))
-        maestros.add_command(label="Exportar CSV", command=lambda: self._open_masters_dialog("Prioridad"))
-        menubar.add_cascade(label="Maestros", menu=maestros)
+        configuracion = tk.Menu(menubar, tearoff=0)
+        datos_maestros = tk.Menu(configuracion, tearoff=0)
+        datos_maestros.add_command(label="Áreas", command=lambda: self._open_masters_dialog("Area"))
+        datos_maestros.add_command(label="Tipos", command=lambda: self._open_masters_dialog("Tipo"))
+        datos_maestros.add_command(label="Estados", command=lambda: self._open_masters_dialog("Estado"))
+        datos_maestros.add_command(label="Prioridades", command=lambda: self._open_masters_dialog("Prioridad"))
+        configuracion.add_cascade(label="Datos maestros", menu=datos_maestros)
+        menubar.add_cascade(label="Configuración", menu=configuracion)
 
         ia = tk.Menu(menubar, tearoff=0)
-        ia.add_command(label="Generar respuesta", command=self._generate_response_from_menu)
-        ia.add_command(label="Resumir", command=self._summarize_from_menu)
-        ia.add_command(label="Preparar contexto", command=self._prepare_context_from_menu)
-        ia.add_command(label="Crear nota desde IA", command=self._create_note_from_ai_menu)
-        ia.add_separator()
-        ia.add_command(label="Sincronizar pendientes", command=self._sync)
+        ia.add_command(label="Reentrenar modelo", command=self._retrain_model_from_menu)
+        ia.add_command(label="Reclasificar emails", command=self._reclassify_emails_from_menu)
         menubar.add_cascade(label="IA", menu=ia)
 
         self.master.config(menu=menubar)
@@ -294,23 +271,6 @@ class MainWindow(ttk.Frame):
 
     def _download_emails_from_menu(self) -> None:
         self._run_email_manager_action("_download_new_emails")
-
-    def _auto_process_from_menu(self) -> None:
-        # Flujo automático mínimo reutilizando acciones existentes de Email Manager.
-        self._run_email_manager_action("_reclassify_current_emails")
-        self._run_email_manager_action("_retrain_model")
-
-    def _generate_response_from_menu(self) -> None:
-        self._run_email_manager_action("_generate_response")
-
-    def _summarize_from_menu(self) -> None:
-        self._run_email_manager_action("_summarize_email")
-
-    def _prepare_context_from_menu(self) -> None:
-        self._run_email_manager_action("_prepare_context_for_selected_email")
-
-    def _create_note_from_ai_menu(self) -> None:
-        self._run_email_manager_action("_create_notes_from_selected_emails")
 
     def _open_masters_dialog(self, category: str) -> None:
         MastersDialog(self.master, self.service, category, self._load_master_values)
@@ -650,15 +610,6 @@ class MainWindow(ttk.Frame):
         if selected_id:
             return selected_id
         return "primary"
-
-    def _open_user_profile(self) -> None:
-        if self.db_connection is None:
-            messagebox.showerror("Error", "No hay conexión de base de datos disponible.")
-            return
-        if self._profile_window is not None and self._profile_window.winfo_exists():
-            self._profile_window.focus_set()
-            return
-        self._profile_window = UserProfileWindow(self.master, self.db_connection)
 
     def _build_sections(self) -> None:
         sections = ttk.Notebook(self)
