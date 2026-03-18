@@ -743,6 +743,23 @@ def test_is_table_detects_markdown_and_csv() -> None:
     assert is_table("texto libre\nsolo una linea") is False
 
 
+def test_parse_order_json_handles_fenced_json_and_prefixed_text() -> None:
+    raw = "```json\nTexto previo\n[{\"PedidoID\":\"P-1\",\"Linea\":1,\"Cliente\":\"ACME\"}]\n```"
+
+    parsed = EmailManagerWindow._parse_order_json(raw)
+
+    assert parsed == [{"PedidoID": "P-1", "Linea": 1, "Cliente": "ACME"}]
+
+
+def test_parse_order_json_raises_for_empty_payload() -> None:
+    try:
+        EmailManagerWindow._parse_order_json("```json\n```")
+    except ValueError as exc:
+        assert "vacía" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError for empty payload")
+
+
 def test_parse_markdown_table_handles_separator_and_csv() -> None:
     from app.ui.email_manager_window import parse_markdown_table
 
