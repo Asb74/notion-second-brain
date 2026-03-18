@@ -767,40 +767,20 @@ class EmailManagerWindow(tk.Toplevel):
     def _build_menu_bar(self) -> None:
         menubar = tk.Menu(self)
 
-        archivo = tk.Menu(menubar, tearoff=0)
-        archivo.add_command(label="Nueva nota", command=self._create_notes_from_selected_emails)
-        archivo.add_command(label="Abrir", command=self._refresh_preview)
-        archivo.add_command(label="Guardar", command=self._create_outlook_draft)
-        archivo.add_separator()
-        archivo.add_command(label="Salir", command=self.destroy)
-        menubar.add_cascade(label="Archivo", menu=archivo)
+        emails_menu = tk.Menu(menubar, tearoff=0)
+        emails_menu.add_command(label="Descargar", command=self._download_new_emails)
+        emails_menu.add_command(label="Reclasificar", command=self._reclassify_current_emails)
+        emails_menu.add_command(label="Marcar ignoradas", command=self._mark_selected_as_ignored)
+        menubar.add_cascade(label="Emails", menu=emails_menu)
 
-        edicion = tk.Menu(menubar, tearoff=0)
-        edicion.add_command(label="Copiar", command=lambda: self._clipboard_event("<<Copy>>"))
-        edicion.add_command(label="Pegar", command=lambda: self._clipboard_event("<<Paste>>"))
-        edicion.add_command(label="Limpiar", command=self._clear_active_text_widget)
-        menubar.add_cascade(label="Edición", menu=edicion)
+        configuracion_menu = tk.Menu(menubar, tearoff=0)
+        configuracion_menu.add_command(label="Configuración Email", command=self._open_email_config_dialog)
+        menubar.add_cascade(label="Configuración", menu=configuracion_menu)
 
-        herramientas = tk.Menu(menubar, tearoff=0)
-        herramientas.add_command(label="Descargar", command=self._download_new_emails)
-        herramientas.add_command(label="Reentrenar modelo", command=self._retrain_model)
-        herramientas.add_command(label="Reclasificar", command=self._reclassify_current_emails)
-        herramientas.add_command(label="Marcar ignoradas", command=self._mark_selected_as_ignored)
-        herramientas.add_separator()
-        herramientas.add_command(label="⚙ Configuración Email", command=self._open_email_config_dialog)
-        menubar.add_cascade(label="Herramientas", menu=herramientas)
-
-        maestros = tk.Menu(menubar, tearoff=0)
-        maestros.add_command(label="Perfiles", command=self._open_profiles_master)
-        maestros.add_command(label="Contextos", command=self._create_category)
-        maestros.add_command(label="Plantillas", command=self._open_templates_master)
-        menubar.add_cascade(label="Maestros", menu=maestros)
-
-        ia_menu = tk.Menu(menubar, tearoff=0)
-        ia_menu.add_command(label="Generar respuesta", command=self._generate_response)
-        ia_menu.add_command(label="Resumir", command=self._summarize_email)
-        ia_menu.add_command(label="Preparar contexto", command=self._prepare_context_for_selected_email)
-        menubar.add_cascade(label="IA", menu=ia_menu)
+        acciones_menu = tk.Menu(menubar, tearoff=0)
+        acciones_menu.add_command(label="Crear nota", command=self._create_notes_from_selected_emails)
+        acciones_menu.add_command(label="Crear evento", command=self._create_events_from_selected_emails)
+        menubar.add_cascade(label="Acciones", menu=acciones_menu)
 
         self.config(menu=menubar)
 
@@ -810,7 +790,6 @@ class EmailManagerWindow(tk.Toplevel):
 
         quick_actions = [
             ("⬇ Descargar", self._download_new_emails),
-            ("🧠 Reentrenar", self._retrain_model),
             ("🔁 Reclasificar", self._reclassify_current_emails),
             ("🙈 Marcar ignoradas", self._mark_selected_as_ignored),
             ("🏷 Nueva categoría", self._create_category),
@@ -835,12 +814,6 @@ class EmailManagerWindow(tk.Toplevel):
         widget = self.focus_get()
         if isinstance(widget, (tk.Text, tk.Entry, ttk.Entry)):
             widget.delete(0 if isinstance(widget, (tk.Entry, ttk.Entry)) else "1.0", "end")
-
-    def _open_profiles_master(self) -> None:
-        messagebox.showinfo("Perfiles", "La gestión de perfiles se administra desde la ventana principal.")
-
-    def _open_templates_master(self) -> None:
-        messagebox.showinfo("Plantillas", "El módulo de plantillas se habilitará en una siguiente iteración.")
 
     def _toggle_logs_panel(self) -> None:
         if self._main_paned is None or self._logs_frame is None:
