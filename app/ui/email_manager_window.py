@@ -142,17 +142,49 @@ ATTACHMENT_SUMMARY_REQUEST = (
     "- si falta información, indícalo brevemente\n"
 )
 ATTACHMENT_ORDER_REQUEST = (
-    "Analiza el contenido consolidado de adjuntos y extrae pedidos en formato JSON estructurado.\n"
-    "La respuesta DEBE ser SOLO JSON válido.\n"
-    "Sin texto explicativo, sin comentarios y sin markdown.\n"
-    "Devuelve una lista JSON de líneas.\n"
-    "Estructura esperada por elemento:\n"
-    "{\"PedidoID\":\"\",\"Linea\":1,\"Cliente\":\"\",\"Mercancia\":\"\",\"Palets\":\"\",\"Estado\":\"\",...}\n"
-    "Cada línea debe incluir exactamente: Linea, Palets, NombrePalet, TCajas, CP, NombreCaja, Mercancia, "
-    "Confeccion, Calibre, Categoria, Marca, PO, Lote, Observaciones, Cliente, Comercial, FCarga, Plataforma, Pais, PCarga, Estado.\n"
-    "Estado permitido: Nuevo, Modificado, Cancelado.\n"
-    "No inventes datos: si no existe un valor, usa cadena vacía.\n"
-    "Si no hay datos de pedidos, devuelve []."
+    "Analiza el siguiente documento de pedido (posiblemente extraído por OCR).\n\n"
+    "OBJETIVO:\n"
+    "Extraer TODAS las líneas de pedido en formato JSON estructurado.\n\n"
+    "REGLAS CRÍTICAS:\n\n"
+    "1. La respuesta DEBE ser SOLO JSON válido\n"
+    "2. NO añadir texto explicativo\n"
+    "3. NO usar markdown\n"
+    "4. Si no hay datos → devolver []\n"
+    "5. NO inventar datos\n\n"
+    "FORMATO DE SALIDA:\n\n"
+    "[\n"
+    "{\n"
+    "\"PedidoID\": \"\",\n"
+    "\"Linea\": \"\",\n"
+    "\"Cliente\": \"\",\n"
+    "\"Comercial\": \"\",\n"
+    "\"Mercancia\": \"\",\n"
+    "\"Palets\": \"\",\n"
+    "\"TCajas\": \"\",\n"
+    "\"NombrePalet\": \"\",\n"
+    "\"NombreCaja\": \"\",\n"
+    "\"Confeccion\": \"\",\n"
+    "\"Calibre\": \"\",\n"
+    "\"Categoria\": \"\",\n"
+    "\"Marca\": \"\",\n"
+    "\"PO\": \"\",\n"
+    "\"Lote\": \"\",\n"
+    "\"Observaciones\": \"\",\n"
+    "\"FCarga\": \"\",\n"
+    "\"Plataforma\": \"\",\n"
+    "\"Pais\": \"\",\n"
+    "\"PCarga\": \"\",\n"
+    "\"Estado\": \"\"\n"
+    "}\n"
+    "]\n\n"
+    "INSTRUCCIONES:\n\n"
+    "* Extraer datos aunque estén desordenados\n"
+    "* Cada línea del pedido debe ser un objeto independiente\n"
+    "* NO mezclar datos entre líneas\n"
+    "* \"Observaciones\" debe incluir TODO el texto libre\n"
+    "* Si un campo no existe → \"\"\n"
+    "* \"Palets\" y \"TCajas\" deben ser numéricos si es posible\n"
+    "* NO calcular el estado → dejar vacío"
 )
 AUDIO_MEETING_SUMMARY_REQUEST = (
     "Resume la siguiente transcripción de una reunión.\n\n"
@@ -217,6 +249,17 @@ def clean_markdown(text: str) -> str:
     sanitized = re.sub(r"\*\*(.*?)\*\*", r"\1", text or "")
     sanitized = sanitized.replace("**", "")
     return sanitized.strip()
+
+
+def format_estado_badge(estado: object) -> str:
+    normalized = str(estado or "").strip().lower()
+    if normalized == "nuevo":
+        return "🟢 Nuevo"
+    if normalized == "rectificado":
+        return "🟡 Rectificado"
+    if normalized == "cancelado":
+        return "🔴 Cancelado"
+    return str(estado or "").strip()
 
 
 def export_to_csv(headers: list[str], rows: list[list[str]], path: str) -> None:
@@ -658,7 +701,9 @@ class EmailManagerWindow(tk.Toplevel):
                 if key in excluded:
                     continue
                 display_value = "" if value is None else str(value).strip()
-                if not display_value:
+                if str(key) == "Estado":
+                    display_value = format_estado_badge(display_value)
+                if not display_value and str(key) != "Estado":
                     continue
                 field_name = f"{prefix}{key}" if prefix else str(key)
                 rows.append([field_name, display_value])
@@ -2692,7 +2737,7 @@ class EmailManagerWindow(tk.Toplevel):
             return
 
         output_format = OUTPUT_FORMAT_DEFAULT
-        is_order_mode = False
+        is_order_mode = self._looks_like_order_document(extracted_text)
         self.log("Generating attachment summary")
         primary_content_type = "audio_meeting" if "audio_meeting" in content_types else "attachment"
         summary = self._summarize_attachments_content(
@@ -2899,7 +2944,7 @@ class EmailManagerWindow(tk.Toplevel):
                 str(row["cliente"] or ""),
                 str(row["mercancia"] or ""),
                 str(row["palets"] or ""),
-                str(row["estado"] or ""),
+                format_estado_badge(row["estado"] or ""),
             ]
             markdown_lines.append("| " + " | ".join(values) + " |")
         return "\\n".join(markdown_lines)

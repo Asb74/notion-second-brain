@@ -1,6 +1,6 @@
 import sqlite3
 
-from app.persistence.pedidos_repository import PedidosRepository
+from app.persistence.pedidos_repository import PedidosRepository, aplicar_estados
 
 
 def _conn() -> sqlite3.Connection:
@@ -61,7 +61,7 @@ def test_obtener_resumen_palets_excluye_cancelados() -> None:
                     "PedidoID": "P-1",
                     "Lineas": [
                         {"Linea": 1, "Palets": 5, "Mercancia": "Naranja", "Estado": "Nuevo"},
-                        {"Linea": 2, "Palets": 3, "Mercancia": "Naranja", "Estado": "Cancelado"},
+                        {"Linea": 2, "Palets": 3, "Mercancia": "Naranja", "Observaciones": "CANCELADO"},
                     ],
                 }
             ]
@@ -73,3 +73,49 @@ def test_obtener_resumen_palets_excluye_cancelados() -> None:
     assert len(resumen) == 1
     assert resumen[0]["mercancia"] == "Naranja"
     assert resumen[0]["total_palets"] == 5
+
+
+def test_guardar_pedidos_calcula_estado_nuevo_y_rectificado() -> None:
+    conn = _conn()
+    repo = PedidosRepository(conn)
+
+    inserted_1 = repo.guardar_pedidos_desde_json(
+        [{"PedidoID": "P-2", "Linea": 1, "Mercancia": "Naranja", "Palets": 3}],
+        "pedido-2.pdf",
+    )
+    inserted_2 = repo.guardar_pedidos_desde_json(
+        [{"PedidoID": "P-2", "Linea": 1, "Mercancia": "Naranja", "Palets": 4}],
+        "pedido-2b.pdf",
+    )
+
+    assert inserted_1 == 1
+    assert inserted_2 == 1
+    rows = conn.execute("SELECT estado FROM pedidos_lineas WHERE pedido_id = 'P-2' ORDER BY id").fetchall()
+    assert [row["estado"] for row in rows] == ["Nuevo", "Rectificado"]
+
+
+def test_guardar_pedidos_detecta_cancelado_desde_observaciones() -> None:
+    conn = _conn()
+    repo = PedidosRepository(conn)
+
+    inserted = repo.guardar_pedidos_desde_json(
+        [{"PedidoID": "P-3", "Linea": 1, "Observaciones": "cliente CANCELADO por incidencia"}],
+        "pedido-3.pdf",
+    )
+
+    assert inserted == 1
+    row = conn.execute("SELECT estado FROM pedidos_lineas WHERE pedido_id = 'P-3'").fetchone()
+    assert row is not None
+    assert row["estado"] == "Cancelado"
+
+
+def test_aplicar_estados_modifica_lineas_en_memoria() -> None:
+    conn = _conn()
+    repo = PedidosRepository(conn)
+    repo.guardar_pedidos_desde_json([{"PedidoID": "P-4", "Linea": 7}], "pedido-4.pdf")
+
+    lineas = [{"PedidoID": "P-4", "Linea": 7}, {"PedidoID": "P-5", "Linea": 1}]
+    resultado = aplicar_estados(conn, lineas)
+
+    assert resultado[0]["Estado"] == "Rectificado"
+    assert resultado[1]["Estado"] == "Nuevo"

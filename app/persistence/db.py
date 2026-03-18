@@ -176,6 +176,26 @@ class Database:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS pedidos (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    PedidoID TEXT,
+                    Linea INTEGER,
+                    Cliente TEXT,
+                    Mercancia TEXT,
+                    Palets INTEGER,
+                    Estado TEXT,
+                    FechaProcesado DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_pedidos_pedido_linea
+                ON pedidos(PedidoID, Linea)
+                """
+            )
             self._ensure_column(conn, "refinement_history", "refinement_mode", "TEXT NOT NULL DEFAULT 'email_summary'")
             self._migrate_masters_table(conn)
             conn.execute(
