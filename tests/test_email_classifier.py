@@ -1,4 +1,4 @@
-from app.core.email.email_classifier import EmailClassifier
+from app.core.email.email_classifier import EmailClassifier, is_internal_email, is_user_email
 
 
 def test_classifier_detects_order_rule() -> None:
@@ -23,3 +23,16 @@ def test_classifier_prioritizes_internal_priority_hints() -> None:
     )
 
     assert result == "priority"
+
+
+def test_user_and_internal_email_helpers() -> None:
+    profile = {
+        "email_principal": "ana@empresa.com",
+        "dominio": "empresa.com",
+        "alias": ["ventas@empresa.com"],
+    }
+    assert is_user_email("Ana <ana@empresa.com>", profile)
+    assert is_user_email("ventas@empresa.com", profile)
+    assert not is_user_email("proveedor@externo.com", profile)
+    assert is_internal_email("equipo@empresa.com", profile)
+    assert not is_internal_email("equipo@otro.com", profile)

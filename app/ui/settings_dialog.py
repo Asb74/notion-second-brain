@@ -6,6 +6,7 @@ import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 from typing import Callable
 
+from app.config.config_manager import ConfigManager
 from app.core.models import AppSettings
 from app.ui.app_icons import apply_app_icon
 from app.ui.dictation_widgets import attach_dictation
@@ -34,6 +35,7 @@ class SettingsDialog(tk.Toplevel):
         self._current = current
         self._on_save = on_save
         self._on_open_master = on_open_master
+        self.config_manager = ConfigManager()
 
         self.areas_list: tk.Listbox | None = None
         self.tipos_list: tk.Listbox | None = None
@@ -42,7 +44,10 @@ class SettingsDialog(tk.Toplevel):
             "notion_token": tk.StringVar(),
             "notion_database_id": tk.StringVar(),
             "managed_email": tk.StringVar(),
-            "username": tk.StringVar(),
+            "nombre": tk.StringVar(),
+            "email_principal": tk.StringVar(),
+            "dominio": tk.StringVar(),
+            "alias": tk.StringVar(),
             "default_area": tk.StringVar(),
             "default_tipo": tk.StringVar(),
             "default_estado": tk.StringVar(),
@@ -128,7 +133,10 @@ class SettingsDialog(tk.Toplevel):
 
         self._add_field(body, 1, "Notion Database ID", self.config_vars["notion_database_id"])
         self._add_field(body, 2, "Carpeta destino", self.config_vars["default_area"])
-        self._add_field(body, 3, "Usuario / nombre", self.config_vars["username"])
+        self._add_field(body, 3, "Nombre", self.config_vars["nombre"])
+        self._add_field(body, 4, "Email principal", self.config_vars["email_principal"])
+        self._add_field(body, 5, "Dominio corporativo", self.config_vars["dominio"])
+        self._add_field(body, 6, "Alias (separados por coma)", self.config_vars["alias"])
 
     def _build_email_tab(self) -> None:
         body = self._create_tab_body(self.tab_email)
@@ -179,11 +187,18 @@ class SettingsDialog(tk.Toplevel):
         ttk.Button(footer, text="Cancelar", command=self.destroy).pack(side="right")
 
     def _load_config(self) -> None:
+        runtime_config = self.config_manager.load()
+        profile = runtime_config.get("user_profile", {})
+        email_settings = runtime_config.get("email_settings", {})
+        email_account = runtime_config.get("email_account", {})
         config = {
             "notion_token": self._current.notion_token,
             "notion_database_id": self._current.notion_database_id,
-            "managed_email": self._current.managed_email,
-            "username": "",
+            "managed_email": str(email_account.get("account_email", "")).strip() or self._current.managed_email,
+            "nombre": str(profile.get("nombre", "")).strip(),
+            "email_principal": str(profile.get("email_principal", "")).strip(),
+            "dominio": str(profile.get("dominio", "")).strip(),
+            "alias": ",".join(profile.get("alias", [])),
             "default_area": self._current.default_area,
             "default_tipo": self._current.default_tipo,
             "default_estado": self._current.default_estado,
@@ -194,8 +209,8 @@ class SettingsDialog(tk.Toplevel):
             "prop_estado": self._current.prop_estado,
             "prop_fecha": self._current.prop_fecha,
             "prop_prioridad": self._current.prop_prioridad,
-            "auto_check_email": True,
-            "email_interval": 60,
+            "auto_check_email": bool(email_settings.get("auto_check", True)),
+            "email_interval": int(email_settings.get("interval", 60)),
             "process_attachments": True,
             "notifications_enabled": True,
             "notifications_toast": True,
@@ -255,6 +270,14 @@ class SettingsDialog(tk.Toplevel):
                 "El Notion token está vacío. Puedes guardar, pero la integración con Notion fallará.",
                 parent=self,
             )
+
+        if not str(self.config_vars["email_principal"].get()).strip():
+            messagebox.showerror(
+                "Validación",
+                "El Email principal es obligatorio para respuestas automáticas y firma.",
+                parent=self,
+            )
+            return False
         return True
 
     def _save_config(self) -> None:
@@ -286,6 +309,26 @@ class SettingsDialog(tk.Toplevel):
                 retry_delay_seconds=self._current.retry_delay_seconds,
             )
             self._on_save(settings)
+            config = self.config_manager.load()
+            config["user_profile"] = {
+                "nombre": str(self.config_vars["nombre"].get()).strip(),
+                "email_principal": str(self.config_vars["email_principal"].get()).strip().lower(),
+                "dominio": str(self.config_vars["dominio"].get()).strip().lower(),
+                "alias": [
+                    alias.strip().lower()
+                    for alias in str(self.config_vars["alias"].get()).split(",")
+                    if alias.strip()
+                ],
+            }
+            config["email_account"] = {
+                "provider": "gmail",
+                "account_email": str(self.config_vars["managed_email"].get()).strip().lower(),
+            }
+            config["email_settings"] = {
+                "auto_check": bool(self.config_vars["auto_check_email"].get()),
+                "interval": max(10, int(self.config_vars["email_interval"].get() or 60)),
+            }
+            self.config_manager.save(config)
             self.destroy()
         except Exception as exc:  # pragma: no cover - defensive UI safeguard
             messagebox.showerror(
@@ -293,4 +336,3 @@ class SettingsDialog(tk.Toplevel):
                 f"No se pudo guardar la configuración: {exc}",
                 parent=self,
             )
-

@@ -25,9 +25,11 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from tkinter.scrolledtext import ScrolledText
 from tkcalendar import DateEntry
 
+from app.config.config_manager import ConfigManager
 from app.config.mail_config import USER_EMAIL
 from app.config.email_runtime_config import load_config, save_config
 from app.core.email.category_manager import CategoryManager
+from app.core.email.email_classifier import is_internal_email, is_user_email
 from app.core.email.gmail_client import GmailClient
 from app.core.email.attachment_cache import AttachmentCache
 from app.core.email.mail_ingestion_service import MailIngestionService
@@ -419,6 +421,7 @@ class EmailManagerWindow(tk.Toplevel):
         self.calendar_repo = CalendarRepository(db_connection)
         self.training_repo = TrainingRepository(db_connection)
         self.user_profile_repo = UserProfileRepository(db_connection)
+        self.config_manager = ConfigManager()
         self.category_manager = CategoryManager(self.email_repo)
         self.mail_ingestion_service = MailIngestionService(gmail_client=gmail_client, db_connection=db_connection)
         self.classifier = self.mail_ingestion_service.classifier
@@ -2117,8 +2120,21 @@ class EmailManagerWindow(tk.Toplevel):
         if not row:
             return
 
-        sender = str(row.get("sender", "")).lower()
-        sender_type = "interno" if "sansebas.es" in sender else "externo"
+        sender = str(row.get("real_sender") or row.get("sender", ""))
+        user_profile = self.config_manager.get_user_profile()
+        if is_user_email(sender, user_profile):
+            self.status_var.set("Correo propio detectado: se omite respuesta automática.")
+            messagebox.showinfo("Respuesta IA", "Este correo es del propio usuario. Se ignora para respuesta automática.")
+            return
+        if is_internal_email(sender, user_profile):
+            self.status_var.set("Correo interno detectado: respuesta automática desactivada.")
+            messagebox.showinfo(
+                "Respuesta IA",
+                "Este correo es interno del dominio corporativo. No se generará respuesta automática.",
+            )
+            return
+
+        sender_type = "interno" if is_internal_email(sender, user_profile) else "externo"
 
         examples = self.training_repo.get_similar_examples(
             category=row["category"],
@@ -3296,6 +3312,10 @@ class EmailManagerWindow(tk.Toplevel):
         return fallback
 
     def _resolve_my_email(self) -> str:
+        profile = self.config_manager.get_user_profile()
+        email_principal = str(profile.get("email_principal", "")).strip()
+        if email_principal:
+            return email_principal
         try:
             managed = str(self.note_service.get_settings().managed_email or "").strip()
             if managed:
@@ -3313,9 +3333,10 @@ class EmailManagerWindow(tk.Toplevel):
             return USER_EMAIL
 
     def _apply_user_signature(self, text: str) -> str:
+        profile_config = self.config_manager.get_user_profile()
         profile = self.user_profile_repo.get_profile()
         replacements = {
-            "[Tu Nombre]": profile.get("nombre", ""),
+            "[Tu Nombre]": str(profile_config.get("nombre", "")).strip() or profile.get("nombre", ""),
             "[Tu Cargo]": profile.get("cargo", ""),
             "[Tu Empresa]": profile.get("empresa", ""),
             "[Tu Teléfono]": profile.get("telefono", ""),
@@ -3324,6 +3345,10 @@ class EmailManagerWindow(tk.Toplevel):
         result = text
         for placeholder, value in replacements.items():
             result = result.replace(placeholder, value or "")
+        name = str(profile_config.get("nombre", "")).strip()
+        email = str(profile_config.get("email_principal", "")).strip()
+        if name and email and email.lower() not in result.lower():
+            return f"{result.rstrip()}\n\n{name}\n{email}"
         return result
 
     @staticmethod

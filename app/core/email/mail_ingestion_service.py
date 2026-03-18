@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.config.config_manager import ConfigManager
 from app.core.email.email_classifier import EmailClassifier
 from app.core.email.forwarded_parser import extract_forwarded_headers, extract_real_sender
 from app.config.mail_config import USER_EMAIL
@@ -28,7 +29,8 @@ class MailIngestionService:
         self.gmail_client = gmail_client
         self.db_connection = db_connection
         self.email_repo = EmailRepository(db_connection)
-        self.classifier = EmailClassifier(email_repo=self.email_repo)
+        self.config_manager = ConfigManager()
+        self.classifier = EmailClassifier(email_repo=self.email_repo, config_manager=self.config_manager)
         self.attachments_root = attachments_root or Path("attachments")
         self.attachments_root.mkdir(parents=True, exist_ok=True)
 
@@ -368,7 +370,9 @@ class MailIngestionService:
         if not self._is_forwarded(subject, body_text):
             return False
         sender_email = self._extract_email(sender)
-        my_email = self._extract_email(USER_EMAIL)
+        user_profile = self.config_manager.get_user_profile()
+        configured_identity = str(user_profile.get("email_principal", "")).strip() or USER_EMAIL
+        my_email = self._extract_email(configured_identity)
         return bool(sender_email and my_email and sender_email == my_email)
 
     @staticmethod

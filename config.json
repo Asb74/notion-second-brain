@@ -1,0 +1,16 @@
+{
+  "user_profile": {
+    "nombre": "",
+    "email_principal": "",
+    "dominio": "",
+    "alias": []
+  },
+  "email_account": {
+    "provider": "gmail",
+    "account_email": ""
+  },
+  "email_settings": {
+    "auto_check": true,
+    "interval": 60
+  }
+}

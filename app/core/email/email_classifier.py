@@ -5,11 +5,37 @@ from __future__ import annotations
 import logging
 import re
 from collections import Counter
+from email.utils import parseaddr
 from pathlib import Path
 
+from app.config.config_manager import ConfigManager
 from app.core.email.ml_email_model import MLEmailModel
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_sender_email(sender: str | None) -> str:
+    return parseaddr(sender or "")[1].strip().lower()
+
+
+def is_user_email(sender: str | None, user_profile: dict[str, str | list[str]]) -> bool:
+    sender_email = _normalize_sender_email(sender)
+    if not sender_email:
+        return False
+    email_principal = str(user_profile.get("email_principal", "")).strip().lower()
+    if sender_email == email_principal:
+        return True
+    aliases = user_profile.get("alias", [])
+    alias_set = {str(alias).strip().lower() for alias in aliases if str(alias).strip()}
+    return sender_email in alias_set
+
+
+def is_internal_email(sender: str | None, user_profile: dict[str, str | list[str]]) -> bool:
+    sender_email = _normalize_sender_email(sender)
+    domain = str(user_profile.get("dominio", "")).strip().lower().lstrip("@")
+    if not sender_email or not domain:
+        return False
+    return sender_email.endswith(f"@{domain}") or sender_email.endswith(domain)
 
 
 class EmailClassifier:
@@ -60,9 +86,16 @@ class EmailClassifier:
     ]
     INFO_PATTERNS = [r"informativo", r"aviso general", r"sin acci[oó]n"]
 
-    def __init__(self, email_repo=None, model_path: str | Path = "app/secrets/email_model.joblib"):
+    def __init__(
+        self,
+        email_repo=None,
+        model_path: str | Path = "app/secrets/email_model.joblib",
+        config_manager: ConfigManager | None = None,
+    ):
         self.email_repo = email_repo
         self.model_path = Path(model_path)
+        self.config_manager = config_manager or ConfigManager()
+        self.user_profile = self.config_manager.get_user_profile()
         self.ml_model = MLEmailModel(model_path=model_path)
         self.examples_count = 0
         self.categories_count = 0
@@ -81,6 +114,7 @@ class EmailClassifier:
         body_text: str | None,
         previous_type: str | None = None,
     ) -> str:
+        self.user_profile = self.config_manager.get_user_profile()
         subject_text = (subject or "").lower()
         sender_text = (sender or "").lower()
         body = (body_text or "")
@@ -101,7 +135,7 @@ class EmailClassifier:
         if ml_prediction:
             return ml_prediction
 
-        if self._is_internal_sender(sender_text):
+        if is_internal_email(sender, self.user_profile):
             return "priority"
         return "other"
 
@@ -331,6 +365,7 @@ class EmailClassifier:
                 score += weight
         return score
 
-    @staticmethod
-    def _is_internal_sender(sender: str) -> bool:
-        return "@sansebas.es" in sender
+    def _is_internal_sender(self, sender: str) -> bool:
+        if is_internal_email(sender, self.user_profile):
+            return True
+        return "@sansebas.es" in (sender or "")
