@@ -131,7 +131,7 @@ ATTACHMENT_SUMMARY_REQUEST = (
     "- usar viñetas (•)\n"
     "- destacar datos, fechas, importes y riesgos relevantes\n"
     "- no inventar información\n"
-    "- si falta contexto, indícalo brevemente\n"
+    "- si falta información, indícalo brevemente\n"
 )
 MAX_REFINEMENTS = 5
 EMAIL_SUMMARY_EXAMPLES_LIMIT = 5
@@ -723,7 +723,7 @@ class EmailManagerWindow(tk.Toplevel):
         ttk.Button(response_actions, text="Reenviar", command=self._forward_email).pack(side="left", padx=(6, 0))
         ttk.Button(response_actions, text="Resumir", command=self._summarize_email).pack(side="left", padx=(6, 0))
         ttk.Button(response_actions, text="Resumir adjuntos", command=self._summarize_attachments).pack(side="left", padx=(6, 0))
-        ttk.Button(response_actions, text="Preparar contexto", command=self._prepare_context_for_selected_email).pack(side="left", padx=(6, 0))
+        ttk.Button(response_actions, text="Preparar base", command=self._prepare_context_for_selected_email).pack(side="left", padx=(6, 0))
 
         attachments_tab = ttk.Frame(self.detail_notebook)
         self.attachments_list = tk.Listbox(attachments_tab, exportselection=False)
@@ -771,16 +771,20 @@ class EmailManagerWindow(tk.Toplevel):
         emails_menu.add_command(label="Descargar", command=self._download_new_emails)
         emails_menu.add_command(label="Reclasificar", command=self._reclassify_current_emails)
         emails_menu.add_command(label="Marcar ignoradas", command=self._mark_selected_as_ignored)
+        emails_menu.add_command(label="Refrescar", command=self.refresh_emails)
         menubar.add_cascade(label="Emails", menu=emails_menu)
-
-        configuracion_menu = tk.Menu(menubar, tearoff=0)
-        configuracion_menu.add_command(label="Configuración Email", command=self._open_email_config_dialog)
-        menubar.add_cascade(label="Configuración", menu=configuracion_menu)
 
         acciones_menu = tk.Menu(menubar, tearoff=0)
         acciones_menu.add_command(label="Crear nota", command=self._create_notes_from_selected_emails)
         acciones_menu.add_command(label="Crear evento", command=self._create_events_from_selected_emails)
+        acciones_menu.add_separator()
+        acciones_menu.add_command(label="Responder", command=self._create_outlook_draft)
+        acciones_menu.add_command(label="Reenviar", command=self._forward_email)
         menubar.add_cascade(label="Acciones", menu=acciones_menu)
+
+        configuracion_menu = tk.Menu(menubar, tearoff=0)
+        configuracion_menu.add_command(label="Configuración Email", command=self._open_email_config_dialog)
+        menubar.add_cascade(label="Configuración", menu=configuracion_menu)
 
         self.config(menu=menubar)
 
@@ -1441,9 +1445,9 @@ class EmailManagerWindow(tk.Toplevel):
                 self.system_log(f"Tareas creadas: {tasks_count}")
                 self.email_repo.update_status(gmail_id, "converted_to_note")
                 if merged_content:
-                    self.system_log("Creando nota desde contexto preparado")
+                    self.system_log("Creando nota desde base preparada")
                 else:
-                    self.system_log("No existe contexto preparado; usando flujo actual")
+                    self.system_log("No existe base preparada; usando flujo actual")
                 if include_summary:
                     self.log("Resumen integrado en la nota creada desde email")
                 created_count += 1
@@ -1508,7 +1512,7 @@ class EmailManagerWindow(tk.Toplevel):
             if not event_body:
                 skipped_count += 1
                 self.system_log(
-                    f"No se pudo crear evento para {gmail_id}: contenido vacío en contexto, editor y email original",
+                    f"No se pudo crear evento para {gmail_id}: contenido vacío en base, editor y email original",
                     level="WARNING",
                 )
                 continue
@@ -1538,9 +1542,9 @@ class EmailManagerWindow(tk.Toplevel):
 
             self.log("Evento creado desde email")
             if merged_content:
-                self.system_log("Creando evento desde contexto preparado")
+                self.system_log("Creando evento desde base preparada")
             else:
-                self.system_log("No existe contexto preparado; usando flujo actual")
+                self.system_log("No existe base preparada; usando flujo actual")
             if include_summary and summary_text:
                 self.log("Resumen rápido integrado en evento")
             created_count += 1
@@ -3152,7 +3156,7 @@ class EmailManagerWindow(tk.Toplevel):
                 input=[
                     {
                         "role": "system",
-                        "content": "Refina textos en español preservando el contexto original. Devuelve solo el texto refinado.",
+                        "content": "Refina textos en español preservando la información original. Devuelve solo el texto refinado.",
                     },
                     {"role": "user", "content": prompt},
                 ],
@@ -3391,7 +3395,7 @@ class EmailManagerWindow(tk.Toplevel):
     def _prepare_context_for_selected_email(self) -> None:
         selection = self.tree.selection()
         if len(selection) != 1:
-            messagebox.showwarning("Atención", "Selecciona un solo correo para preparar contexto.")
+            messagebox.showwarning("Atención", "Selecciona un solo correo para preparar base.")
             return
 
         row = self._rows_by_id.get(str(selection[0]))
@@ -3399,7 +3403,7 @@ class EmailManagerWindow(tk.Toplevel):
             return
         merged_content = self._prepare_context_for_row(row)
         if not merged_content:
-            messagebox.showwarning("Atención", "No se pudo preparar contexto para el correo seleccionado.")
+            messagebox.showwarning("Atención", "No se pudo preparar base para el correo seleccionado.")
             return
         self.response_text.delete("1.0", "end")
         self.response_text.insert("1.0", merged_content)
@@ -3409,20 +3413,20 @@ class EmailManagerWindow(tk.Toplevel):
         if not gmail_id:
             return ""
 
-        self.system_log(f"Preparando contexto para email: {gmail_id}")
+        self.system_log(f"Preparando base para email: {gmail_id}")
         context = self._get_or_create_prepared_context(gmail_id)
 
         email_summary = context.get("email_summary", "").strip()
         if not email_summary:
             email_summary = self._generate_email_summary_for_context(row)
             if email_summary:
-                self.system_log("Resumen de email generado para contexto")
+                self.system_log("Resumen de email generado para base")
 
         attachment_summary = context.get("attachment_summary", "").strip()
         if not attachment_summary:
             attachment_summary = self._generate_attachment_summary_for_context(row)
             if attachment_summary:
-                self.system_log("Resumen de adjuntos generado para contexto")
+                self.system_log("Resumen de adjuntos generado para base")
 
         email_original = self._get_email_original_text(row)
         merged_content = self._build_prepared_context_content(
@@ -3438,7 +3442,7 @@ class EmailManagerWindow(tk.Toplevel):
             "merged_content": merged_content,
             "updated_at": datetime.utcnow().isoformat(),
         }
-        self.system_log("Contexto preparado actualizado")
+        self.system_log("Base preparada actualizada")
         return merged_content
 
     @staticmethod
@@ -3483,11 +3487,11 @@ class EmailManagerWindow(tk.Toplevel):
             return context
 
         should_prepare = messagebox.askyesno(
-            "Preparar contexto",
-            "¿Deseas preparar automáticamente el contexto (resumen email + adjuntos + original) antes de continuar?",
+            "Preparar base",
+            "¿Deseas preparar automáticamente la base (resumen email + adjuntos + original) antes de continuar?",
         )
         if not should_prepare:
-            self.system_log("No existe contexto preparado; usando flujo actual")
+            self.system_log("No existe base preparada; usando flujo actual")
             return None
         self._prepare_context_for_row(row)
         return self._get_prepared_context_for_gmail_id(gmail_id)
@@ -3509,7 +3513,7 @@ class EmailManagerWindow(tk.Toplevel):
             response = client.responses.create(model="gpt-4.1-mini", input=prompt)
             return str(response.output_text or "").strip()
         except Exception as exc:  # noqa: BLE001
-            self.log(f"No se pudo generar resumen de email para contexto: {exc}", level="WARNING")
+            self.log(f"No se pudo generar resumen de email para base: {exc}", level="WARNING")
             return ""
 
     def _generate_attachment_summary_for_context(self, row: sqlite3.Row | dict[str, str]) -> str:
@@ -3564,4 +3568,4 @@ class EmailManagerWindow(tk.Toplevel):
             email_original=email_original,
         )
         context["updated_at"] = datetime.utcnow().isoformat()
-        self.system_log("Contexto preparado actualizado")
+        self.system_log("Base preparada actualizada")

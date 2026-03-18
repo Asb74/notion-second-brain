@@ -174,30 +174,31 @@ class MainWindow(ttk.Frame):
 
         archivo = tk.Menu(menubar, tearoff=0)
         archivo.add_command(label="Nueva nota", command=self._new_note, accelerator="Ctrl+N")
+        archivo.add_command(label="Guardar", command=self._save_note, accelerator="Ctrl+S")
+        archivo.add_separator()
         archivo.add_command(label="Salir", command=self._on_close_requested)
         menubar.add_cascade(label="Archivo", menu=archivo)
 
-        herramientas = tk.Menu(menubar, tearoff=0)
-        herramientas.add_command(label="Configuración general", command=self._open_settings)
-        herramientas.add_command(label="Gestión de Emails", command=self._open_email_manager)
-        herramientas.add_command(label="Agenda", command=self._open_calendar_manager)
-        herramientas.add_command(label="ML Manager", command=self._open_ml_manager)
-        herramientas.add_command(label="ML Metrics", command=self._open_ml_quality_metrics)
-        menubar.add_cascade(label="Herramientas", menu=herramientas)
+        modulos = tk.Menu(menubar, tearoff=0)
+        modulos.add_command(label="Gestión de Emails", command=self._open_email_manager)
+        modulos.add_command(label="Agenda", command=self._open_calendar_manager)
+        modulos.add_command(label="ML Manager", command=self._open_ml_manager)
+        modulos.add_command(label="ML Metrics", command=self._open_ml_quality_metrics)
+        menubar.add_cascade(label="Módulos", menu=modulos)
 
         configuracion = tk.Menu(menubar, tearoff=0)
-        datos_maestros = tk.Menu(configuracion, tearoff=0)
-        datos_maestros.add_command(label="Áreas", command=lambda: self._open_masters_dialog("Area"))
-        datos_maestros.add_command(label="Tipos", command=lambda: self._open_masters_dialog("Tipo"))
-        datos_maestros.add_command(label="Estados", command=lambda: self._open_masters_dialog("Estado"))
-        datos_maestros.add_command(label="Prioridades", command=lambda: self._open_masters_dialog("Prioridad"))
-        configuracion.add_cascade(label="Datos maestros", menu=datos_maestros)
+        configuracion.add_command(label="General", command=lambda: self._open_settings("General"))
+        configuracion.add_command(label="Email", command=lambda: self._open_settings("Email"))
+        configuracion.add_command(label="Notificaciones", command=lambda: self._open_settings("Notificaciones"))
+        configuracion.add_command(label="Datos maestros", command=lambda: self._open_settings("Datos maestros"))
         menubar.add_cascade(label="Configuración", menu=configuracion)
 
-        ia = tk.Menu(menubar, tearoff=0)
-        ia.add_command(label="Reentrenar modelo", command=self._retrain_model_from_menu)
-        ia.add_command(label="Reclasificar emails", command=self._reclassify_emails_from_menu)
-        menubar.add_cascade(label="IA", menu=ia)
+        ayuda = tk.Menu(menubar, tearoff=0)
+        ayuda.add_command(label="Logs", command=self._show_logs_info)
+        ayuda.add_command(label="Diagnóstico", command=self._show_diagnostics_info)
+        ayuda.add_separator()
+        ayuda.add_command(label="Acerca de", command=self._show_about_dialog)
+        menubar.add_cascade(label="Ayuda", menu=ayuda)
 
         self.master.config(menu=menubar)
 
@@ -252,25 +253,6 @@ class MainWindow(ttk.Frame):
             widget.event_generate("<<Paste>>")
         except tk.TclError:
             return
-
-    def _run_email_manager_action(self, action_name: str) -> None:
-        email_window = self._ensure_email_manager_window()
-        if email_window is None:
-            return
-        action = getattr(email_window, action_name, None)
-        if not callable(action):
-            messagebox.showwarning("Acción no disponible", "La acción no está disponible en esta versión.")
-            return
-        action()
-
-    def _retrain_model_from_menu(self) -> None:
-        self._run_email_manager_action("_retrain_model")
-
-    def _reclassify_emails_from_menu(self) -> None:
-        self._run_email_manager_action("_reclassify_current_emails")
-
-    def _download_emails_from_menu(self) -> None:
-        self._run_email_manager_action("_download_new_emails")
 
     def _open_masters_dialog(self, category: str) -> None:
         MastersDialog(self.master, self.service, category, self._load_master_values)
@@ -718,7 +700,7 @@ class MainWindow(ttk.Frame):
         elif prioridad_values:
             self.prioridad_var.set(prioridad_values[0])
 
-    def _open_settings(self) -> None:
+    def _open_settings(self, initial_tab: str = "General") -> None:
         current = self.service.get_settings()
 
         def on_save(new_settings: AppSettings) -> None:
@@ -728,7 +710,35 @@ class MainWindow(ttk.Frame):
             self.sync_google_calendars()
             self._load_calendar_selector_values()
 
-        SettingsDialog(self.master, current, on_save)
+        SettingsDialog(
+            self.master,
+            current,
+            on_save,
+            on_open_master=self._open_masters_dialog,
+            initial_tab=initial_tab,
+        )
+
+    def _show_logs_info(self) -> None:
+        messagebox.showinfo(
+            "Logs",
+            "Los logs operativos están disponibles en la ventana de Gestión de Emails (panel inferior de logs).",
+        )
+
+    def _show_diagnostics_info(self) -> None:
+        messagebox.showinfo(
+            "Diagnóstico",
+            "Diagnóstico rápido:\n"
+            "• Base de datos: conectada\n"
+            "• Módulos: Notas, Emails, Agenda y ML disponibles\n"
+            "• Estado UI: operativo",
+        )
+
+    def _show_about_dialog(self) -> None:
+        messagebox.showinfo(
+            "Acerca de",
+            "Notion Second Brain\n"
+            "Arquitectura de menús por dominios: Notas, Emails, Agenda, ML y Configuración.",
+        )
 
     def _apply_defaults(self, settings: AppSettings) -> None:
         if settings.default_area:

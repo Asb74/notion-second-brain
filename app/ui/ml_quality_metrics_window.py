@@ -43,9 +43,43 @@ class MLQualityMetricsWindow(tk.Toplevel):
         self.dataset_status_var = tk.StringVar(value="")
 
         self._build_layout()
+        self._build_menu_bar()
         self._bind_events()
         self.refresh_all()
         logger.info("ML Quality Metrics abierto")
+
+    def _build_menu_bar(self) -> None:
+        menubar = tk.Menu(self)
+
+        dataset_menu = tk.Menu(menubar, tearoff=0)
+        dataset_menu.add_command(label="Actualizar aprendizaje", command=self.refresh_all)
+        dataset_menu.add_command(label="Reentrenar clasificador", command=self._retrain_dataset)
+        dataset_menu.add_command(label="Limpiar duplicados", command=self._show_cleanup_hint)
+        menubar.add_cascade(label="Dataset", menu=dataset_menu)
+
+        vista_menu = tk.Menu(menubar, tearoff=0)
+        vista_menu.add_command(label="Ver ejemplos", command=self._open_in_ml_manager)
+        vista_menu.add_command(label="Ver métricas", command=self.refresh_dataset_metrics)
+        vista_menu.add_command(label="Ver estado", command=self._show_dataset_role_state)
+        menubar.add_cascade(label="Vista", menu=vista_menu)
+
+        self.config(menu=menubar)
+
+    def _show_cleanup_hint(self) -> None:
+        messagebox.showinfo("ML Metrics", "La limpieza de duplicados se gestiona desde ML Manager.")
+
+    def _show_dataset_role_state(self) -> None:
+        dataset = self.dataset_var.get().strip()
+        if not dataset:
+            messagebox.showinfo("ML Metrics", "Selecciona un dataset para ver su estado.")
+            return
+        if dataset == "email_classification":
+            message = "email_classification: entrenamiento real del clasificador."
+        elif dataset in {"email_summary", "email_response"}:
+            message = f"{dataset}: consolidación de aprendizaje del dominio email."
+        else:
+            message = f"{dataset}: dataset auxiliar de aprendizaje."
+        messagebox.showinfo("ML Metrics", message)
 
     def _build_layout(self) -> None:
         wrapper = ttk.Frame(self, padding=10)
@@ -191,10 +225,17 @@ class MLQualityMetricsWindow(tk.Toplevel):
                 f"Último error: {state['last_error'] or '-'}",
             ]
 
+        dataset_role = (
+            "Entrenamiento real" if dataset == "email_classification"
+            else "Consolidación de aprendizaje" if dataset in {"email_summary", "email_response"}
+            else "Soporte"
+        )
+
         self.main_metrics_var.set(
             "\n".join(
                 [
                     f"Dataset: {dataset}",
+                    f"Rol: {dataset_role}",
                     f"Total ejemplos: {summary['total']}",
                     f"Labels distintas: {summary['distinct_labels']}",
                     f"Última actualización: {summary['last_updated'] or '-'}",
@@ -268,7 +309,7 @@ class MLQualityMetricsWindow(tk.Toplevel):
         selected_label = label or None
 
         if self.open_ml_manager_callback is None:
-            messagebox.showinfo("ML Quality Metrics", "No hay integración disponible con ML Manager.")
+            messagebox.showinfo("ML Quality Metrics", "ML Manager no está configurado en esta sesión.")
             return
 
         logger.info(
@@ -283,7 +324,7 @@ class MLQualityMetricsWindow(tk.Toplevel):
         if not dataset:
             return
         if self.retrain_dataset_callback is None:
-            messagebox.showinfo("ML Quality Metrics", "No hay integración de reentrenamiento disponible.")
+            messagebox.showinfo("ML Quality Metrics", "La acción de reentrenamiento no está configurada en esta sesión.")
             return
         result = self.retrain_dataset_callback(dataset)
         messagebox.showinfo("ML Quality Metrics", result)
