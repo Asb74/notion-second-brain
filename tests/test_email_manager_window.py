@@ -44,6 +44,7 @@ from app.ui.email_manager_window import (
     copiar_tabla,
     detect_kv_format,
     export_to_csv,
+    format_estado_badge,
     is_probably_table,
     is_real_html,
     normalize_to_table,
@@ -790,6 +791,12 @@ def test_parse_order_json_raises_for_empty_payload() -> None:
         assert "vacía" in str(exc)
     else:
         raise AssertionError("Expected ValueError for empty payload")
+
+
+def test_format_estado_badge_uses_expected_colors() -> None:
+    assert format_estado_badge("Nuevo") == "🟢 Nuevo"
+    assert format_estado_badge("Rectificado") == "🟡 Rectificado"
+    assert format_estado_badge("Cancelado") == "🔴 Cancelado"
 
 
 def test_parse_markdown_table_handles_separator_and_csv() -> None:
