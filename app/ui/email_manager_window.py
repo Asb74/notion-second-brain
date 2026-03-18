@@ -143,13 +143,16 @@ ATTACHMENT_SUMMARY_REQUEST = (
 )
 ATTACHMENT_ORDER_REQUEST = (
     "Analiza el contenido consolidado de adjuntos y extrae pedidos en formato JSON estructurado.\n"
-    "Devuelve SOLO JSON válido sin texto adicional.\n"
-    "Estructura:\n"
-    "{\"Pedidos\":[{\"PedidoID\":\"\",\"Cliente\":\"\",\"Comercial\":\"\",\"Lineas\":[{...}]}]}\n"
+    "La respuesta DEBE ser SOLO JSON válido.\n"
+    "Sin texto explicativo, sin comentarios y sin markdown.\n"
+    "Devuelve una lista JSON de líneas.\n"
+    "Estructura esperada por elemento:\n"
+    "{\"PedidoID\":\"\",\"Linea\":1,\"Cliente\":\"\",\"Mercancia\":\"\",\"Palets\":\"\",\"Estado\":\"\",...}\n"
     "Cada línea debe incluir exactamente: Linea, Palets, NombrePalet, TCajas, CP, NombreCaja, Mercancia, "
     "Confeccion, Calibre, Categoria, Marca, PO, Lote, Observaciones, Cliente, Comercial, FCarga, Plataforma, Pais, PCarga, Estado.\n"
     "Estado permitido: Nuevo, Modificado, Cancelado.\n"
-    "No inventes datos: si no existe un valor, usa cadena vacía."
+    "No inventes datos: si no existe un valor, usa cadena vacía.\n"
+    "Si no hay datos de pedidos, devuelve []."
 )
 AUDIO_MEETING_SUMMARY_REQUEST = (
     "Resume la siguiente transcripción de una reunión.\n\n"
@@ -165,7 +168,7 @@ AUDIO_MEETING_SUMMARY_REQUEST = (
 )
 MAX_REFINEMENTS = 5
 EMAIL_SUMMARY_EXAMPLES_LIMIT = 5
-ATTACHMENT_SUMMARY_FORMAT_OPTIONS = ("table", "paragraph", "bullets", "numbered", "pedido")
+ATTACHMENT_SUMMARY_FORMAT_OPTIONS = ("table", "paragraph", "bullets", "numbered", "+Pedido", "pedido")
 
 _SYSTEM_LOG_WIDGET: ScrolledText | None = None
 _WIN_TOASTER = None
@@ -2601,7 +2604,7 @@ class EmailManagerWindow(tk.Toplevel):
             return
 
         output_format = self._selected_attachment_summary_format()
-        is_order_mode = output_format == OUTPUT_FORMAT_PEDIDO or self._looks_like_order_document(extracted_text)
+        is_order_mode = output_format == OUTPUT_FORMAT_PEDIDO
         self.log("Generating attachment summary")
         primary_content_type = "audio_meeting" if "audio_meeting" in content_types else "attachment"
         summary = self._summarize_attachments_content(
@@ -2616,7 +2619,14 @@ class EmailManagerWindow(tk.Toplevel):
 
         if is_order_mode:
             filename = self._resolve_primary_attachment_filename(prepared_attachments)
-            persisted_rows, preview_table = self._persist_order_summary(summary, filename)
+            try:
+                persisted_rows, preview_table = self._persist_order_summary(summary, filename)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Error procesando pedido desde adjuntos")
+                self.log(f"No se pudo persistir el pedido: {exc}", level="WARNING")
+                messagebox.showwarning("Pedido", "No se pudo interpretar el pedido")
+                persisted_rows = 0
+                preview_table = ""
             if persisted_rows <= 0:
                 messagebox.showwarning("Pedido", "No se detectaron líneas de pedido válidas para guardar.")
                 return
@@ -2742,9 +2752,10 @@ class EmailManagerWindow(tk.Toplevel):
     def _selected_attachment_summary_format(self) -> str:
         format_var = getattr(self, "attachment_summary_format_var", None)
         selected = str(format_var.get() if format_var is not None else "bullets").strip().lower()
-        if selected not in ATTACHMENT_SUMMARY_FORMAT_OPTIONS:
+        normalized_options = {value.lower() for value in ATTACHMENT_SUMMARY_FORMAT_OPTIONS}
+        if selected not in normalized_options:
             return OUTPUT_FORMAT_DEFAULT
-        return OUTPUT_FORMAT_PEDIDO if selected == "pedido" else selected
+        return OUTPUT_FORMAT_PEDIDO if selected in {"pedido", "+pedido"} else selected
 
     @staticmethod
     def _looks_like_order_document(extracted_text: str) -> bool:
@@ -2767,15 +2778,36 @@ class EmailManagerWindow(tk.Toplevel):
 
     @staticmethod
     def _parse_order_json(ai_json: str) -> dict[str, object] | list[object]:
-        normalized = (ai_json or "").strip()
-        if normalized.startswith("```"):
-            normalized = re.sub(r"^```(?:json)?\\s*", "", normalized, flags=re.IGNORECASE)
-            normalized = re.sub(r"\\s*```$", "", normalized)
-        return json.loads(normalized)
+        normalized = str(ai_json or "")
+        normalized = normalized.replace("```json", "").replace("```JSON", "").replace("```", "")
+        normalized = re.sub(r"^\s*json\s+", "", normalized, flags=re.IGNORECASE)
+        normalized = normalized.strip()
+        if not normalized:
+            raise ValueError("Respuesta IA vacía para pedido")
+
+        decoder = json.JSONDecoder()
+        parse_error: Exception | None = None
+        candidate_segments: list[str] = [normalized]
+        for marker in ("{", "["):
+            idx = normalized.find(marker)
+            if idx != -1:
+                candidate_segments.append(normalized[idx:])
+
+        for segment in candidate_segments:
+            segment = segment.strip()
+            if not segment:
+                continue
+            try:
+                parsed, _index = decoder.raw_decode(segment)
+                return parsed
+            except json.JSONDecodeError as exc:
+                parse_error = exc
+
+        raise ValueError(f"No se pudo interpretar el JSON de pedido: {parse_error}")
 
     @staticmethod
     def _build_order_preview_table(rows: list[sqlite3.Row]) -> str:
-        headers = ["PedidoID", "Linea", "Cliente", "Mercancia", "Palets", "Estado", "Fecha carga"]
+        headers = ["PedidoID", "Linea", "Cliente", "Mercancia", "Palets", "Estado"]
         markdown_lines = [
             "| " + " | ".join(headers) + " |",
             "| " + " | ".join(["---"] * len(headers)) + " |",
@@ -2788,7 +2820,6 @@ class EmailManagerWindow(tk.Toplevel):
                 str(row["mercancia"] or ""),
                 str(row["palets"] or ""),
                 str(row["estado"] or ""),
-                str(row["fecha_carga"] or ""),
             ]
             markdown_lines.append("| " + " | ".join(values) + " |")
         return "\\n".join(markdown_lines)

@@ -110,3 +110,29 @@ def test_retrain_propagates_fit_exception_details(monkeypatch) -> None:
 
     assert trained is False
     assert classifier.last_training_warning == "Entrenamiento fallido durante fit(): ValueError: inconsistent labels"
+
+
+def test_incremental_training_uses_fixed_classes_in_partial_fit() -> None:
+    classifier = EmailClassifier(email_repo=None)
+    classifier.ml_model.is_trained = True
+    classifier.ml_model.last_warning = None
+
+    class _Vectorizer:
+        def transform(self, _texts):
+            return [[1.0]]
+
+    class _InnerClassifier:
+        def __init__(self):
+            self.received_classes = None
+
+        def partial_fit(self, _features, _labels, classes=None):
+            self.received_classes = classes
+
+    classifier.ml_model.vectorizer = _Vectorizer()
+    classifier.ml_model.classifier = _InnerClassifier()
+    classifier.ml_model.save = lambda: None
+
+    trained = classifier.incremental_train_on_examples(["subject: demo"], ["order"])
+
+    assert trained is True
+    assert classifier.ml_model.classifier.received_classes == classifier.all_classes
