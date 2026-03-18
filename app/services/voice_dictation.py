@@ -74,6 +74,14 @@ class VoiceDictationService:
         self._lock = threading.Lock()
         self._recognition_thread: threading.Thread | None = None
         self._dictation_history: dict[int, list[str]] = {}
+        self.active = True
+        self._after_ids: set[str] = set()
+
+        if hasattr(self.root, "bind"):
+            try:
+                self.root.bind("<Destroy>", self._handle_root_destroy, add="+")
+            except Exception:  # noqa: BLE001
+                logger.debug("No se pudo enlazar evento Destroy para servicio de dictado")
 
     def toggle_recording(self) -> None:
         """Alterna estado del botón micrófono (iniciar/detener)."""
@@ -106,17 +114,24 @@ class VoiceDictationService:
 
     def start_recording(self) -> None:
         """Inicia captura de audio continua desde micrófono."""
+        if not self.active:
+            raise VoiceDictationError("El servicio de dictado ya no está activo.")
+
         np, sd = self._validate_runtime_requirements()
         _ = np
 
         from app.ui.dictation_widgets import _last_focused_widget
 
         target_widget = _last_focused_widget
-        if target_widget is None or not self._is_text_widget(target_widget):
+        if (
+            target_widget is None
+            or not self._is_text_widget(target_widget)
+            or not self._widget_exists(target_widget)
+        ):
             message = "No se detectó un campo de texto activo para insertar el dictado."
             self._set_status(message)
             if self._error_callback:
-                self._error_callback(message)
+                self._safe_callback(self._error_callback, message)
             raise VoiceDictationError(message)
 
         with self._lock:
@@ -193,27 +208,27 @@ class VoiceDictationService:
 
             if not chunks:
                 if recording:
-                    self.root.after(0, lambda: self._set_status("🎙 Escuchando..."))
+                    self._schedule_on_ui(lambda: self._set_status("🎙 Escuchando..."))
                     continue
                 break
 
             try:
-                self.root.after(0, lambda: self._set_status("⏳ Transcribiendo..."))
+                self._schedule_on_ui(lambda: self._set_status("⏳ Transcribiendo..."))
                 text = self._transcribe_chunks(chunks)
                 if text:
                     logger.info("Fragmento transcrito: %s", text)
-                    self.root.after(0, lambda value=text: self._apply_transcribed_fragment(value))
+                    self._schedule_on_ui(lambda value=text: self._apply_transcribed_fragment(value))
                 if recording:
-                    self.root.after(0, lambda: self._set_status("🎙 Escuchando..."))
+                    self._schedule_on_ui(lambda: self._set_status("🎙 Escuchando..."))
             except Exception:  # noqa: BLE001
                 logger.exception("Error de reconocimiento; se continuará escuchando")
                 if recording:
-                    self.root.after(0, lambda: self._set_status("🎙 Escuchando..."))
+                    self._schedule_on_ui(lambda: self._set_status("🎙 Escuchando..."))
 
             if not recording:
                 break
 
-        self.root.after(0, lambda: self._set_status("Listo"))
+        self._schedule_on_ui(lambda: self._set_status("Listo"))
 
     def _transcribe_chunks(self, chunks: list[Any]) -> str:
         np = importlib.import_module("numpy")
@@ -350,7 +365,7 @@ class VoiceDictationService:
 
     def _insert_text(self, text: str) -> None:
         widget = self._target_widget
-        if widget is None or not self._is_text_widget(widget):
+        if widget is None or not self._is_text_widget(widget) or not self._widget_exists(widget):
             return
 
         if not text:
@@ -382,7 +397,7 @@ class VoiceDictationService:
 
     def _delete_last_fragment(self) -> None:
         widget = self._target_widget
-        if not isinstance(widget, (tk.Text, ScrolledText)):
+        if not isinstance(widget, (tk.Text, ScrolledText)) or not self._widget_exists(widget):
             logger.debug("Comando borrar último fragmento omitido: widget no soportado")
             return
 
@@ -429,10 +444,74 @@ class VoiceDictationService:
     def _is_text_widget(widget: tk.Widget | object) -> bool:
         return isinstance(widget, (tk.Entry, ttk.Entry, tk.Text, ScrolledText)) or hasattr(widget, "insert")
 
+    @staticmethod
+    def _widget_exists(widget: tk.Widget | object | None) -> bool:
+        if widget is None or not hasattr(widget, "winfo_exists"):
+            return False
+        try:
+            return bool(widget.winfo_exists())
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _schedule_on_ui(self, callback: Callable[[], None]) -> str | None:
+        if not self.active or not self._widget_exists(self.root):
+            return None
+
+        callback_id: str | None = None
+
+        def _runner() -> None:
+            if callback_id:
+                self._after_ids.discard(callback_id)
+            if not self.active:
+                return
+            try:
+                callback()
+            except Exception:  # noqa: BLE001
+                logger.exception("Error ejecutando callback en UI de dictado")
+
+        try:
+            callback_id = self.root.after(0, _runner)
+        except Exception:  # noqa: BLE001
+            return None
+
+        self._after_ids.add(callback_id)
+        return callback_id
+
+    def _cancel_pending_callbacks(self) -> None:
+        if not self._widget_exists(self.root):
+            self._after_ids.clear()
+            return
+
+        for callback_id in tuple(self._after_ids):
+            try:
+                self.root.after_cancel(callback_id)
+            except Exception:  # noqa: BLE001
+                pass
+            finally:
+                self._after_ids.discard(callback_id)
+
+    def _safe_callback(self, callback: Callable[..., None] | None, *args: Any) -> None:
+        if callback is None:
+            return
+        try:
+            callback(*args)
+        except Exception:  # noqa: BLE001
+            logger.exception("Callback de dictado falló y fue ignorado")
+
+    def _handle_root_destroy(self, _event: tk.Event | None = None) -> None:
+        self.destroy()
+
+    def destroy(self) -> None:
+        self.active = False
+        try:
+            self.stop_recording()
+        except Exception:  # noqa: BLE001
+            pass
+        self._cancel_pending_callbacks()
+        self._target_widget = None
+
     def _set_status(self, text: str) -> None:
-        if self._status_callback:
-            self._status_callback(text)
+        self._safe_callback(self._status_callback, text)
 
     def _set_button_recording_state(self, active: bool) -> None:
-        if self._button_state_callback:
-            self._button_state_callback(active)
+        self._safe_callback(self._button_state_callback, active)
