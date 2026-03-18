@@ -38,12 +38,27 @@ OUTPUT_FORMAT_PROMPTS: dict[str, str] = {
     OUTPUT_FORMAT_NUMBERED: "Devuelve el resultado como lista numerada.",
     OUTPUT_FORMAT_SENTENCES: "Devuelve el resultado como frases cortas independientes. Una idea por línea.",
 }
+EMAIL_RESPONSE_PARAGRAPH_RULE = (
+    "IMPORTANTE: Devuelve el resultado en texto tipo email (párrafos). "
+    "Está PROHIBIDO usar tablas o formatos estructurados tipo tabla."
+)
 
 REFINEMENT_MODES = {
     REFINEMENT_MODE_RESPONSE,
     REFINEMENT_MODE_EMAIL_SUMMARY,
     REFINEMENT_MODE_ATTACHMENT_SUMMARY,
 }
+
+
+def detect_format(text: str) -> str:
+    normalized_text = (text or "").strip()
+    if "|" in normalized_text and "\n" in normalized_text:
+        return OUTPUT_FORMAT_TABLE
+    if normalized_text.startswith("-") or "\n-" in normalized_text:
+        return OUTPUT_FORMAT_BULLETS
+    if normalized_text.startswith("1.") or "\n1." in normalized_text:
+        return OUTPUT_FORMAT_NUMBERED
+    return OUTPUT_FORMAT_PARAGRAPH
 
 
 def get_quick_refinements(refinement_mode: str) -> list[str]:
@@ -84,6 +99,9 @@ def build_refinement_prompt(
     output_format: str = OUTPUT_FORMAT_DEFAULT,
 ) -> str:
     normalized_mode = (refinement_mode or "").strip()
+    normalized_output_format = (output_format or "").strip().lower()
+    if normalized_mode == REFINEMENT_MODE_RESPONSE:
+        normalized_output_format = OUTPUT_FORMAT_PARAGRAPH
     context = (original_context or "").strip() or "No disponible"
     current_text = (base_text or "").strip()
     instruction_lines = [f"- {line.strip()}" for line in refinements if line and line.strip()]
@@ -125,7 +143,9 @@ def build_refinement_prompt(
         mode_prompts[REFINEMENT_MODE_EMAIL_SUMMARY],
     )
 
-    format_instruction = OUTPUT_FORMAT_PROMPTS.get(output_format, OUTPUT_FORMAT_PROMPTS[OUTPUT_FORMAT_DEFAULT])
+    format_instruction = OUTPUT_FORMAT_PROMPTS.get(normalized_output_format, OUTPUT_FORMAT_PROMPTS[OUTPUT_FORMAT_DEFAULT])
+    if normalized_mode == REFINEMENT_MODE_RESPONSE:
+        format_instruction = f"{format_instruction}\n{EMAIL_RESPONSE_PARAGRAPH_RULE}"
 
     return (
         f"{base_instruction}\n\n"
@@ -176,6 +196,7 @@ class RefinamientoPanel(ttk.LabelFrame):
 
         self.refinamientos: list[str] = []
         self.output_format = OUTPUT_FORMAT_DEFAULT
+        self.requested_output_format = OUTPUT_FORMAT_DEFAULT
         self.historial: list[dict[str, object]] = []
         self.refinements_used = 0
         self._rendering_chips = False
@@ -215,19 +236,21 @@ class RefinamientoPanel(ttk.LabelFrame):
                 command=lambda value=label: self.append_refinement(value),
             ).pack(side="left", padx=(0, 4), pady=(0, 4))
 
+        format_frame = ttk.Frame(self)
+        format_frame.grid(row=3, column=0, sticky="ew", padx=8, pady=(0, 4))
+        self.current_format_var = tk.StringVar()
+        self.requested_format_var = tk.StringVar()
+        ttk.Label(format_frame, textvariable=self.current_format_var).pack(side="left", padx=(0, 8))
+        ttk.Label(format_frame, textvariable=self.requested_format_var).pack(side="left", padx=(0, 8))
         if self._supports_output_format():
-            format_frame = ttk.Frame(self)
-            format_frame.grid(row=3, column=0, sticky="ew", padx=8, pady=(0, 4))
-            self.current_format_var = tk.StringVar()
-            ttk.Label(format_frame, textvariable=self.current_format_var).pack(side="left", padx=(0, 8))
             for output_format, label in OUTPUT_FORMAT_TAGS.items():
                 ttk.Button(
                     format_frame,
                     text=f"➕ {label}",
                     command=lambda value=output_format: self.set_output_format(value),
                 ).pack(side="left", padx=(0, 4), pady=(0, 4))
-            self._update_current_format_indicator()
-            self.set_output_format(OUTPUT_FORMAT_DEFAULT)
+        self._update_current_format_indicator()
+        self.set_output_format(OUTPUT_FORMAT_DEFAULT)
 
         self.dictation_controls = ttk.Frame(self)
         self.dictation_controls.grid(row=4, column=0, sticky="ew", padx=8, pady=(0, 4))
@@ -283,8 +306,23 @@ class RefinamientoPanel(ttk.LabelFrame):
     def _update_current_format_indicator(self) -> None:
         if not hasattr(self, "current_format_var"):
             return
-        label = OUTPUT_FORMAT_TAGS.get(self.output_format, OUTPUT_FORMAT_TAGS[OUTPUT_FORMAT_DEFAULT]).replace("formato ", "").title()
-        self.current_format_var.set(f"Formato actual: [{label}]")
+        self.update_ui_format(self.output_format)
+
+    def update_ui_format(self, output_format: str) -> None:
+        if not hasattr(self, "current_format_var"):
+            return
+        normalized_format = (output_format or "").strip().lower()
+        if normalized_format not in OUTPUT_FORMAT_TAGS:
+            normalized_format = OUTPUT_FORMAT_DEFAULT
+        self.output_format = normalized_format
+        generated_label = OUTPUT_FORMAT_TAGS.get(self.output_format, OUTPUT_FORMAT_TAGS[OUTPUT_FORMAT_DEFAULT]).replace("formato ", "").title()
+        self.current_format_var.set(f"Formato generado: [{generated_label}]")
+        if hasattr(self, "requested_format_var"):
+            requested_label = OUTPUT_FORMAT_TAGS.get(
+                self.requested_output_format,
+                OUTPUT_FORMAT_TAGS[OUTPUT_FORMAT_DEFAULT],
+            ).replace("formato ", "").title()
+            self.requested_format_var.set(f"Formato solicitado: [{requested_label}]")
 
     def _remove_existing_format_tags(self) -> None:
         format_tags = set(OUTPUT_FORMAT_TAGS.values())
@@ -294,12 +332,20 @@ class RefinamientoPanel(ttk.LabelFrame):
         normalized_format = (output_format or "").strip().lower()
         if normalized_format not in OUTPUT_FORMAT_TAGS:
             normalized_format = OUTPUT_FORMAT_DEFAULT
+        self.requested_output_format = normalized_format
         self.output_format = normalized_format
         self._remove_existing_format_tags()
         self.refinamientos.append(OUTPUT_FORMAT_TAGS[self.output_format])
         self._update_current_format_indicator()
         self.actualizar_input()
         self.render_chips()
+
+    def sync_output_format_with_content(self, output_text: str) -> str:
+        if self.refinement_mode == REFINEMENT_MODE_RESPONSE:
+            self.requested_output_format = OUTPUT_FORMAT_PARAGRAPH
+        detected_format = detect_format(output_text)
+        self.update_ui_format(detected_format)
+        return detected_format
 
     def add_refinement_lines(self, raw_value: str) -> bool:
         changed = False
@@ -433,6 +479,7 @@ class RefinamientoPanel(ttk.LabelFrame):
         return True
 
     def record_version(self, resultado: str) -> None:
+        self.sync_output_format_with_content(resultado)
         self.refinements_used += 1
         self.historial.append(
             {
@@ -446,6 +493,7 @@ class RefinamientoPanel(ttk.LabelFrame):
         self.refresh_history()
 
     def seed_history(self, initial_result: str) -> None:
+        self.sync_output_format_with_content(initial_result)
         self.historial = [
             {
                 "version": 1,
@@ -473,7 +521,7 @@ class RefinamientoPanel(ttk.LabelFrame):
         selected_item = self.historial[restored_index]
         resultado = str(selected_item.get("resultado") or "")
         refinamientos = selected_item.get("refinamientos") or []
-        self.output_format = str(selected_item.get("output_format") or self.output_format).strip() or OUTPUT_FORMAT_DEFAULT
+        self.sync_output_format_with_content(resultado)
         self.on_restore_version(resultado)
         self.refinamientos.clear()
         self.refinamientos.extend(str(value) for value in refinamientos)

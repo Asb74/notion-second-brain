@@ -50,6 +50,7 @@ from app.ui.app_icons import apply_app_icon
 from app.ui.excel_filter import ExcelTreeFilter
 from app.ui.dictation_widgets import attach_dictation
 from app.ui.refinement_panel import (
+    EMAIL_RESPONSE_PARAGRAPH_RULE,
     OUTPUT_FORMAT_DEFAULT,
     OUTPUT_FORMAT_PROMPTS,
     REFINEMENT_MODE_ATTACHMENT_SUMMARY,
@@ -2180,7 +2181,11 @@ class EmailManagerWindow(tk.Toplevel):
                 input=[
                     {
                         "role": "system",
-                        "content": "Redacta respuestas de email profesionales en español. Devuelve solo el texto de respuesta.",
+                        "content": (
+                            "Redacta respuestas de email profesionales en español. "
+                            "Devuelve solo el texto de respuesta.\n"
+                            f"{EMAIL_RESPONSE_PARAGRAPH_RULE}"
+                        ),
                     },
                     {"role": "user", "content": prompt},
                 ],
@@ -2247,6 +2252,8 @@ class EmailManagerWindow(tk.Toplevel):
                 f"Asunto: {row.get('subject', '').strip()}",
                 "Correo:",
                 f"{row.get('body_text', '').strip()}",
+                "",
+                EMAIL_RESPONSE_PARAGRAPH_RULE,
                 "",
                 "--------------------------------------",
             ]
@@ -2761,6 +2768,7 @@ class EmailManagerWindow(tk.Toplevel):
         )
         panel.grid(row=2, column=0, sticky="nsew", padx=12, pady=(0, 8))
         panel.seed_history(original_output)
+        panel.sync_output_format_with_content(original_output)
         refinement_instructions_used: list[str] = []
 
         def get_current_output() -> str:
@@ -2773,6 +2781,7 @@ class EmailManagerWindow(tk.Toplevel):
             nonlocal current_output, editor
             current_output = (value or "").strip()
             editor = self._render_output_widget(output_frame, current_output)
+            panel.sync_output_format_with_content(current_output)
 
         panel.on_restore_version = set_current_output
 
@@ -2829,6 +2838,7 @@ class EmailManagerWindow(tk.Toplevel):
                 ai_output=original_output,
                 user_final=final_text,
                 refinement_instructions="\n".join(refinement_instructions_used).strip(),
+                output_format=panel.output_format,
             )
             dialog.destroy()
 
@@ -2845,6 +2855,7 @@ class EmailManagerWindow(tk.Toplevel):
                 ai_output=original_output,
                 user_final=edited_text,
                 refinement_instructions="\n".join(refinement_instructions_used).strip(),
+                output_format=panel.output_format,
             )
             dialog.destroy()
 
@@ -2861,6 +2872,7 @@ class EmailManagerWindow(tk.Toplevel):
                 ai_output=original_output,
                 user_final=final_text,
                 refinement_instructions="\n".join(refinement_instructions_used).strip(),
+                output_format=panel.output_format,
             )
             dialog.destroy()
 
@@ -2922,6 +2934,7 @@ class EmailManagerWindow(tk.Toplevel):
         )
         panel.grid(row=2, column=0, sticky="nsew", padx=12, pady=(0, 8))
         panel.seed_history(original_output)
+        panel.sync_output_format_with_content(original_output)
         refinement_instructions_used: list[str] = []
 
         def get_current_output() -> str:
@@ -2934,6 +2947,7 @@ class EmailManagerWindow(tk.Toplevel):
             nonlocal current_output, editor
             current_output = (value or "").strip()
             editor = self._render_output_widget(output_frame, current_output)
+            panel.sync_output_format_with_content(current_output)
 
         panel.on_restore_version = set_current_output
 
