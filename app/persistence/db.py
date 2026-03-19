@@ -222,8 +222,8 @@ class Database:
                 """
                 CREATE TABLE IF NOT EXISTS pedidos (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    numero_pedido TEXT,
-                    estado TEXT,
+                    NumeroPedido TEXT,
+                    Estado TEXT,
                     fecha DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
                 """
@@ -235,7 +235,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS lineas (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     pedido_id INTEGER NOT NULL,
-                    numero_pedido TEXT,
+                    NumeroPedido TEXT,
                     linea INTEGER,
                     cantidad REAL,
                     cajas_totales REAL,

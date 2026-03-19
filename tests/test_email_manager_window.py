@@ -292,9 +292,9 @@ def test_normalizar_pedidos_json_convierte_estructura_nueva() -> None:
 def test_calcular_estado_linea_nuevo_modificado_cancelado() -> None:
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
-    conn.execute("CREATE TABLE pedidos (id INTEGER PRIMARY KEY AUTOINCREMENT, numero_pedido TEXT, estado TEXT, fecha DATETIME)")
+    conn.execute("CREATE TABLE pedidos (id INTEGER PRIMARY KEY AUTOINCREMENT, NumeroPedido TEXT, Estado TEXT, fecha DATETIME)")
     conn.execute("CREATE TABLE lineas (pedido_id INTEGER, linea INTEGER, cantidad REAL, cajas_totales REAL, cp REAL, tipo_palet TEXT, nombre_caja TEXT, mercancia TEXT, confeccion TEXT, calibre TEXT, categoria TEXT, marca TEXT, po TEXT, lote TEXT, observaciones TEXT)")
-    conn.execute("INSERT INTO pedidos (id, numero_pedido, estado, fecha) VALUES (1, 'P-1', 'Nuevo', CURRENT_TIMESTAMP)")
+    conn.execute("INSERT INTO pedidos (id, NumeroPedido, Estado, fecha) VALUES (1, 'P-1', 'Nuevo', CURRENT_TIMESTAMP)")
     conn.execute("INSERT INTO lineas (pedido_id, linea, cantidad, cajas_totales, cp, tipo_palet) VALUES (1, 1, 10, 300, 30, 'Euro.Retor')")
     conn.commit()
 

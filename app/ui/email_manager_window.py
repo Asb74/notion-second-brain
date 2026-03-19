@@ -3050,8 +3050,8 @@ class EmailManagerWindow(tk.Toplevel):
                 return True
         return False
 
-    def _obtener_lineas_ultima_version(self, numero_pedido: str) -> list[dict[str, str]]:
-        return self.pedidos_repo.obtener_lineas_ultima_version_por_pedido(numero_pedido)
+    def _obtener_lineas_ultima_version(self, NumeroPedido: str) -> list[dict[str, str]]:
+        return self.pedidos_repo.obtener_lineas_ultima_version_por_pedido(NumeroPedido)
 
     @staticmethod
     def _to_comparison_text(value: Any) -> str:
@@ -3093,20 +3093,20 @@ class EmailManagerWindow(tk.Toplevel):
             return "Modificado"
         return "Sin cambios"
 
-    def _existe_linea_en_bd(self, numero_pedido: str, linea_num: str | int) -> bool:
+    def _existe_linea_en_bd(self, NumeroPedido: str, linea_num: str | int) -> bool:
         query = """
             SELECT 1
             FROM lineas
-            WHERE numero_pedido = ? AND linea = ?
+            WHERE NumeroPedido = ? AND linea = ?
             LIMIT 1
         """
-        row = self.conn.execute(query, (str(numero_pedido), int(linea_num))).fetchone()
+        row = self.conn.execute(query, (str(NumeroPedido), int(linea_num))).fetchone()
         return row is not None
 
     def _calcular_estado_linea(self, linea: dict[str, Any]) -> str:
-        numero_pedido = str(linea.get("NumeroPedido") or linea.get("PedidoID") or "").strip()
+        NumeroPedido = str(linea.get("NumeroPedido") or linea.get("PedidoID") or "").strip()
         nuevas_lineas = [self._normalizar_para_comparacion(linea)]
-        lineas_existentes = self._obtener_lineas_ultima_version(numero_pedido) if numero_pedido else []
+        lineas_existentes = self._obtener_lineas_ultima_version(NumeroPedido) if NumeroPedido else []
         estado = self._calcular_estado_pedido(
             {"Lineas": nuevas_lineas, "cancelado": self._detectar_cancelado_linea(linea)},
             {"Lineas": [self._normalizar_para_comparacion(item) for item in lineas_existentes]} if lineas_existentes else None,
@@ -3120,7 +3120,7 @@ class EmailManagerWindow(tk.Toplevel):
 
     def _validar_linea_pedido(self, linea: dict[str, Any]) -> list[str]:
         errores: list[str] = []
-        numero_pedido = str(linea.get("NumeroPedido") or linea.get("PedidoID") or "").strip()
+        NumeroPedido = str(linea.get("NumeroPedido") or linea.get("PedidoID") or "").strip()
         linea_num = str(linea.get("Linea") or "").strip()
         palets = str(linea.get("Cantidad") or linea.get("Palets") or "").strip()
         tcajas = str(linea.get("CajasTotales") or linea.get("TCajas") or "").strip()
@@ -3129,7 +3129,7 @@ class EmailManagerWindow(tk.Toplevel):
         categoria = str(linea.get("Categoria") or "").strip()
         estado = str(linea.get("Estado") or "").strip()
 
-        if not numero_pedido:
+        if not NumeroPedido:
             errores.append("Falta número de pedido")
         if not linea_num:
             errores.append("Falta número de línea")

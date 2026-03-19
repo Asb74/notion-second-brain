@@ -16,7 +16,7 @@ def test_run_migrations_crea_schema_version_y_migra_pedidos() -> None:
         CREATE TABLE pedidos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             NumeroPedido TEXT,
-            estado TEXT
+            Estado TEXT
         )
         """
     )
@@ -37,7 +37,7 @@ def test_run_migrations_es_idempotente() -> None:
         CREATE TABLE pedidos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             NumeroPedido TEXT,
-            estado TEXT
+            Estado TEXT
         )
         """
     )
@@ -49,13 +49,13 @@ def test_run_migrations_es_idempotente() -> None:
     assert obtener_version(conn) == 2
 
 
-def test_run_migrations_no_falla_si_no_existe_columna_numero_pedido() -> None:
+def test_run_migrations_no_falla_si_no_existe_columna_NumeroPedido() -> None:
     conn = _conn()
     conn.execute(
         """
         CREATE TABLE pedidos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            estado TEXT
+            Estado TEXT
         )
         """
     )

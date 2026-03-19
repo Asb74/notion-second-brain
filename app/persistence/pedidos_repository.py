@@ -7,6 +7,10 @@ import sqlite3
 from datetime import datetime
 from typing import Any
 
+COLUMN_NUMERO_PEDIDO = "NumeroPedido"
+COLUMN_ESTADO = "Estado"
+COLUMN_FECHA = "fecha"
+
 
 def normalizar_texto(texto: Any) -> str:
     if not texto:
@@ -60,19 +64,19 @@ def _linea_para_comparacion(linea: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def _obtener_lineas_ultima_version(db: sqlite3.Connection, numero_pedido: str) -> list[dict[str, Any]]:
-    query = """
+def _obtener_lineas_ultima_version(db: sqlite3.Connection, NumeroPedido: str) -> list[dict[str, Any]]:
+    query = f"""
     SELECT linea, cantidad, cajas_totales, cp, tipo_palet, nombre_caja, mercancia, confeccion, calibre, categoria, marca, po, lote, observaciones
     FROM lineas
     WHERE pedido_id = (
         SELECT id FROM pedidos
-        WHERE numero_pedido = ?
-        ORDER BY fecha DESC, id DESC
+        WHERE {COLUMN_NUMERO_PEDIDO} = ?
+        ORDER BY {COLUMN_FECHA} DESC, id DESC
         LIMIT 1
     )
     ORDER BY linea
     """
-    rows = db.execute(query, (numero_pedido,)).fetchall()
+    rows = db.execute(query, (NumeroPedido,)).fetchall()
     return [
         {
             "Linea": row["linea"],
@@ -106,8 +110,8 @@ def calcular_estado_pedido(pedido_nuevo: dict[str, Any], pedido_existente: dict[
 
 def aplicar_estados(db: sqlite3.Connection, lineas: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for linea in lineas:
-        numero_pedido = str(linea.get("NumeroPedido") or linea.get("PedidoID") or "").strip()
-        existentes = _obtener_lineas_ultima_version(db, numero_pedido) if numero_pedido else []
+        NumeroPedido = str(linea.get("NumeroPedido") or linea.get("PedidoID") or "").strip()
+        existentes = _obtener_lineas_ultima_version(db, NumeroPedido) if NumeroPedido else []
         linea["Estado"] = calcular_estado_pedido(
             {"Lineas": [_linea_para_comparacion(linea)], "cancelado": detectar_cancelado(linea)},
             {"Lineas": [_linea_para_comparacion(item) for item in existentes]} if existentes else None,
@@ -134,32 +138,32 @@ class PedidosRepository:
 
     def ensure_table(self) -> None:
         self.conn.execute(
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS pedidos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                numero_pedido TEXT,
-                estado TEXT,
-                fecha DATETIME DEFAULT CURRENT_TIMESTAMP
+                {COLUMN_NUMERO_PEDIDO} TEXT,
+                {COLUMN_ESTADO} TEXT,
+                {COLUMN_FECHA} DATETIME DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
         columnas_pedidos = {
             str(row[1]) for row in self.conn.execute("PRAGMA table_info(pedidos)").fetchall()
         }
-        if "fecha" not in columnas_pedidos:
-            self.conn.execute("ALTER TABLE pedidos ADD COLUMN fecha TEXT")
+        if COLUMN_FECHA not in columnas_pedidos:
+            self.conn.execute(f"ALTER TABLE pedidos ADD COLUMN {COLUMN_FECHA} TEXT")
         self.conn.execute(
-            """
+            f"""
             CREATE INDEX IF NOT EXISTS idx_pedidos_numero
-            ON pedidos (numero_pedido)
+            ON pedidos ({COLUMN_NUMERO_PEDIDO})
             """
         )
         self.conn.execute(
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS lineas (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 pedido_id INTEGER NOT NULL,
-                numero_pedido TEXT,
+                {COLUMN_NUMERO_PEDIDO} TEXT,
                 linea INTEGER,
                 cantidad REAL,
                 cajas_totales REAL,
@@ -203,9 +207,9 @@ class PedidosRepository:
             )
             fecha = datetime.now().isoformat()
             pedido_row = self.conn.execute(
-                """
+                f"""
                 INSERT INTO pedidos (
-                    numero_pedido, estado, fecha
+                    {COLUMN_NUMERO_PEDIDO}, {COLUMN_ESTADO}, {COLUMN_FECHA}
                 ) VALUES (?, ?, ?)
                 """,
                 (pedido_id, estado_pedido, fecha),
@@ -213,9 +217,9 @@ class PedidosRepository:
             pedido_row_id = pedido_row.lastrowid
             linea["Estado"] = estado_pedido
             self.conn.execute(
-                """
+                f"""
                 INSERT INTO lineas (
-                    pedido_id, numero_pedido, linea,
+                    pedido_id, {COLUMN_NUMERO_PEDIDO}, linea,
                     cantidad, cajas_totales, cp, tipo_palet,
                     nombre_caja, mercancia, confeccion, calibre, categoria, marca,
                     po, lote, observaciones,
@@ -282,21 +286,21 @@ class PedidosRepository:
 
     def obtener_ultima_version_lineas(self) -> list[sqlite3.Row]:
         return self.conn.execute(
-            """
+            f"""
             SELECT l.*
             FROM lineas l
             JOIN pedidos p ON p.id = l.pedido_id
             WHERE l.pedido_id IN (
                 SELECT MAX(id)
                 FROM pedidos
-                GROUP BY numero_pedido
+                GROUP BY {COLUMN_NUMERO_PEDIDO}
             )
-            ORDER BY numero_pedido, linea
+            ORDER BY {COLUMN_NUMERO_PEDIDO}, linea
             """
         ).fetchall()
 
-    def obtener_lineas_ultima_version_por_pedido(self, numero_pedido: str) -> list[dict[str, str]]:
-        return _obtener_lineas_ultima_version(self.conn, str(numero_pedido or "").strip())
+    def obtener_lineas_ultima_version_por_pedido(self, NumeroPedido: str) -> list[dict[str, str]]:
+        return _obtener_lineas_ultima_version(self.conn, str(NumeroPedido or "").strip())
 
     def obtener_resumen_palets(self) -> list[sqlite3.Row]:
         return self.conn.execute(
