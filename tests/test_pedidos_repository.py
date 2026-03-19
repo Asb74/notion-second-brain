@@ -31,24 +31,24 @@ def test_guardar_pedidos_desde_json_inserta_lineas() -> None:
     )
 
     assert inserted == 2
-    rows = conn.execute("SELECT numero_pedido, linea, cliente, comercial, archivo_origen FROM lineas ORDER BY linea").fetchall()
+    rows = conn.execute("SELECT NumeroPedido, linea, cliente, comercial, archivo_origen FROM lineas ORDER BY linea").fetchall()
     assert [dict(row) for row in rows] == [
         {
-            "numero_pedido": "P-1",
+            "NumeroPedido": "P-1",
             "linea": 1,
             "cliente": "Cliente A",
             "comercial": "Comercial A",
             "archivo_origen": "pedido.pdf",
         },
         {
-            "numero_pedido": "P-1",
+            "NumeroPedido": "P-1",
             "linea": 2,
             "cliente": "Cliente A",
             "comercial": "Comercial A",
             "archivo_origen": "pedido.pdf",
         },
     ]
-    pedido = conn.execute("SELECT fecha FROM pedidos WHERE numero_pedido = 'P-1' ORDER BY id LIMIT 1").fetchone()
+    pedido = conn.execute("SELECT fecha FROM pedidos WHERE NumeroPedido = 'P-1' ORDER BY id LIMIT 1").fetchone()
     assert pedido is not None
     assert pedido["fecha"]
 
@@ -59,8 +59,8 @@ def test_ensure_table_agrega_columna_fecha_en_bases_legacy() -> None:
         """
         CREATE TABLE pedidos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            numero_pedido TEXT,
-            estado TEXT
+            NumeroPedido TEXT,
+            Estado TEXT
         )
         """
     )
@@ -111,7 +111,7 @@ def test_guardar_pedidos_calcula_estado_nuevo_y_rectificado() -> None:
 
     assert inserted_1 == 1
     assert inserted_2 == 1
-    rows = conn.execute("SELECT estado FROM lineas WHERE numero_pedido = 'P-2' ORDER BY id").fetchall()
+    rows = conn.execute("SELECT estado FROM lineas WHERE NumeroPedido = 'P-2' ORDER BY id").fetchall()
     assert [row["estado"] for row in rows] == ["Nuevo", "Modificado"]
 
 
@@ -125,7 +125,7 @@ def test_guardar_pedidos_detecta_cancelado_desde_observaciones() -> None:
     )
 
     assert inserted == 1
-    row = conn.execute("SELECT estado FROM lineas WHERE numero_pedido = 'P-3'").fetchone()
+    row = conn.execute("SELECT estado FROM lineas WHERE NumeroPedido = 'P-3'").fetchone()
     assert row is not None
     assert row["estado"] == "Cancelado"
 
