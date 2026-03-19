@@ -20,7 +20,7 @@ from datetime import datetime
 from email.utils import getaddresses, parseaddr
 from pathlib import Path
 from queue import Queue
-from typing import Callable, Literal
+from typing import Any, Callable, Literal
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from tkinter.scrolledtext import ScrolledText
 from tkcalendar import DateEntry
@@ -158,6 +158,7 @@ Extraer la información estructurada separando:
 * NO usar markdown
 * NO inventar datos
 * Si un campo no existe → ""
+* REGLA ESTRICTA: si un valor NO coincide exactamente con el tipo esperado → ""
 
 ---
 
@@ -284,6 +285,7 @@ Marca:
 PO:
 
 * precio orientativo
+* si NO parece precio real (EUR/€) o "Precio Mercado" → ""
 
 Lote:
 
@@ -300,6 +302,14 @@ Observaciones:
 * NO mezclar datos entre líneas
 * NO duplicar datos generales
 * NO inventar valores
+* Estado NO debe rellenarlo la IA (lo calcula backend)
+
+Validaciones estrictas:
+* Categoria solo puede ser I, II, Estándar o Extra. Cualquier otro valor → ""
+* CP: primero buscar patrón X## (ej: X36). Si no existe, calcular TCajas/Palets. Si no cuadra → ""
+* TipoPalet: sin número de palets y sin X##. Si no se identifica claramente → ""
+* Palets: número anterior al tipo de pallet. Si no se identifica claramente → ""
+* Pais: país destino, nunca origen
 
 ---
 
@@ -768,7 +778,15 @@ class EmailManagerWindow(tk.Toplevel):
         except Exception:  # noqa: BLE001
             order_payload = None
         if order_payload is not None:
-            self._render_order_detail_table(container, order_payload)
+            incidencias: list[dict[str, object]] = []
+            try:
+                lineas = self._normalizar_pedidos_json(order_payload)
+                lineas = self._aplicar_estados_pedido(lineas)
+                incidencias = self._analizar_calidad_pedido(lineas)
+                order_payload = self._agrupar_lineas_en_pedidos(lineas)
+            except Exception:  # noqa: BLE001
+                incidencias = []
+            self._render_order_detail_table(container, order_payload, incidencias)
             return None
 
         normalized_table = normalize_to_table(clean_output) if is_probably_table(clean_output) else None
@@ -816,26 +834,56 @@ class EmailManagerWindow(tk.Toplevel):
             return True
         return "Lineas" in parsed_json or "PedidoID" in parsed_json
 
-    @staticmethod
-    def _flatten_order_rows(parsed_json: dict[str, object] | list[object]) -> list[list[str]]:
+    def _flatten_order_rows(
+        self,
+        parsed_json: dict[str, object] | list[object],
+        incidencias: list[dict[str, object]] | None = None,
+    ) -> list[list[str]]:
         rows: list[list[str]] = []
+        label_map = {"TipoPalet": "Tipo Palet"}
+        general_fields = ["PedidoID", "Cliente", "Comercial", "FCarga", "Plataforma", "Pais", "PCarga", "Estado"]
+        line_fields = [
+            "Linea",
+            "Palets",
+            "TipoPalet",
+            "TCajas",
+            "CP",
+            "NombreCaja",
+            "Mercancia",
+            "Confeccion",
+            "Calibre",
+            "Categoria",
+            "Marca",
+            "PO",
+            "Lote",
+            "Observaciones",
+            "Estado",
+        ]
 
         def append_section_header(title: str) -> None:
             if rows:
                 rows.append(["", ""])
             rows.append(["Campo", title])
 
-        def append_fields(prefix: str, payload: dict[str, object], excluded_keys: set[str] | None = None) -> None:
+        def append_fields(
+            prefix: str,
+            payload: dict[str, object],
+            ordered_keys: list[str] | None = None,
+            excluded_keys: set[str] | None = None,
+        ) -> None:
             excluded = excluded_keys or set()
-            for key, value in payload.items():
+            keys: list[str] = ordered_keys + [str(key) for key in payload.keys() if str(key) not in ordered_keys] if ordered_keys else [str(key) for key in payload.keys()]
+            for key in keys:
                 if key in excluded:
                     continue
+                value = payload.get(key)
                 display_value = "" if value is None else str(value).strip()
                 if str(key) == "Estado":
                     display_value = format_estado_badge(display_value)
                 if not display_value and str(key) != "Estado":
                     continue
-                field_name = f"{prefix}{key}" if prefix else str(key)
+                display_key = label_map.get(str(key), str(key))
+                field_name = f"{prefix}{display_key}" if prefix else display_key
                 rows.append([field_name, display_value])
 
         def normalize_orders(payload: dict[str, object] | list[object]) -> list[dict[str, object]]:
@@ -860,7 +908,7 @@ class EmailManagerWindow(tk.Toplevel):
         for order_index, order in enumerate(orders, start=1):
             pedido_id = str(order.get("PedidoID") or f"Pedido {order_index}")
             append_section_header(f"{pedido_id}")
-            append_fields("", order, excluded_keys={"Lineas"})
+            append_fields("", order, ordered_keys=general_fields, excluded_keys={"Lineas"})
 
             raw_lines = order.get("Lineas")
             if isinstance(raw_lines, list) and raw_lines:
@@ -869,11 +917,29 @@ class EmailManagerWindow(tk.Toplevel):
                         continue
                     linea_value = str(line_item.get("Linea") or line_index)
                     append_section_header(f"Línea {linea_value}")
-                    append_fields("", line_item)
+                    append_fields("", line_item, ordered_keys=line_fields, excluded_keys=set(general_fields))
+        if incidencias:
+            append_section_header("⚠ Incidencias detectadas")
+            for incidencia in incidencias:
+                pedido = str(incidencia.get("PedidoID") or "").strip()
+                linea = str(incidencia.get("Linea") or "").strip()
+                for error in incidencia.get("Errores", []) or []:
+                    texto = str(error).strip()
+                    if not texto:
+                        continue
+                    referencia = f"Línea {linea}" if linea else "Línea"
+                    if pedido:
+                        referencia = f"{pedido} · {referencia}"
+                    rows.append([referencia, texto])
         return rows
 
-    def _render_order_detail_table(self, container: tk.Misc, parsed_json: dict[str, object] | list[object]) -> None:
-        rows = self._flatten_order_rows(parsed_json)
+    def _render_order_detail_table(
+        self,
+        container: tk.Misc,
+        parsed_json: dict[str, object] | list[object],
+        incidencias: list[dict[str, object]] | None = None,
+    ) -> None:
+        rows = self._flatten_order_rows(parsed_json, incidencias)
         wrapper = ttk.Frame(container)
         wrapper.pack(fill="both", expand=True)
         wrapper.rowconfigure(0, weight=1)
@@ -2880,21 +2946,25 @@ class EmailManagerWindow(tk.Toplevel):
             messagebox.showwarning("Atención", "No se pudo generar el resumen de adjuntos.")
             return
 
+        order_lineas: list[dict[str, Any]] | None = None
+        order_filename = ""
+        order_incidencias: list[dict[str, Any]] = []
         if is_order_mode:
-            filename = self._resolve_primary_attachment_filename(prepared_attachments)
+            order_filename = self._resolve_primary_attachment_filename(prepared_attachments)
             try:
-                persisted_rows, preview_table = self._persist_order_summary(summary, filename)
+                parsed = self._parse_order_json(summary)
+                order_lineas = self._normalizar_pedidos_json(parsed)
+                order_lineas = self._aplicar_estados_pedido(order_lineas)
+                order_incidencias = self._analizar_calidad_pedido(order_lineas)
+                if not order_lineas:
+                    messagebox.showwarning("Pedido", "No se detectaron líneas de pedido válidas para revisar.")
+                    return
+                summary = json.dumps(self._agrupar_lineas_en_pedidos(order_lineas), ensure_ascii=False, indent=2)
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Error procesando pedido desde adjuntos")
-                self.log(f"No se pudo persistir el pedido: {exc}", level="WARNING")
+                self.log(f"No se pudo preparar el pedido: {exc}", level="WARNING")
                 messagebox.showwarning("Pedido", "No se pudo interpretar el pedido")
-                persisted_rows = 0
-                preview_table = ""
-            if persisted_rows <= 0:
-                messagebox.showwarning("Pedido", "No se detectaron líneas de pedido válidas para guardar.")
                 return
-            summary = preview_table
-            self.log(f"Pedido persistido: {persisted_rows} líneas ({filename})")
 
         self._open_summary_review_dialog(
             row=row,
@@ -2903,6 +2973,9 @@ class EmailManagerWindow(tk.Toplevel):
             summary_source="attachment",
             attachment_types=attachment_types,
             content_type=primary_content_type,
+            order_lineas=order_lineas,
+            order_filename=order_filename,
+            order_incidencias=order_incidencias,
         )
 
     @staticmethod
@@ -3042,9 +3115,222 @@ class EmailManagerWindow(tk.Toplevel):
         except ValueError:
             logger.exception("No se pudo parsear el JSON de pedido generado por IA")
             raise
+        parsed = self._normalizar_pedidos_json(parsed)
+        parsed = self._aplicar_estados_pedido(parsed)
         inserted = self.pedidos_repo.guardar_pedidos_desde_json(parsed, archivo_nombre)
         rows = self.pedidos_repo.obtener_ultima_version_lineas()
         return inserted, self._build_order_preview_table(rows)
+
+    def _normalizar_pedidos_json(self, data: dict[str, Any] | list[Any]) -> list[dict[str, Any]]:
+        resultado: list[dict[str, Any]] = []
+        if isinstance(data, list):
+            return [self._normalizar_campos_linea_pedido(dict(item)) for item in data if isinstance(item, dict)]
+
+        pedidos = data.get("Pedidos", []) if isinstance(data, dict) else []
+        for pedido in pedidos:
+            if not isinstance(pedido, dict):
+                continue
+            cabecera = {
+                "PedidoID": pedido.get("PedidoID", ""),
+                "Cliente": pedido.get("Cliente", ""),
+                "Comercial": pedido.get("Comercial", ""),
+                "FCarga": pedido.get("FCarga", ""),
+                "Plataforma": pedido.get("Plataforma", ""),
+                "Pais": pedido.get("Pais", ""),
+                "PCarga": pedido.get("PCarga", ""),
+            }
+            for linea in pedido.get("Lineas", []) or []:
+                if not isinstance(linea, dict):
+                    continue
+                fila: dict[str, Any] = {}
+                fila.update(cabecera)
+                fila.update(linea)
+                resultado.append(self._normalizar_campos_linea_pedido(fila))
+        return resultado
+
+    @staticmethod
+    def _normalizar_campos_linea_pedido(fila: dict[str, Any]) -> dict[str, Any]:
+        if "NombrePalet" in fila and "TipoPalet" not in fila:
+            fila["TipoPalet"] = fila.get("NombrePalet")
+        return fila
+
+    @staticmethod
+    def _normalizar_texto_estado(texto: str) -> str:
+        if not texto:
+            return ""
+        return str(texto).upper().strip()
+
+    def _detectar_cancelado_linea(self, linea: dict[str, Any]) -> bool:
+        campos = [linea.get("Observaciones", ""), linea.get("Mercancia", ""), linea.get("NombreCaja", ""), linea.get("TipoPalet", "")]
+        for campo in campos:
+            if "CANCEL" in self._normalizar_texto_estado(str(campo)):
+                return True
+        return False
+
+    def _existe_linea_en_bd(self, pedido_id: str, linea_num: str | int) -> bool:
+        query = """
+            SELECT 1
+            FROM pedidos_lineas
+            WHERE pedido_id = ? AND linea = ?
+            LIMIT 1
+        """
+        row = self.conn.execute(query, (str(pedido_id), int(linea_num))).fetchone()
+        return row is not None
+
+    def _calcular_estado_linea(self, linea: dict[str, Any]) -> str:
+        pedido_id = str(linea.get("PedidoID") or "").strip()
+        linea_num = linea.get("Linea")
+        if self._detectar_cancelado_linea(linea):
+            return "Cancelado"
+        if pedido_id and linea_num not in (None, ""):
+            try:
+                if self._existe_linea_en_bd(pedido_id, linea_num):
+                    return "Rectificado"
+            except Exception:  # noqa: BLE001
+                pass
+        return "Nuevo"
+
+    def _aplicar_estados_pedido(self, lineas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        for linea in lineas:
+            linea["Estado"] = self._calcular_estado_linea(linea)
+        return lineas
+
+    def _validar_linea_pedido(self, linea: dict[str, Any]) -> list[str]:
+        errores: list[str] = []
+        pedido_id = str(linea.get("PedidoID") or "").strip()
+        cliente = str(linea.get("Cliente") or "").strip()
+        linea_num = str(linea.get("Linea") or "").strip()
+        palets = str(linea.get("Palets") or "").strip()
+        tcajas = str(linea.get("TCajas") or "").strip()
+        cp = str(linea.get("CP") or "").strip()
+        categoria = str(linea.get("Categoria") or "").strip()
+        po = str(linea.get("PO") or "").strip()
+        estado = str(linea.get("Estado") or "").strip()
+
+        if not pedido_id:
+            errores.append("Falta PedidoID")
+        if not cliente:
+            errores.append("Falta Cliente")
+        if not linea_num:
+            errores.append("Falta número de línea")
+        try:
+            if palets != "":
+                palets_int = int(float(palets))
+                if palets_int <= 0:
+                    errores.append("Palets debe ser mayor que 0")
+        except Exception:  # noqa: BLE001
+            errores.append("Palets no es numérico")
+        try:
+            if tcajas != "":
+                tcajas_int = int(float(tcajas))
+                if tcajas_int < 0:
+                    errores.append("TCajas no puede ser negativo")
+        except Exception:  # noqa: BLE001
+            errores.append("TCajas no es numérico")
+        try:
+            if cp != "":
+                cp_int = int(float(cp))
+                if cp_int <= 0:
+                    errores.append("CP debe ser mayor que 0")
+        except Exception:  # noqa: BLE001
+            errores.append("CP no es numérico")
+
+        categorias_validas = {"I", "II", "ESTÁNDAR", "ESTANDAR", "EXTRA", ""}
+        if categoria.upper() not in categorias_validas:
+            errores.append("Categoria inválida")
+
+        if po:
+            po_norm = po.upper()
+            es_precio = "EUR" in po_norm or "€" in po_norm or "PRECIO MERCADO" in po_norm
+            if not es_precio:
+                errores.append("PO no parece un precio válido")
+
+        if estado not in {"Nuevo", "Rectificado", "Cancelado"}:
+            errores.append("Estado inválido")
+        return errores
+
+    def _validar_pedido_completo(self, lineas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        incidencias: list[dict[str, Any]] = []
+        for linea in lineas:
+            errores = self._validar_linea_pedido(linea)
+            if errores:
+                incidencias.append({"PedidoID": linea.get("PedidoID", ""), "Linea": linea.get("Linea", ""), "Errores": errores})
+        return incidencias
+
+    def _detectar_errores_erp_linea(self, linea: dict[str, Any]) -> list[str]:
+        errores: list[str] = []
+        try:
+            palets = int(float(linea.get("Palets") or 0))
+        except Exception:  # noqa: BLE001
+            palets = None
+        try:
+            tcajas = int(float(linea.get("TCajas") or 0))
+        except Exception:  # noqa: BLE001
+            tcajas = None
+        try:
+            cp = int(float(linea.get("CP") or 0))
+        except Exception:  # noqa: BLE001
+            cp = None
+
+        if palets and tcajas and cp:
+            esperado = tcajas / palets
+            if abs(esperado - cp) > 0.01:
+                errores.append(f"CP incoherente: esperado {esperado:.2f}, detectado {cp}")
+        if tcajas and not palets:
+            errores.append("Hay TCajas pero falta Palets")
+        if palets and not tcajas:
+            errores.append("Hay Palets pero falta TCajas")
+        if str(linea.get("Estado") or "") == "Cancelado" and (palets or tcajas):
+            errores.append("Línea cancelada con cantidades informadas")
+        return errores
+
+    def _analizar_calidad_pedido(self, lineas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        incidencias: list[dict[str, Any]] = []
+        incidencias.extend(self._validar_pedido_completo(lineas))
+        for linea in lineas:
+            errores_erp = self._detectar_errores_erp_linea(linea)
+            if errores_erp:
+                incidencias.append({"PedidoID": linea.get("PedidoID", ""), "Linea": linea.get("Linea", ""), "Errores": errores_erp})
+        return incidencias
+
+    @staticmethod
+    def _agrupar_lineas_en_pedidos(lineas: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+        pedidos_index: dict[str, dict[str, Any]] = {}
+        for linea in lineas:
+            pedido_id = str(linea.get("PedidoID") or "").strip() or "Pedido"
+            pedido = pedidos_index.setdefault(
+                pedido_id,
+                {
+                    "PedidoID": pedido_id,
+                    "Cliente": linea.get("Cliente", ""),
+                    "Comercial": linea.get("Comercial", ""),
+                    "FCarga": linea.get("FCarga", ""),
+                    "Plataforma": linea.get("Plataforma", ""),
+                    "Pais": linea.get("Pais", ""),
+                    "PCarga": linea.get("PCarga", ""),
+                    "Lineas": [],
+                },
+            )
+            pedido["Lineas"].append(
+                {
+                    "Linea": linea.get("Linea", ""),
+                    "Palets": linea.get("Palets", ""),
+                    "TipoPalet": linea.get("TipoPalet", ""),
+                    "TCajas": linea.get("TCajas", ""),
+                    "CP": linea.get("CP", ""),
+                    "NombreCaja": linea.get("NombreCaja", ""),
+                    "Mercancia": linea.get("Mercancia", ""),
+                    "Confeccion": linea.get("Confeccion", ""),
+                    "Calibre": linea.get("Calibre", ""),
+                    "Categoria": linea.get("Categoria", ""),
+                    "Marca": linea.get("Marca", ""),
+                    "PO": linea.get("PO", ""),
+                    "Lote": linea.get("Lote", ""),
+                    "Observaciones": linea.get("Observaciones", ""),
+                    "Estado": linea.get("Estado", ""),
+                }
+            )
+        return {"Pedidos": list(pedidos_index.values())}
 
     @staticmethod
     def _parse_order_json(ai_json: str) -> dict[str, object] | list[object]:
@@ -3330,6 +3616,9 @@ class EmailManagerWindow(tk.Toplevel):
         summary_source: str = "email",
         attachment_types: list[str] | None = None,
         content_type: str = "attachment",
+        order_lineas: list[dict[str, Any]] | None = None,
+        order_filename: str = "",
+        order_incidencias: list[dict[str, Any]] | None = None,
     ) -> None:
         dialog = tk.Toplevel(self)
         apply_app_icon(dialog)
@@ -3373,7 +3662,10 @@ class EmailManagerWindow(tk.Toplevel):
         )
         panel.grid(row=2, column=0, sticky="nsew", padx=12, pady=(0, 8))
         panel.seed_history(original_output)
-        panel.sync_output_format_with_content(original_output)
+        if order_lineas is not None:
+            panel.set_output_format(OUTPUT_FORMAT_PEDIDO)
+        else:
+            panel.sync_output_format_with_content(original_output)
         refinement_instructions_used: list[str] = []
 
         def get_current_output() -> str:
@@ -3386,7 +3678,10 @@ class EmailManagerWindow(tk.Toplevel):
             nonlocal current_output, editor
             current_output = (value or "").strip()
             editor = self._render_output_widget(output_frame, current_output, context_type="summary")
-            panel.sync_output_format_with_content(current_output)
+            if order_lineas is not None:
+                panel.set_output_format(OUTPUT_FORMAT_PEDIDO)
+            else:
+                panel.sync_output_format_with_content(current_output)
 
         panel.on_restore_version = set_current_output
 
@@ -3427,6 +3722,15 @@ class EmailManagerWindow(tk.Toplevel):
             if not current_summary:
                 messagebox.showwarning("Atención", "El resumen no puede estar vacío.")
                 return
+            if order_lineas is not None:
+                incidencias_confirmacion = self._analizar_calidad_pedido(order_lineas)
+                if incidencias_confirmacion and not messagebox.askyesno(
+                    "Pedido con incidencias",
+                    "Se detectaron incidencias en el pedido. ¿Deseas confirmar y guardar igualmente?",
+                ):
+                    return
+                inserted = self.pedidos_repo.guardar_pedidos_desde_json(order_lineas, order_filename)
+                self.log(f"Pedido persistido: {inserted} líneas ({order_filename})")
             self.response_text.delete("1.0", "end")
             self.response_text.insert("1.0", f"Resumen rápido:\n\n{current_summary}\n")
             self._update_prepared_context_summary(row=row, summary_source=summary_source, summary_value=current_summary)
