@@ -143,13 +143,17 @@ class PedidosRepository:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 {COLUMN_NUMERO_PEDIDO} TEXT,
                 {COLUMN_ESTADO} TEXT,
-                {COLUMN_FECHA} DATETIME DEFAULT CURRENT_TIMESTAMP
+                {COLUMN_FECHA} TEXT
             )
             """
         )
         columnas_pedidos = {
             str(row[1]) for row in self.conn.execute("PRAGMA table_info(pedidos)").fetchall()
         }
+        if COLUMN_NUMERO_PEDIDO not in columnas_pedidos:
+            self.conn.execute(f"ALTER TABLE pedidos ADD COLUMN {COLUMN_NUMERO_PEDIDO} TEXT")
+        if COLUMN_ESTADO not in columnas_pedidos:
+            self.conn.execute(f"ALTER TABLE pedidos ADD COLUMN {COLUMN_ESTADO} TEXT")
         if COLUMN_FECHA not in columnas_pedidos:
             self.conn.execute(f"ALTER TABLE pedidos ADD COLUMN {COLUMN_FECHA} TEXT")
         self.conn.execute(
