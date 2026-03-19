@@ -931,3 +931,96 @@ def test_parse_markdown_table_handles_separator_and_csv() -> None:
     csv_headers, csv_rows = parse_markdown_table("h1,h2\nr1c1,r1c2\nr2c1,r2c2")
     assert csv_headers == ["h1", "h2"]
     assert csv_rows == [["r1c1", "r1c2"], ["r2c1", "r2c2"]]
+
+
+def test_get_final_confirmed_text_uses_original_when_not_edited() -> None:
+    window = EmailManagerWindow.__new__(EmailManagerWindow)
+    window._initialize_review_edit_state("Resumen IA")
+
+    assert window._get_final_confirmed_text() == "Resumen IA"
+
+
+def test_get_final_confirmed_text_uses_manual_edited_text() -> None:
+    window = EmailManagerWindow.__new__(EmailManagerWindow)
+    window._initialize_review_edit_state("Resumen IA")
+    window._mark_review_text_edited("Resumen editado manualmente")
+
+    assert window._get_final_confirmed_text() == "Resumen editado manualmente"
+
+
+def test_get_final_confirmed_text_uses_dictated_edited_text() -> None:
+    window = EmailManagerWindow.__new__(EmailManagerWindow)
+    window._initialize_review_edit_state("Respuesta IA")
+    window._mark_review_text_edited("Respuesta editada por dictado")
+
+    assert window._get_final_confirmed_text() == "Respuesta editada por dictado"
+
+
+def test_get_final_confirmed_text_response_not_edited_uses_ai_text() -> None:
+    window = EmailManagerWindow.__new__(EmailManagerWindow)
+    window._initialize_review_edit_state("Respuesta IA original")
+    window._update_review_working_text("Respuesta IA original")
+
+    assert window._get_final_confirmed_text() == "Respuesta IA original"
+
+
+def test_get_final_confirmed_text_response_edited_uses_final_text() -> None:
+    window = EmailManagerWindow.__new__(EmailManagerWindow)
+    window._initialize_review_edit_state("Respuesta IA original")
+    window._mark_review_text_edited("Respuesta final del usuario")
+
+    assert window._get_final_confirmed_text() == "Respuesta final del usuario"
+
+
+def test_save_email_response_feedback_stores_confirmed_text_as_training_example() -> None:
+    window = EmailManagerWindow.__new__(EmailManagerWindow)
+    captured: dict[str, object] = {}
+    window._enqueue_training_example_save = lambda **kwargs: captured.update(kwargs)
+    row = {
+        "gmail_id": "id-22",
+        "sender": "cliente@example.com",
+        "real_sender": "cliente@example.com",
+        "subject": "Asunto",
+        "body_text": "Texto",
+        "category": "consultas",
+    }
+
+    EmailManagerWindow._save_email_response_feedback_async(
+        window,
+        row=row,
+        output_text="Respuesta final confirmada",
+        edited_by_user=True,
+        generated_text_original="Respuesta IA original",
+        confirmed_text_final="Respuesta final confirmada",
+    )
+
+    assert captured["output_text"] == "Respuesta final confirmada"
+    assert '"confirmed_text_final": "Respuesta final confirmada"' in str(captured["metadata"])
+
+
+def test_save_email_summary_feedback_stores_confirmed_text_as_training_example() -> None:
+    window = EmailManagerWindow.__new__(EmailManagerWindow)
+    captured: dict[str, object] = {}
+    window._enqueue_training_example_save = lambda **kwargs: captured.update(kwargs)
+    row = {
+        "gmail_id": "id-23",
+        "sender": "cliente@example.com",
+        "real_sender": "cliente@example.com",
+        "subject": "Asunto resumen",
+        "body_text": "Texto resumen",
+        "category": "consultas",
+    }
+
+    EmailManagerWindow._save_email_summary_feedback_async(
+        window,
+        row=row,
+        output_text="Resumen final confirmado",
+        edited_by_user=True,
+        preview_body="Texto resumen",
+        summary_source="email",
+        generated_text_original="Resumen IA original",
+        confirmed_text_final="Resumen final confirmado",
+    )
+
+    assert captured["output_text"] == "Resumen final confirmado"
+    assert '"confirmed_text_final": "Resumen final confirmado"' in str(captured["metadata"])
