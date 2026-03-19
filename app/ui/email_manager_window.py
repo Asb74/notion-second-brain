@@ -141,58 +141,181 @@ ATTACHMENT_SUMMARY_REQUEST = (
     "- no inventar información\n"
     "- si falta información, indícalo brevemente\n"
 )
-ATTACHMENT_ORDER_REQUEST = (
-    "Analiza el siguiente documento de pedido (posiblemente extraído por OCR).\n\n"
-    "OBJETIVO:\n"
-    "Extraer TODAS las líneas de pedido en formato JSON estructurado.\n\n"
-    "REGLAS CRÍTICAS:\n\n"
-    "1. La respuesta DEBE ser SOLO JSON válido\n"
-    "2. NO añadir texto explicativo\n"
-    "3. NO usar markdown\n"
-    "4. Si no hay datos → devolver []\n"
-    "5. NO inventar datos\n\n"
-    "FORMATO DE SALIDA:\n\n"
-    "[\n"
-    "{\n"
-    "\"PedidoID\": \"\",\n"
-    "\"Linea\": \"\",\n"
-    "\"Cliente\": \"\",\n"
-    "\"Comercial\": \"\",\n"
-    "\"Mercancia\": \"\",\n"
-    "\"Palets\": \"\",\n"
-    "\"TCajas\": \"\",\n"
-    "\"NombrePalet\": \"\",\n"
-    "\"NombreCaja\": \"\",\n"
-    "\"Confeccion\": \"\",\n"
-    "\"Calibre\": \"\",\n"
-    "\"Categoria\": \"\",\n"
-    "\"Marca\": \"\",\n"
-    "\"PO\": \"\",\n"
-    "\"Lote\": \"\",\n"
-    "\"Observaciones\": \"\",\n"
-    "\"FCarga\": \"\",\n"
-    "\"Plataforma\": \"\",\n"
-    "\"Pais\": \"\",\n"
-    "\"PCarga\": \"\",\n"
-    "\"Estado\": \"\"\n"
-    "}\n"
-    "]\n\n"
-    "INSTRUCCIONES:\n\n"
-    "* Extraer datos aunque estén desordenados\n"
-    "* Cada línea del pedido debe ser un objeto independiente\n"
-    "* NO mezclar datos entre líneas\n"
-    "* \"Observaciones\" debe incluir TODO el texto libre\n"
-    "* Si un campo no existe → \"\"\n"
-    "* \"Palets\" y \"TCajas\" deben ser numéricos si es posible\n"
-    "* Extracción de \"Palets\" (CRÍTICO):\n"
-    "  1) Busca primero el número que aparece inmediatamente antes del tipo de pallet (Euro, Chep, Girsac, etc.).\n"
-    "  2) \"Palets\" también puede venir asociado a unidades logísticas en la misma línea.\n"
-    "  3) Si aparece \"Total Cajas\", NO lo confundas con \"Palets\".\n"
-    "  4) Prioridad: número delante del tipo de pallet; si no existe, estimar desde el contexto de la línea.\n"
-    "  5) El valor final de \"Palets\" debe ser numérico.\n"
-    "  6) Ejemplo: \"10 Euro.Retor.X36\" -> \"Palets\": 10\n"
-    "* NO calcular el estado → dejar vacío"
-)
+PROMPT_PEDIDOS = """Analiza el siguiente documento de pedido (posiblemente extraído por OCR).
+
+OBJETIVO:
+Extraer la información estructurada separando:
+
+1. Datos generales del pedido
+2. Líneas de pedido
+
+---
+
+## REGLAS CRÍTICAS
+
+* Responder SOLO con JSON válido
+* NO añadir texto
+* NO usar markdown
+* NO inventar datos
+* Si un campo no existe → ""
+
+---
+
+## ESTRUCTURA
+
+{
+"Pedidos": [
+{
+"PedidoID": "",
+"Cliente": "",
+"Comercial": "",
+"FCarga": "",
+"Plataforma": "",
+"Pais": "",
+"PCarga": "",
+"Lineas": [
+{
+"Linea": "",
+"Palets": "",
+"TipoPalet": "",
+"TCajas": "",
+"CP": "",
+"NombreCaja": "",
+"Mercancia": "",
+"Confeccion": "",
+"Calibre": "",
+"Categoria": "",
+"Marca": "",
+"PO": "",
+"Lote": "",
+"Observaciones": ""
+}
+]
+}
+]
+}
+
+---
+
+## CAMPOS GENERALES
+
+* PedidoID → Nº completo (ej: 25/109774/1)
+* Cliente → nombre cliente
+* Comercial → persona comercial
+* FCarga → fecha carga
+* Plataforma → destino logístico
+* Pais → país destino (NO origen)
+* PCarga → punto de carga
+
+NO repetir en líneas
+
+---
+
+## CAMPOS POR LÍNEA
+
+Linea:
+
+* número de línea (columna Lin.)
+
+Palets:
+
+* número antes del tipo de pallet
+* ej: "10 Euro.Retor.X36" → 10
+
+TipoPalet:
+
+* tipo de pallet sin número ni X##
+* incluir:
+
+  * tipo (Euro, Chep…)
+  * estructura (Retor…)
+  * configuración (Simple/Doble)
+* ej:
+  "10 Euro.Retor.X36 Simple" → "Euro.Retor.Simple"
+
+TCajas:
+
+* Total Cajas
+
+CP (CRÍTICO):
+
+* cajas por palet
+
+Reglas:
+
+1. Buscar patrón "X##" → usar ese valor
+2. Si no existe → calcular:
+   TCajas / Palets
+
+Ejemplo:
+
+* 10 Euro.Retor.X36 → CP = 36
+* 360 cajas / 10 palets → CP = 36
+
+NombreCaja:
+
+* tipo de caja/envase (NO cliente)
+
+Mercancia:
+
+* producto (ej: Naranja Navel Lane Late)
+
+Confeccion:
+
+* formato de presentación (5xGIRSAC, etc.)
+
+Calibre:
+
+* tamaño/fruta (10/14 Pz, etc.)
+
+Categoria:
+
+* SOLO calidad:
+
+  * I
+  * II
+  * Estándar
+  * Extra
+
+Marca:
+
+* marca comercial
+
+PO:
+
+* precio orientativo
+
+Lote:
+
+* lote o EAN completo
+
+Observaciones:
+
+* TODO el bloque de texto libre
+
+---
+
+## REGLAS IMPORTANTES
+
+* NO mezclar datos entre líneas
+* NO duplicar datos generales
+* NO inventar valores
+
+---
+
+Si no hay datos:
+
+{
+"Pedidos": []
+}
+
+---
+
+TEXTO DEL DOCUMENTO:
+\"\"\"
+{texto_extraido_pdf}
+\"\"\""""
+ATTACHMENT_ORDER_REQUEST = PROMPT_PEDIDOS
 AUDIO_MEETING_SUMMARY_REQUEST = (
     "Resume la siguiente transcripción de una reunión.\n\n"
     "Extrae:\n"
@@ -2866,12 +2989,23 @@ class EmailManagerWindow(tk.Toplevel):
     ) -> str:
         sender = row.get("real_sender") or row.get("sender", "")
         if output_format == OUTPUT_FORMAT_PEDIDO:
-            summary_request = ATTACHMENT_ORDER_REQUEST
-        else:
-            summary_request = AUDIO_MEETING_SUMMARY_REQUEST if content_type == "audio_meeting" else ATTACHMENT_SUMMARY_REQUEST
-        if output_format != OUTPUT_FORMAT_PEDIDO:
-            format_instruction = OUTPUT_FORMAT_PROMPTS.get(output_format, OUTPUT_FORMAT_PROMPTS[OUTPUT_FORMAT_DEFAULT])
-            summary_request = f"{summary_request}\n{format_instruction}"
+            prompt = PROMPT_PEDIDOS.replace("{texto_extraido_pdf}", (extracted_text or "").strip()[:MAX_ATTACHMENT_TEXT])
+            try:
+                client = build_openai_client()
+                response = client.responses.create(
+                    model="gpt-4.1-mini",
+                    input=prompt,
+                    temperature=0,
+                    text={"format": {"type": "json_object"}},
+                )
+                return str(response.output_text or "").strip()
+            except Exception as exc:  # noqa: BLE001
+                self.log(f"No se pudo generar extracción de pedido: {exc}", level="WARNING")
+                return ""
+
+        summary_request = AUDIO_MEETING_SUMMARY_REQUEST if content_type == "audio_meeting" else ATTACHMENT_SUMMARY_REQUEST
+        format_instruction = OUTPUT_FORMAT_PROMPTS.get(output_format, OUTPUT_FORMAT_PROMPTS[OUTPUT_FORMAT_DEFAULT])
+        summary_request = f"{summary_request}\n{format_instruction}"
         prompt = (
             f"{summary_request}\n\n"
             "EMAIL_SUBJECT:\n"
@@ -2903,7 +3037,11 @@ class EmailManagerWindow(tk.Toplevel):
         return str(prepared_attachments[0].get("filename") or "adjunto")
 
     def _persist_order_summary(self, ai_json: str, archivo_nombre: str) -> tuple[int, str]:
-        parsed = self._parse_order_json(ai_json)
+        try:
+            parsed = self._parse_order_json(ai_json)
+        except ValueError:
+            logger.exception("No se pudo parsear el JSON de pedido generado por IA")
+            raise
         inserted = self.pedidos_repo.guardar_pedidos_desde_json(parsed, archivo_nombre)
         rows = self.pedidos_repo.obtener_ultima_version_lineas()
         return inserted, self._build_order_preview_table(rows)
