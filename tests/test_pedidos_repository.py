@@ -48,6 +48,27 @@ def test_guardar_pedidos_desde_json_inserta_lineas() -> None:
             "archivo_origen": "pedido.pdf",
         },
     ]
+    pedido = conn.execute("SELECT fecha FROM pedidos WHERE numero_pedido = 'P-1' ORDER BY id LIMIT 1").fetchone()
+    assert pedido is not None
+    assert pedido["fecha"]
+
+
+def test_ensure_table_agrega_columna_fecha_en_bases_legacy() -> None:
+    conn = _conn()
+    conn.execute(
+        """
+        CREATE TABLE pedidos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            numero_pedido TEXT,
+            estado TEXT
+        )
+        """
+    )
+    PedidosRepository(conn)
+
+    columnas = conn.execute("PRAGMA table_info(pedidos)").fetchall()
+    nombres = {str(row[1]) for row in columnas}
+    assert "fecha" in nombres
 
 
 def test_obtener_resumen_palets_excluye_cancelados() -> None:

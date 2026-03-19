@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime
 from typing import Any
 
 
@@ -142,6 +143,17 @@ class PedidosRepository:
             )
             """
         )
+        columnas_pedidos = {
+            str(row[1]) for row in self.conn.execute("PRAGMA table_info(pedidos)").fetchall()
+        }
+        if "fecha" not in columnas_pedidos:
+            self.conn.execute("ALTER TABLE pedidos ADD COLUMN fecha TEXT")
+        self.conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_pedidos_numero
+            ON pedidos (numero_pedido)
+            """
+        )
         self.conn.execute(
             """
             CREATE TABLE IF NOT EXISTS lineas (
@@ -189,13 +201,14 @@ class PedidosRepository:
                 {"Lineas": [_linea_para_comparacion(linea)], "cancelado": detectar_cancelado(linea)},
                 {"Lineas": [_linea_para_comparacion(item) for item in lineas_existentes]} if lineas_existentes else None,
             )
+            fecha = datetime.now().isoformat()
             pedido_row = self.conn.execute(
                 """
                 INSERT INTO pedidos (
-                    numero_pedido, estado
-                ) VALUES (?, ?)
+                    numero_pedido, estado, fecha
+                ) VALUES (?, ?, ?)
                 """,
-                (pedido_id, estado_pedido),
+                (pedido_id, estado_pedido, fecha),
             )
             pedido_row_id = pedido_row.lastrowid
             linea["Estado"] = estado_pedido
