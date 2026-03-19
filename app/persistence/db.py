@@ -11,6 +11,11 @@ def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
     return {str(row[1]) for row in rows}
 
 
+def column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    cursor = conn.execute(f"PRAGMA table_info({table})")
+    return column in [row[1] for row in cursor.fetchall()]
+
+
 def _ensure_schema_version_table(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
@@ -57,12 +62,14 @@ def migracion_2(conn: sqlite3.Connection) -> None:
     ).fetchone()
     if table_exists is None:
         return
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_pedidos_numero
-        ON pedidos (numero_pedido)
-        """
-    )
+    if column_exists(conn, "pedidos", "NumeroPedido"):
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_pedidos_numero
+            ON pedidos (NumeroPedido)
+            """
+        )
+        conn.commit()
 
 
 def run_migrations(conn: sqlite3.Connection) -> None:
