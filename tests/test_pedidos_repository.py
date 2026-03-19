@@ -53,14 +53,12 @@ def test_guardar_pedidos_desde_json_inserta_lineas() -> None:
     assert pedido["fecha"]
 
 
-def test_ensure_table_agrega_columna_fecha_en_bases_legacy() -> None:
+def test_ensure_table_agrega_columnas_faltantes_en_bases_legacy() -> None:
     conn = _conn()
     conn.execute(
         """
         CREATE TABLE pedidos (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            NumeroPedido TEXT,
-            Estado TEXT
+            id INTEGER PRIMARY KEY AUTOINCREMENT
         )
         """
     )
@@ -68,6 +66,8 @@ def test_ensure_table_agrega_columna_fecha_en_bases_legacy() -> None:
 
     columnas = conn.execute("PRAGMA table_info(pedidos)").fetchall()
     nombres = {str(row[1]) for row in columnas}
+    assert "NumeroPedido" in nombres
+    assert "Estado" in nombres
     assert "fecha" in nombres
 
 

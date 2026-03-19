@@ -63,5 +63,10 @@ def test_run_migrations_no_falla_si_no_existe_columna_NumeroPedido() -> None:
     run_migrations(conn)
 
     assert obtener_version(conn) == 2
+    columnas = conn.execute("PRAGMA table_info(pedidos)").fetchall()
+    nombres = {str(row[1]) for row in columnas}
+    assert "NumeroPedido" in nombres
+    assert "Estado" in nombres
+    assert "fecha" in nombres
     idx = conn.execute("PRAGMA index_list(pedidos)").fetchall()
-    assert not any(str(row[1]) == "idx_pedidos_numero" for row in idx)
+    assert any(str(row[1]) == "idx_pedidos_numero" for row in idx)

@@ -46,14 +46,26 @@ def guardar_version(conn: sqlite3.Connection, version: int) -> None:
 
 
 def migracion_1(conn: sqlite3.Connection) -> None:
-    table_exists = conn.execute(
+    cursor = conn.cursor()
+    table_exists = cursor.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pedidos'"
     ).fetchone()
     if table_exists is None:
         return
-    columns = _table_columns(conn, "pedidos")
-    if "fecha" not in columns:
-        conn.execute("ALTER TABLE pedidos ADD COLUMN fecha TEXT")
+
+    cursor.execute("PRAGMA table_info(pedidos)")
+    columnas = [row[1] for row in cursor.fetchall()]
+
+    if "NumeroPedido" not in columnas:
+        cursor.execute("ALTER TABLE pedidos ADD COLUMN NumeroPedido TEXT")
+
+    if "Estado" not in columnas:
+        cursor.execute("ALTER TABLE pedidos ADD COLUMN Estado TEXT")
+
+    if "fecha" not in columnas:
+        cursor.execute("ALTER TABLE pedidos ADD COLUMN fecha TEXT")
+
+    conn.commit()
 
 
 def migracion_2(conn: sqlite3.Connection) -> None:
@@ -82,6 +94,14 @@ def run_migrations(conn: sqlite3.Connection) -> None:
     if current_version < 2:
         migracion_2(conn)
         guardar_version(conn, 2)
+
+    cursor = conn.cursor()
+    table_exists = cursor.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pedidos'"
+    ).fetchone()
+    if table_exists is not None:
+        cursor.execute("PRAGMA table_info(pedidos)")
+        print("COLUMNAS PEDIDOS:", cursor.fetchall())
 
     conn.commit()
 
@@ -224,7 +244,7 @@ class Database:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     NumeroPedido TEXT,
                     Estado TEXT,
-                    fecha DATETIME DEFAULT CURRENT_TIMESTAMP
+                    fecha TEXT
                 )
                 """
             )
