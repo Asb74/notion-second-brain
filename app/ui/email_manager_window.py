@@ -178,7 +178,8 @@ REGLAS CRÍTICAS:
 
 2. Categoria (MUY IMPORTANTE)
 - SOLO valores válidos:
-  "I", "II", "Estandar"
+  "I", "II", "Estandar", "Extra"
+- La categoría puede aparecer como: "Cat", "Cat.", "Ct", "Categoria", "Categoría"
 - NO usar nombres de fruta
 - NO usar texto libre
 - Si no aparece claramente → ""
@@ -794,22 +795,8 @@ class EmailManagerWindow(tk.Toplevel):
                 field_name = f"{prefix}{display_key}" if prefix else display_key
                 rows.append([field_name, display_value])
 
-        def normalize_orders(payload: dict[str, object] | list[object]) -> list[dict[str, object]]:
-            if isinstance(payload, list):
-                normalized_orders: list[dict[str, object]] = []
-                for item in payload:
-                    if not isinstance(item, dict):
-                        continue
-                    normalized_orders.append({"Lineas": [item], **{k: v for k, v in item.items() if k != "Lineas"}})
-                return normalized_orders
-            if not isinstance(payload, dict):
-                return []
-            orders = payload.get("Pedidos")
-            if isinstance(orders, list):
-                return [item for item in orders if isinstance(item, dict)]
-            return [payload]
-
-        orders = normalize_orders(parsed_json)
+        canonical_lines = self._build_canonical_order_lines(parsed_json)
+        orders = self._agrupar_lineas_en_pedidos(canonical_lines).get("Pedidos", [])
         if not orders:
             return [["Campo", "No se encontraron pedidos en el contenido JSON."]]
 
@@ -3024,9 +3011,58 @@ class EmailManagerWindow(tk.Toplevel):
         return inserted, self._build_order_preview_table(rows)
 
     def _normalizar_pedidos_json(self, data: dict[str, Any] | list[Any]) -> list[dict[str, Any]]:
+        return self._build_canonical_order_lines(data)
+
+    @staticmethod
+    def _normalizar_categoria(valor: str) -> str:
+        v = str(valor or "").strip().lower()
+        mapa = {
+            "i": "I",
+            "ii": "II",
+            "estandar": "Estandar",
+            "estándar": "Estandar",
+            "extra": "Extra",
+        }
+        return mapa.get(v, "")
+
+    def _build_canonical_order_lines(self, data: dict[str, Any] | list[Any]) -> list[dict[str, Any]]:
+        canonical_keys = [
+            "NumeroPedido",
+            "Cliente",
+            "Comercial",
+            "FCarga",
+            "Plataforma",
+            "Pais",
+            "PCarga",
+            "Estado",
+            "Linea",
+            "Cantidad",
+            "CajasTotales",
+            "CP",
+            "TipoPalet",
+            "NombreCaja",
+            "Mercancia",
+            "Confeccion",
+            "Calibre",
+            "Categoria",
+            "Marca",
+            "PO",
+            "Lote",
+            "Observaciones",
+        ]
         resultado: list[dict[str, Any]] = []
+
+        def with_all_fields(payload: dict[str, Any]) -> dict[str, Any]:
+            fila = self._normalizar_campos_linea_pedido(dict(payload))
+            fila["Categoria"] = self._normalizar_categoria(fila.get("Categoria", ""))
+            return {key: str(fila.get(key, "") or "").strip() for key in canonical_keys}
+
         if isinstance(data, list):
-            return [self._normalizar_campos_linea_pedido(dict(item)) for item in data if isinstance(item, dict)]
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                resultado.append(with_all_fields(item))
+            return resultado
 
         if isinstance(data, dict) and "Pedidos" not in data and "Lineas" in data:
             data = {"Pedidos": [data]}
@@ -3043,14 +3079,18 @@ class EmailManagerWindow(tk.Toplevel):
                 "Plataforma": pedido.get("Plataforma", ""),
                 "Pais": pedido.get("Pais", ""),
                 "PCarga": pedido.get("PCarga", ""),
+                "Estado": pedido.get("Estado", ""),
             }
-            for linea in pedido.get("Lineas", []) or []:
+            lineas = pedido.get("Lineas", []) or []
+            if not isinstance(lineas, list):
+                continue
+            for linea in lineas:
                 if not isinstance(linea, dict):
                     continue
                 fila: dict[str, Any] = {}
                 fila.update(cabecera)
                 fila.update(linea)
-                resultado.append(self._normalizar_campos_linea_pedido(fila))
+                resultado.append(with_all_fields(fila))
         return resultado
 
     @staticmethod
@@ -3063,6 +3103,14 @@ class EmailManagerWindow(tk.Toplevel):
             fila["Cantidad"] = fila.get("Palets")
         if "TCajas" in fila and "CajasTotales" not in fila:
             fila["CajasTotales"] = fila.get("TCajas")
+        if "Cat." in fila and "Categoria" not in fila:
+            fila["Categoria"] = fila.get("Cat.")
+        if "Cat" in fila and "Categoria" not in fila:
+            fila["Categoria"] = fila.get("Cat")
+        if "Ct" in fila and "Categoria" not in fila:
+            fila["Categoria"] = fila.get("Ct")
+        if "Categoría" in fila and "Categoria" not in fila:
+            fila["Categoria"] = fila.get("Categoría")
         for key in ("NumeroPedido", "Cliente", "Comercial", "FCarga", "Plataforma", "Pais", "PCarga", "Linea", "Cantidad", "CajasTotales", "CP", "TipoPalet", "NombreCaja", "Mercancia", "Confeccion", "Calibre", "Categoria", "Marca", "PO", "Lote", "Observaciones"):
             fila[key] = str(fila.get(key, "") or "").strip()
         return fila
@@ -3159,31 +3207,30 @@ class EmailManagerWindow(tk.Toplevel):
         warnings: list[str] = []
         errors: list[str] = []
         required = self._campos_obligatorios_pedido()
-        pedido_agrupado = self._agrupar_lineas_en_pedidos(lineas)
+        canonical_lines = self._build_canonical_order_lines(lineas)
+        self.log(f"VALIDANDO LINEAS CANÓNICAS: {canonical_lines}", level="INFO")
 
-        for pedido in pedido_agrupado.get("Pedidos", []):
-            if not isinstance(pedido, dict):
-                continue
-            pedido_id = str(pedido.get("NumeroPedido") or pedido.get("PedidoID") or "Pedido").strip() or "Pedido"
-            if "Cliente" in required and not str(pedido.get("Cliente") or "").strip():
-                errors.append(f"Pedido {pedido_id}: Falta cliente")
-            if "FCarga" in required and not str(pedido.get("FCarga") or "").strip():
-                errors.append(f"Pedido {pedido_id}: Falta fecha de carga")
-            if "PCarga" in required and not str(pedido.get("PCarga") or "").strip():
-                errors.append(f"Pedido {pedido_id}: Falta punto de carga")
-
-            for index, linea in enumerate(pedido.get("Lineas", []) or [], start=1):
-                if "Cantidad" in required and not str(linea.get("Cantidad") or "").strip():
-                    errors.append(f"Pedido {pedido_id} · Línea {index}: Falta número de palets")
-                if "Mercancia" in required and not str(linea.get("Mercancia") or "").strip():
-                    errors.append(f"Pedido {pedido_id} · Línea {index}: Falta mercancía")
-                if "Confeccion" in required and not str(linea.get("Confeccion") or "").strip():
-                    errors.append(f"Pedido {pedido_id} · Línea {index}: Falta confección")
-                if linea.get("CP") is None or str(linea.get("CP") or "").strip() == "":
-                    warnings.append(f"Pedido {pedido_id} · Línea {index}: CP no definido")
-                categoria = str(linea.get("Categoria") or "").strip()
-                if categoria not in {"I", "II", "Estandar", ""}:
-                    warnings.append(f"Pedido {pedido_id} · Línea {index}: Categoría inválida")
+        for linea in canonical_lines:
+            pedido_ref = str(linea.get("NumeroPedido", "")).strip() or "Pedido sin número"
+            linea_ref = str(linea.get("Linea", "")).strip() or "?"
+            if "Cliente" in required and not str(linea.get("Cliente", "")).strip():
+                errors.append(f"Pedido {pedido_ref}: Falta cliente")
+            if "FCarga" in required and not str(linea.get("FCarga", "")).strip():
+                errors.append(f"Pedido {pedido_ref}: Falta fecha de carga")
+            if "PCarga" in required and not str(linea.get("PCarga", "")).strip():
+                errors.append(f"Pedido {pedido_ref}: Falta punto de carga")
+            if "Cantidad" in required and not str(linea.get("Cantidad", "")).strip():
+                errors.append(f"Pedido {pedido_ref} · Línea {linea_ref}: Falta número de palets")
+            if "Mercancia" in required and not str(linea.get("Mercancia", "")).strip():
+                errors.append(f"Pedido {pedido_ref} · Línea {linea_ref}: Falta mercancía")
+            if "Confeccion" in required and not str(linea.get("Confeccion", "")).strip():
+                errors.append(f"Pedido {pedido_ref} · Línea {linea_ref}: Falta confección")
+            cp = linea.get("CP", "")
+            if cp in ("", None):
+                warnings.append(f"Pedido {pedido_ref} · Línea {linea_ref}: CP no definido")
+            categoria = self._normalizar_categoria(linea.get("Categoria", ""))
+            if str(linea.get("Categoria", "")).strip() and not categoria:
+                warnings.append(f"Pedido {pedido_ref} · Línea {linea_ref}: Categoría inválida")
 
         return {"warnings": warnings, "errors": errors}
 

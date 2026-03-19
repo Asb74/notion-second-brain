@@ -287,6 +287,54 @@ def test_normalizar_pedidos_json_convierte_estructura_nueva() -> None:
     assert lineas[0]["NumeroPedido"] == "P-1"
     assert lineas[0]["TipoPalet"] == "Euro.Retor"
     assert lineas[0]["Cliente"] == "ACME"
+    assert lineas[0]["Categoria"] == ""
+
+
+def test_build_canonical_order_lines_copia_cabecera_y_normaliza_categoria() -> None:
+    window = EmailManagerWindow.__new__(EmailManagerWindow)
+    data = {
+        "Pedidos": [
+            {
+                "NumeroPedido": "P-2",
+                "Cliente": "Cliente Demo",
+                "FCarga": "2026-03-20",
+                "PCarga": "VAL",
+                "Lineas": [{"Linea": 1, "Mercancia": "Naranja", "Confeccion": "Caja", "Cat.": "extra"}],
+            }
+        ]
+    }
+
+    lineas = EmailManagerWindow._build_canonical_order_lines(window, data)
+
+    assert len(lineas) == 1
+    assert lineas[0]["Cliente"] == "Cliente Demo"
+    assert lineas[0]["FCarga"] == "2026-03-20"
+    assert lineas[0]["PCarga"] == "VAL"
+    assert lineas[0]["Categoria"] == "Extra"
+    assert set(lineas[0].keys()) == {
+        "NumeroPedido",
+        "Cliente",
+        "Comercial",
+        "FCarga",
+        "Plataforma",
+        "Pais",
+        "PCarga",
+        "Estado",
+        "Linea",
+        "Cantidad",
+        "CajasTotales",
+        "CP",
+        "TipoPalet",
+        "NombreCaja",
+        "Mercancia",
+        "Confeccion",
+        "Calibre",
+        "Categoria",
+        "Marca",
+        "PO",
+        "Lote",
+        "Observaciones",
+    }
 
 
 def test_calcular_estado_linea_nuevo_modificado_cancelado() -> None:
