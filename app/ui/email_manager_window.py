@@ -141,96 +141,39 @@ ATTACHMENT_SUMMARY_REQUEST = (
     "- no inventar información\n"
     "- si falta información, indícalo brevemente\n"
 )
-PROMPT_PEDIDOS = """Extrae los datos del pedido con precisión estructurada.
+PROMPT_PEDIDOS = """Extrae la información del pedido a partir del siguiente texto.
 
-REGLAS CRÍTICAS:
+IMPORTANTE:
+- Debes devolver EXCLUSIVAMENTE un JSON válido
+- No incluyas texto fuera del JSON
+- Si un campo no existe, déjalo como string vacío "" o null si es numérico
+- No inventes datos
+- Mantén todos los campos aunque no aparezcan
+- La respuesta debe ser estrictamente parseable como JSON
 
-- NumeroPedido puede repetirse
-- Estado NO se extrae (se calcula después)
-- NO inventar datos
-- Si un valor no está claro → ""
-
----
-
-CAMPOS:
-
-- Cantidad = nº palets
-- CajasTotales = total cajas
-- CP = cajas/palet o valor tipo X##
-- TipoPalet = sin números ni CP
-- Categoria = SOLO I, II, Estandar, Extra
-- Variedad = si aparece
-
----
-
-FORMATO OBLIGATORIO (NO MODIFICAR):
+FORMATO JSON OBLIGATORIO:
 
 {
-  "Pedidos": [
+  "NumeroPedido": "",
+  "Lineas": [
     {
-      "NumeroPedido": "",
-      "Cliente": "",
-      "Comercial": "",
-      "FCarga": "",
-      "Plataforma": "",
-      "Pais": "",
-      "PCarga": "",
-      "Lineas": [
-        {
-          "Linea": "",
-          "Cantidad": "",
-          "CajasTotales": "",
-          "CP": "",
-          "TipoPalet": "",
-          "NombreCaja": "",
-          "Mercancia": "",
-          "Confeccion": "",
-          "Calibre": "",
-          "Categoria": "",
-          "Marca": "",
-          "PO": "",
-          "Lote": "",
-          "Observaciones": ""
-        }
-      ]
+      "Cantidad": null,
+      "CajasTotales": null,
+      "CP": null,
+      "TipoPalet": "",
+      "Categoria": "",
+      "Variedad": ""
     }
   ]
 }
 
----
+Reglas adicionales:
+- "Cantidad", "CajasTotales" y "CP" deben ser numéricos si se detectan
+- Si hay varias líneas, incluir todas en el array
+- Si no hay líneas claras, devolver al menos una línea vacía
+- Detectar cancelaciones si aparecen palabras como "CANCELADO"
 
-REGLAS DE ESTRUCTURA (MUY IMPORTANTE):
-
-- TODOS los campos deben aparecer SIEMPRE
-- Si no existe → ""
-- NO eliminar claves
-- NO devolver estructuras parciales
-
----
-
-REGLAS ESPECÍFICAS:
-
-CP:
-- Buscar patrón X##
-- Si no existe → calcular CP = CajasTotales / Cantidad
-- Si no es posible → ""
-
-Categoria:
-- SOLO valores válidos: I, II, Estandar, Extra
-- Cualquier otro valor → ""
-
-TipoPalet:
-- Quitar número de palets
-- Quitar X##
-- Mantener tipo + configuración (Simple/Doble)
-
-Palets:
-- Número antes del tipo de pallet
-
-Pais:
-- País destino, NO origen
-
----
+Devuelve la respuesta en formato JSON válido.
 
 TEXTO DEL DOCUMENTO:
 \"\"\"
@@ -3000,12 +2943,17 @@ class EmailManagerWindow(tk.Toplevel):
             try:
                 client = build_openai_client()
                 response = client.responses.create(
-                    model="gpt-4.1-mini",
+                    model="gpt-4o-mini",
                     input=prompt,
-                    temperature=0,
-                    text={"format": {"type": "json_object"}},
+                    text={"format": "json_object"},
                 )
-                return str(response.output_text or "").strip()
+                response_text = str(response.output_text or "").strip()
+                try:
+                    parsed_response = json.loads(response_text)
+                except json.JSONDecodeError as exc:
+                    self.log(f"Respuesta JSON inválida al extraer pedido: {exc}", level="WARNING")
+                    return ""
+                return json.dumps(parsed_response, ensure_ascii=False)
             except Exception as exc:  # noqa: BLE001
                 self.log(f"No se pudo generar extracción de pedido: {exc}", level="WARNING")
                 return ""
@@ -3059,6 +3007,9 @@ class EmailManagerWindow(tk.Toplevel):
         resultado: list[dict[str, Any]] = []
         if isinstance(data, list):
             return [self._normalizar_campos_linea_pedido(dict(item)) for item in data if isinstance(item, dict)]
+
+        if isinstance(data, dict) and "Pedidos" not in data and "Lineas" in data:
+            data = {"Pedidos": [data]}
 
         pedidos = data.get("Pedidos", []) if isinstance(data, dict) else []
         for pedido in pedidos:

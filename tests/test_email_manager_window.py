@@ -80,10 +80,11 @@ class _PreviewTextStub:
 
 
 def test_attachment_order_request_prioritizes_numeric_palets_extraction() -> None:
-    assert "NumeroPedido puede repetirse" in ATTACHMENT_ORDER_REQUEST
+    assert "Debes devolver EXCLUSIVAMENTE un JSON válido" in ATTACHMENT_ORDER_REQUEST
     assert "\"Lineas\": [" in ATTACHMENT_ORDER_REQUEST
-    assert "CajasTotales / Cantidad" in ATTACHMENT_ORDER_REQUEST
+    assert "\"Cantidad\": null" in ATTACHMENT_ORDER_REQUEST
     assert "\"NumeroPedido\": \"\"" in ATTACHMENT_ORDER_REQUEST
+    assert "FORMATO JSON OBLIGATORIO" in ATTACHMENT_ORDER_REQUEST
     assert "{texto_extraido_pdf}" in ATTACHMENT_ORDER_REQUEST
 
 
