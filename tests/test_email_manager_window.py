@@ -80,10 +80,10 @@ class _PreviewTextStub:
 
 
 def test_attachment_order_request_prioritizes_numeric_palets_extraction() -> None:
-    assert "Datos generales del pedido" in ATTACHMENT_ORDER_REQUEST
+    assert "NumeroPedido puede repetirse" in ATTACHMENT_ORDER_REQUEST
     assert "\"Lineas\": [" in ATTACHMENT_ORDER_REQUEST
-    assert "CP (CRÍTICO):" in ATTACHMENT_ORDER_REQUEST
-    assert "TCajas / Palets" in ATTACHMENT_ORDER_REQUEST
+    assert "CajasTotales / Cantidad" in ATTACHMENT_ORDER_REQUEST
+    assert "\"NumeroPedido\": \"\"" in ATTACHMENT_ORDER_REQUEST
     assert "{texto_extraido_pdf}" in ATTACHMENT_ORDER_REQUEST
 
 
@@ -232,7 +232,7 @@ def test_is_probably_table_detects_pipe_or_tab_delimiters() -> None:
 
 def test_is_order_json_payload_detects_supported_order_shapes() -> None:
     assert EmailManagerWindow._is_order_json_payload({"Pedidos": []}) is True
-    assert EmailManagerWindow._is_order_json_payload({"PedidoID": "25/109774/1", "Lineas": []}) is True
+    assert EmailManagerWindow._is_order_json_payload({"NumeroPedido": "25/109774/1", "Lineas": []}) is True
     assert EmailManagerWindow._is_order_json_payload([{"Linea": 1, "Mercancia": "Naranjas"}]) is True
     assert EmailManagerWindow._is_order_json_payload({"foo": "bar"}) is False
 
@@ -245,8 +245,8 @@ def test_flatten_order_rows_expands_order_and_lines_for_vertical_table() -> None
                 "Cliente": "LIDL Alemania",
                 "Comercial": "Francisco José",
                 "Lineas": [
-                    {"Linea": 1, "Palets": "360", "Mercancia": "Naranjas Navel Lane Late"},
-                    {"Linea": 2, "Palets": "120", "Mercancia": "Mandarinas"},
+                    {"Linea": 1, "Cantidad": "360", "Mercancia": "Naranjas Navel Lane Late"},
+                    {"Linea": 2, "Cantidad": "120", "Mercancia": "Mandarinas"},
                 ],
             }
         ]
@@ -259,7 +259,7 @@ def test_flatten_order_rows_expands_order_and_lines_for_vertical_table() -> None
     assert ["Cliente", "LIDL Alemania"] in rows
     assert ["Comercial", "Francisco José"] in rows
     assert ["Campo", "Línea 1"] in rows
-    assert ["Palets", "360"] in rows
+    assert ["Cantidad", "360"] in rows
     assert ["Mercancia", "Naranjas Navel Lane Late"] in rows
 
 
@@ -268,7 +268,7 @@ def test_normalizar_pedidos_json_convierte_estructura_nueva() -> None:
     data = {
         "Pedidos": [
             {
-                "PedidoID": "P-1",
+                "NumeroPedido": "P-1",
                 "Cliente": "ACME",
                 "Comercial": "Ana",
                 "FCarga": "2026-03-19",
@@ -276,34 +276,37 @@ def test_normalizar_pedidos_json_convierte_estructura_nueva() -> None:
                 "Pais": "España",
                 "PCarga": "SEV",
                 "Lineas": [
-                    {"Linea": 1, "Palets": 2, "NombrePalet": "Euro.Retor", "Mercancia": "Naranja"},
+                    {"Linea": 1, "Cantidad": 2, "NombrePalet": "Euro.Retor", "Mercancia": "Naranja"},
                 ],
             }
         ]
     }
     lineas = EmailManagerWindow._normalizar_pedidos_json(window, data)
     assert len(lineas) == 1
-    assert lineas[0]["PedidoID"] == "P-1"
+    assert lineas[0]["NumeroPedido"] == "P-1"
     assert lineas[0]["TipoPalet"] == "Euro.Retor"
     assert lineas[0]["Cliente"] == "ACME"
 
 
-def test_calcular_estado_linea_nuevo_rectificado_cancelado() -> None:
+def test_calcular_estado_linea_nuevo_modificado_cancelado() -> None:
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
-    conn.execute("CREATE TABLE pedidos_lineas (pedido_id TEXT, linea INTEGER)")
-    conn.execute("INSERT INTO pedidos_lineas (pedido_id, linea) VALUES ('P-1', 1)")
+    conn.execute("CREATE TABLE pedidos (id INTEGER PRIMARY KEY AUTOINCREMENT, numero_pedido TEXT, estado TEXT, fecha DATETIME)")
+    conn.execute("CREATE TABLE lineas (pedido_id INTEGER, linea INTEGER, cantidad REAL, cajas_totales REAL, cp REAL, tipo_palet TEXT, nombre_caja TEXT, mercancia TEXT, confeccion TEXT, calibre TEXT, categoria TEXT, marca TEXT, po TEXT, lote TEXT, observaciones TEXT)")
+    conn.execute("INSERT INTO pedidos (id, numero_pedido, estado, fecha) VALUES (1, 'P-1', 'Nuevo', CURRENT_TIMESTAMP)")
+    conn.execute("INSERT INTO lineas (pedido_id, linea, cantidad, cajas_totales, cp, tipo_palet) VALUES (1, 1, 10, 300, 30, 'Euro.Retor')")
     conn.commit()
 
     window = EmailManagerWindow.__new__(EmailManagerWindow)
     window.conn = conn
 
-    assert EmailManagerWindow._calcular_estado_linea(window, {"PedidoID": "P-2", "Linea": 1}) == "Nuevo"
-    assert EmailManagerWindow._calcular_estado_linea(window, {"PedidoID": "P-1", "Linea": 1}) == "Rectificado"
+    window.pedidos_repo = type("PedidosRepo", (), {"obtener_lineas_ultima_version_por_pedido": lambda *_args: [{"Linea": 1, "Cantidad": 10, "CajasTotales": 300, "CP": 30, "TipoPalet": "Euro.Retor"}]})()
+    assert EmailManagerWindow._calcular_estado_linea(window, {"NumeroPedido": "P-2", "Linea": 1}) == "Nuevo"
+    assert EmailManagerWindow._calcular_estado_linea(window, {"NumeroPedido": "P-1", "Linea": 1, "Cantidad": 8, "CajasTotales": 240, "CP": 30, "TipoPalet": "Euro.Retor"}) == "Modificado"
     assert (
         EmailManagerWindow._calcular_estado_linea(
             window,
-            {"PedidoID": "P-3", "Linea": 1, "Observaciones": "pedido cancelado por cliente"},
+            {"NumeroPedido": "P-3", "Linea": 1, "Observaciones": "pedido cancelado por cliente"},
         )
         == "Cancelado"
     )
@@ -315,21 +318,18 @@ def test_validar_linea_pedido_detecta_errores_basicos() -> None:
         window,
         {
             "PedidoID": "",
-            "Cliente": "",
+            "NumeroPedido": "",
             "Linea": "",
-            "Palets": "abc",
-            "TCajas": "-1",
+            "Cantidad": "abc",
+            "CajasTotales": "-1",
             "CP": "0",
+            "TipoPalet": "",
             "Categoria": "Fruta",
-            "PO": "REF-123",
             "Estado": "Desconocido",
         },
     )
-    assert "Falta PedidoID" in errores
-    assert "Falta Cliente" in errores
-    assert "Palets no es numérico" in errores
-    assert "Categoria inválida" in errores
-    assert "PO no parece un precio válido" in errores
+    assert "Falta número de pedido" in errores
+    assert "valores no numéricos" in errores
     assert "Estado inválido" in errores
 
 
@@ -337,10 +337,9 @@ def test_detectar_errores_erp_linea_detecta_incoherencias() -> None:
     window = EmailManagerWindow.__new__(EmailManagerWindow)
     errores = EmailManagerWindow._detectar_errores_erp_linea(
         window,
-        {"Palets": 10, "TCajas": 300, "CP": 20, "Estado": "Cancelado"},
+        {"Cantidad": 10, "CajasTotales": 300, "CP": 20, "Estado": "Cancelado"},
     )
     assert any("CP incoherente" in error for error in errores)
-    assert "Línea cancelada con cantidades informadas" in errores
 
 
 def test_export_to_csv_writes_headers_and_rows(tmp_path: Path) -> None:
@@ -916,9 +915,10 @@ def test_parse_order_json_raises_for_empty_payload() -> None:
 
 
 def test_format_estado_badge_uses_expected_colors() -> None:
-    assert format_estado_badge("Nuevo") == "🟢 Nuevo"
-    assert format_estado_badge("Rectificado") == "🟡 Rectificado"
+    assert format_estado_badge("Nuevo") == "🔵 Nuevo"
+    assert format_estado_badge("Modificado") == "🟡 Modificado"
     assert format_estado_badge("Cancelado") == "🔴 Cancelado"
+    assert format_estado_badge("Sin cambios") == "⚪ Sin cambios"
 
 
 def test_parse_markdown_table_handles_separator_and_csv() -> None:

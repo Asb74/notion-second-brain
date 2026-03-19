@@ -28,29 +28,89 @@ def detectar_cancelado(linea: dict[str, Any]) -> bool:
     return False
 
 
-def existe_linea_en_bd(db: sqlite3.Connection, linea: dict[str, Any]) -> bool:
+def _to_comp_text(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    try:
+        num = float(str(value).strip())
+        if num.is_integer():
+            return str(int(num))
+        return str(num)
+    except (TypeError, ValueError):
+        return str(value).strip()
+
+
+def _linea_para_comparacion(linea: dict[str, Any]) -> dict[str, str]:
+    return {
+        "Linea": _to_comp_text(linea.get("Linea")),
+        "Cantidad": _to_comp_text(linea.get("Cantidad") or linea.get("Palets")),
+        "CajasTotales": _to_comp_text(linea.get("CajasTotales") or linea.get("TCajas")),
+        "CP": _to_comp_text(linea.get("CP")),
+        "TipoPalet": str(linea.get("TipoPalet") or linea.get("NombrePalet") or "").strip(),
+        "NombreCaja": str(linea.get("NombreCaja") or "").strip(),
+        "Mercancia": str(linea.get("Mercancia") or "").strip(),
+        "Confeccion": str(linea.get("Confeccion") or "").strip(),
+        "Calibre": str(linea.get("Calibre") or "").strip(),
+        "Categoria": str(linea.get("Categoria") or "").strip(),
+        "Marca": str(linea.get("Marca") or "").strip(),
+        "PO": str(linea.get("PO") or "").strip(),
+        "Lote": str(linea.get("Lote") or "").strip(),
+        "Observaciones": str(linea.get("Observaciones") or "").strip(),
+    }
+
+
+def _obtener_lineas_ultima_version(db: sqlite3.Connection, numero_pedido: str) -> list[dict[str, Any]]:
     query = """
-    SELECT 1 FROM pedidos
-    WHERE PedidoID = ? AND Linea = ?
-    LIMIT 1
+    SELECT linea, cantidad, cajas_totales, cp, tipo_palet, nombre_caja, mercancia, confeccion, calibre, categoria, marca, po, lote, observaciones
+    FROM lineas
+    WHERE pedido_id = (
+        SELECT id FROM pedidos
+        WHERE numero_pedido = ?
+        ORDER BY fecha DESC, id DESC
+        LIMIT 1
+    )
+    ORDER BY linea
     """
-    result = db.execute(query, (str(linea.get("PedidoID") or "").strip(), _safe_int(linea.get("Linea")))).fetchone()
-    return result is not None
+    rows = db.execute(query, (numero_pedido,)).fetchall()
+    return [
+        {
+            "Linea": row["linea"],
+            "Cantidad": row["cantidad"],
+            "CajasTotales": row["cajas_totales"],
+            "CP": row["cp"],
+            "TipoPalet": row["tipo_palet"],
+            "NombreCaja": row["nombre_caja"],
+            "Mercancia": row["mercancia"],
+            "Confeccion": row["confeccion"],
+            "Calibre": row["calibre"],
+            "Categoria": row["categoria"],
+            "Marca": row["marca"],
+            "PO": row["po"],
+            "Lote": row["lote"],
+            "Observaciones": row["observaciones"],
+        }
+        for row in rows
+    ]
 
 
-def calcular_estado_linea(db: sqlite3.Connection, linea: dict[str, Any]) -> str:
-    if detectar_cancelado(linea):
+def calcular_estado_pedido(pedido_nuevo: dict[str, Any], pedido_existente: dict[str, Any] | None) -> str:
+    if pedido_nuevo.get("cancelado", False):
         return "Cancelado"
-
-    if existe_linea_en_bd(db, linea):
-        return "Rectificado"
-
-    return "Nuevo"
+    if pedido_existente is None:
+        return "Nuevo"
+    if pedido_nuevo.get("Lineas", []) != pedido_existente.get("Lineas", []):
+        return "Modificado"
+    return "Sin cambios"
 
 
 def aplicar_estados(db: sqlite3.Connection, lineas: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for linea in lineas:
-        linea["Estado"] = calcular_estado_linea(db, linea)
+        numero_pedido = str(linea.get("NumeroPedido") or linea.get("PedidoID") or "").strip()
+        existentes = _obtener_lineas_ultima_version(db, numero_pedido) if numero_pedido else []
+        linea["Estado"] = calcular_estado_pedido(
+            {"Lineas": [_linea_para_comparacion(linea)], "cancelado": detectar_cancelado(linea)},
+            {"Lineas": [_linea_para_comparacion(item) for item in existentes]} if existentes else None,
+        )
 
     return lineas
 
@@ -76,39 +136,30 @@ class PedidosRepository:
             """
             CREATE TABLE IF NOT EXISTS pedidos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                PedidoID TEXT,
-                Linea INTEGER,
-                Cliente TEXT,
-                Mercancia TEXT,
-                Palets INTEGER,
-                Estado TEXT,
-                FechaProcesado DATETIME DEFAULT CURRENT_TIMESTAMP
+                numero_pedido TEXT,
+                estado TEXT,
+                fecha DATETIME DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
         self.conn.execute(
             """
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_pedidos_pedido_linea
-            ON pedidos(PedidoID, Linea)
-            """
-        )
-        self.conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS pedidos_lineas (
+            CREATE TABLE IF NOT EXISTS lineas (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                pedido_id TEXT,
+                pedido_id INTEGER NOT NULL,
+                numero_pedido TEXT,
                 linea INTEGER,
-                palets INTEGER,
-                nombre_palet TEXT,
-                total_cajas INTEGER,
-                cajas_palet INTEGER,
+                cantidad REAL,
+                cajas_totales REAL,
+                cp REAL,
+                tipo_palet TEXT,
                 nombre_caja TEXT,
                 mercancia TEXT,
                 confeccion TEXT,
                 calibre TEXT,
                 categoria TEXT,
                 marca TEXT,
-                precio TEXT,
+                po TEXT,
                 lote TEXT,
                 observaciones TEXT,
                 cliente TEXT,
@@ -118,10 +169,7 @@ class PedidosRepository:
                 pais TEXT,
                 punto_carga TEXT,
                 estado TEXT,
-                leido BOOLEAN,
-                grabado BOOLEAN,
-                archivo_origen TEXT,
-                fecha_importacion DATETIME DEFAULT CURRENT_TIMESTAMP
+                archivo_origen TEXT
             )
             """
         )
@@ -132,69 +180,52 @@ class PedidosRepository:
         total_rows = 0
 
         for pedido, linea in self._iter_line_items(payload):
-            pedido_id = str(linea.get("PedidoID") or pedido.get("PedidoID") or pedido.get("pedido_id") or "").strip()
+            pedido_id = str(linea.get("NumeroPedido") or linea.get("PedidoID") or pedido.get("NumeroPedido") or pedido.get("PedidoID") or pedido.get("pedido_id") or "").strip()
             cliente = str(linea.get("Cliente") or pedido.get("Cliente") or pedido.get("cliente") or "").strip()
             comercial = str(linea.get("Comercial") or pedido.get("Comercial") or pedido.get("comercial") or "").strip()
             linea_numero = self._as_int(linea.get("Linea") or linea.get("linea"))
-
-            estado_linea = calcular_estado_linea(
-                self.conn,
-                {
-                    "PedidoID": pedido_id,
-                    "Linea": linea_numero,
-                    "Observaciones": self._as_text(linea.get("Observaciones") or linea.get("observaciones")),
-                    "Mercancia": self._as_text(linea.get("Mercancia") or linea.get("mercancia")),
-                    "NombreCaja": self._as_text(linea.get("NombreCaja") or linea.get("nombre_caja")),
-                },
+            lineas_existentes = _obtener_lineas_ultima_version(self.conn, pedido_id) if pedido_id else []
+            estado_pedido = calcular_estado_pedido(
+                {"Lineas": [_linea_para_comparacion(linea)], "cancelado": detectar_cancelado(linea)},
+                {"Lineas": [_linea_para_comparacion(item) for item in lineas_existentes]} if lineas_existentes else None,
             )
-            linea["Estado"] = estado_linea
-            self.conn.execute(
+            pedido_row = self.conn.execute(
                 """
                 INSERT INTO pedidos (
-                    PedidoID, Linea, Cliente, Mercancia, Palets, Estado
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(PedidoID, Linea) DO UPDATE SET
-                    Cliente = excluded.Cliente,
-                    Mercancia = excluded.Mercancia,
-                    Palets = excluded.Palets,
-                    Estado = excluded.Estado,
-                    FechaProcesado = CURRENT_TIMESTAMP
+                    numero_pedido, estado
+                ) VALUES (?, ?)
                 """,
-                (
-                    pedido_id,
-                    linea_numero,
-                    self._as_text(cliente),
-                    self._as_text(linea.get("Mercancia") or linea.get("mercancia")),
-                    self._as_int(linea.get("Palets") or linea.get("palets")),
-                    estado_linea,
-                ),
+                (pedido_id, estado_pedido),
             )
+            pedido_row_id = pedido_row.lastrowid
+            linea["Estado"] = estado_pedido
             self.conn.execute(
                 """
-                INSERT INTO pedidos_lineas (
-                    pedido_id, linea,
-                    palets, nombre_palet, total_cajas, cajas_palet,
+                INSERT INTO lineas (
+                    pedido_id, numero_pedido, linea,
+                    cantidad, cajas_totales, cp, tipo_palet,
                     nombre_caja, mercancia, confeccion, calibre, categoria, marca,
-                    precio, lote, observaciones,
+                    po, lote, observaciones,
                     cliente, comercial,
                     fecha_carga, plataforma, pais, punto_carga,
-                    estado, leido, grabado, archivo_origen
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    estado, archivo_origen
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    pedido_row_id,
                     pedido_id,
                     linea_numero,
-                    self._as_int(linea.get("Palets") or linea.get("palets")),
-                    self._as_text(linea.get("TipoPalet") or linea.get("NombrePalet") or linea.get("tipo_palet") or linea.get("nombre_palet")),
-                    self._as_int(linea.get("TCajas") or linea.get("total_cajas")),
+                    self._as_int(linea.get("Cantidad") or linea.get("Palets") or linea.get("palets")),
+                    self._as_int(linea.get("CajasTotales") or linea.get("TCajas") or linea.get("total_cajas")),
                     self._as_int(linea.get("CP") or linea.get("cajas_palet")),
+                    self._as_text(linea.get("TipoPalet") or linea.get("NombrePalet") or linea.get("tipo_palet") or linea.get("nombre_palet")),
                     self._as_text(linea.get("NombreCaja") or linea.get("nombre_caja")),
                     self._as_text(linea.get("Mercancia") or linea.get("mercancia")),
                     self._as_text(linea.get("Confeccion") or linea.get("confeccion")),
                     self._as_text(linea.get("Calibre") or linea.get("calibre")),
                     self._as_text(linea.get("Categoria") or linea.get("categoria")),
                     self._as_text(linea.get("Marca") or linea.get("marca")),
-                    self._as_text(linea.get("PO") or linea.get("precio")),
+                    self._as_text(linea.get("PO") or linea.get("po") or linea.get("precio")),
                     self._as_text(linea.get("Lote") or linea.get("lote")),
                     self._as_text(linea.get("Observaciones") or linea.get("observaciones")),
                     self._as_text(cliente),
@@ -203,9 +234,7 @@ class PedidosRepository:
                     self._as_text(linea.get("Plataforma") or linea.get("plataforma")),
                     self._as_text(linea.get("Pais") or linea.get("pais")),
                     self._as_text(linea.get("PCarga") or linea.get("punto_carga")),
-                    estado_linea,
-                    False,
-                    True,
+                    estado_pedido,
                     (archivo_nombre or "").strip(),
                 ),
             )
@@ -224,7 +253,7 @@ class PedidosRepository:
                 continue
 
             raw_lines = pedido.get("Lineas") or pedido.get("lineas")
-            if raw_lines is None and any(key in pedido for key in ("Linea", "linea", "Mercancia", "PedidoID")):
+            if raw_lines is None and any(key in pedido for key in ("Linea", "linea", "Mercancia", "PedidoID", "NumeroPedido")):
                 raw_lines = [pedido]
             if isinstance(raw_lines, dict):
                 raw_lines = [raw_lines]
@@ -241,23 +270,26 @@ class PedidosRepository:
     def obtener_ultima_version_lineas(self) -> list[sqlite3.Row]:
         return self.conn.execute(
             """
-            SELECT *
-            FROM pedidos_lineas pl
-            WHERE fecha_importacion = (
-                SELECT MAX(fecha_importacion)
-                FROM pedidos_lineas
-                WHERE pedido_id = pl.pedido_id
-                  AND linea = pl.linea
+            SELECT l.*
+            FROM lineas l
+            JOIN pedidos p ON p.id = l.pedido_id
+            WHERE l.pedido_id IN (
+                SELECT MAX(id)
+                FROM pedidos
+                GROUP BY numero_pedido
             )
-            ORDER BY pedido_id, linea
+            ORDER BY numero_pedido, linea
             """
         ).fetchall()
+
+    def obtener_lineas_ultima_version_por_pedido(self, numero_pedido: str) -> list[dict[str, str]]:
+        return _obtener_lineas_ultima_version(self.conn, str(numero_pedido or "").strip())
 
     def obtener_resumen_palets(self) -> list[sqlite3.Row]:
         return self.conn.execute(
             """
-            SELECT mercancia, SUM(palets) AS total_palets
-            FROM pedidos_lineas
+            SELECT mercancia, SUM(cantidad) AS total_palets
+            FROM lineas
             WHERE estado != 'Cancelado'
             GROUP BY mercancia
             ORDER BY mercancia

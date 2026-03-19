@@ -145,21 +145,32 @@ class Database:
             )
             conn.execute(
                 """
-                CREATE TABLE IF NOT EXISTS pedidos_lineas (
+                CREATE TABLE IF NOT EXISTS pedidos (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    pedido_id TEXT,
+                    numero_pedido TEXT,
+                    estado TEXT,
+                    fecha DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS lineas (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    pedido_id INTEGER NOT NULL,
+                    numero_pedido TEXT,
                     linea INTEGER,
-                    palets INTEGER,
-                    nombre_palet TEXT,
-                    total_cajas INTEGER,
-                    cajas_palet INTEGER,
+                    cantidad REAL,
+                    cajas_totales REAL,
+                    cp REAL,
+                    tipo_palet TEXT,
                     nombre_caja TEXT,
                     mercancia TEXT,
                     confeccion TEXT,
                     calibre TEXT,
                     categoria TEXT,
                     marca TEXT,
-                    precio TEXT,
+                    po TEXT,
                     lote TEXT,
                     observaciones TEXT,
                     cliente TEXT,
@@ -169,31 +180,8 @@ class Database:
                     pais TEXT,
                     punto_carga TEXT,
                     estado TEXT,
-                    leido BOOLEAN,
-                    grabado BOOLEAN,
-                    archivo_origen TEXT,
-                    fecha_importacion DATETIME DEFAULT CURRENT_TIMESTAMP
+                    archivo_origen TEXT
                 )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS pedidos (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    PedidoID TEXT,
-                    Linea INTEGER,
-                    Cliente TEXT,
-                    Mercancia TEXT,
-                    Palets INTEGER,
-                    Estado TEXT,
-                    FechaProcesado DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_pedidos_pedido_linea
-                ON pedidos(PedidoID, Linea)
                 """
             )
             self._ensure_column(conn, "refinement_history", "refinement_mode", "TEXT NOT NULL DEFAULT 'email_summary'")
