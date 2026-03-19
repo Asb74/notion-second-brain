@@ -168,6 +168,35 @@ FORMATO JSON OBLIGATORIO:
   ]
 }
 
+REGLAS CRÍTICAS:
+
+1. CP (Cajas por palet)
+- Si aparece formato tipo X36 → CP = 36
+- Si no aparece → calcular:
+  CP = CajasTotales / Cantidad
+- Si no se puede calcular → null
+
+2. Categoria (MUY IMPORTANTE)
+- SOLO valores válidos:
+  "I", "II", "Estandar"
+- NO usar nombres de fruta
+- NO usar texto libre
+- Si no aparece claramente → ""
+
+3. Variedad
+- Aquí sí va el tipo de fruta:
+  Ej: "Naranja Navel Lane Late"
+- Nunca en Categoria
+
+4. TipoPalet
+- Eliminar números y CP
+- Mantener tipo y configuración
+  Ej: "EuroChepX36" → "EuroChep"
+
+REGLA GLOBAL:
+- Si un valor no cumple las reglas → dejar vacío o null
+- NO intentar adivinar
+
 Reglas adicionales:
 - "Cantidad", "CajasTotales" y "CP" deben ser numéricos si se detectan
 - Si hay varias líneas, incluir todas en el array
