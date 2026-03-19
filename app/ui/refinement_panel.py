@@ -50,8 +50,10 @@ OUTPUT_FORMAT_PROMPTS: dict[str, str] = {
     OUTPUT_FORMAT_PEDIDO: (
         "Devuelve SOLO JSON válido para pedidos. "
         "Estructura esperada: {'Pedidos':[{'PedidoID':'','Cliente':'','Comercial':'','Lineas':[...]}]}. "
-        "Cada línea debe incluir: Linea, Palets, NombrePalet, TCajas, CP, NombreCaja, Mercancia, Confeccion, "
-        "Calibre, Categoria, Marca, PO, Lote, Observaciones, Cliente, Comercial, FCarga, Plataforma, Pais, PCarga, Estado."
+        "Cada línea debe incluir: Linea, Palets, TipoPalet, TCajas, CP, NombreCaja, Mercancia, Confeccion, "
+        "Calibre, Categoria, Marca, PO, Lote, Observaciones. "
+        "Los datos de cabecera van solo en PedidoID, Cliente, Comercial, FCarga, Plataforma, Pais y PCarga. "
+        "Estado lo calcula el backend."
     ),
 }
 EMAIL_RESPONSE_PARAGRAPH_RULE = (
