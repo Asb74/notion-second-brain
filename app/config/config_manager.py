@@ -21,6 +21,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "auto_check": True,
         "interval": 60,
     },
+    "order_validation": {
+        "required_fields": [
+            "Cantidad",
+            "Mercancia",
+            "Cliente",
+            "FCarga",
+            "PCarga",
+            "Confeccion",
+        ],
+    },
 }
 
 
@@ -64,6 +74,10 @@ class ConfigManager:
         """Return email runtime settings."""
         return dict(self.load().get("email_settings", {}))
 
+    def get_order_validation(self) -> dict[str, Any]:
+        """Return order validation runtime settings."""
+        return dict(self.load().get("order_validation", {}))
+
     @staticmethod
     def _clone_default() -> dict[str, Any]:
         return json.loads(json.dumps(DEFAULT_CONFIG))
@@ -103,6 +117,17 @@ class ConfigManager:
             config["email_settings"] = {
                 "auto_check": bool(raw_settings.get("auto_check", True)),
                 "interval": interval,
+            }
+
+        raw_order_validation = data.get("order_validation", {})
+        if isinstance(raw_order_validation, dict):
+            required_fields = raw_order_validation.get("required_fields", [])
+            if isinstance(required_fields, list):
+                normalized_required = [str(item).strip() for item in required_fields if str(item).strip()]
+            else:
+                normalized_required = list(DEFAULT_CONFIG["order_validation"]["required_fields"])
+            config["order_validation"] = {
+                "required_fields": normalized_required or list(DEFAULT_CONFIG["order_validation"]["required_fields"]),
             }
 
         return config

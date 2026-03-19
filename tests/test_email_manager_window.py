@@ -343,6 +343,41 @@ def test_detectar_errores_erp_linea_detecta_incoherencias() -> None:
     assert any("CP incoherente" in error for error in errores)
 
 
+def test_validar_pedido_para_confirmacion_separa_warnings_y_errores() -> None:
+    window = EmailManagerWindow.__new__(EmailManagerWindow)
+    window.config_manager = type(
+        "Cfg",
+        (),
+        {
+            "get_order_validation": lambda *_args: {
+                "required_fields": ["Cantidad", "Mercancia", "Cliente", "FCarga", "PCarga", "Confeccion"]
+            }
+        },
+    )()
+    lineas = [
+        {
+            "NumeroPedido": "P-77",
+            "Linea": 1,
+            "Cantidad": "",
+            "Mercancia": "",
+            "Confeccion": "",
+            "Cliente": "",
+            "FCarga": "",
+            "PCarga": "",
+            "CP": "",
+            "Categoria": "Premium",
+        }
+    ]
+
+    resultado = EmailManagerWindow._validar_pedido_para_confirmacion(window, lineas)
+
+    assert len(resultado["errors"]) == 6
+    assert any("Falta cliente" in err for err in resultado["errors"])
+    assert any("Falta número de palets" in err for err in resultado["errors"])
+    assert any("CP no definido" in warning for warning in resultado["warnings"])
+    assert any("Categoría inválida" in warning for warning in resultado["warnings"])
+
+
 def test_export_to_csv_writes_headers_and_rows(tmp_path: Path) -> None:
     output_path = tmp_path / "tabla.csv"
     export_to_csv(["Campo", "Detalles"], [["A", "B"]], str(output_path))
