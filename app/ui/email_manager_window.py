@@ -437,14 +437,14 @@ def render_table(parent: tk.Misc, headers: list[str], rows: list[list[str]]) -> 
     return tree
 
 
-def render_text_output(parent: tk.Misc, text: str) -> tk.Text:
+def render_text_output(parent: tk.Misc, text: str, *, editable: bool = False) -> tk.Text:
     """Render output as plain text, preserving formatting and avoiding tabular widgets."""
     for widget in parent.winfo_children():
         widget.destroy()
 
     text_widget = tk.Text(parent, wrap="word")
     text_widget.insert("1.0", text or "")
-    text_widget.config(state="disabled")
+    text_widget.config(state="normal" if editable else "disabled")
     text_widget.pack(fill="both", expand=True)
     return text_widget
 
@@ -677,11 +677,12 @@ class EmailManagerWindow(tk.Toplevel):
         container: tk.Misc,
         output_text: str,
         context_type: Literal["summary", "email_response"],
+        editable: bool = False,
     ) -> tk.Text | None:
         self._clear_result_container(container)
         clean_output = clean_markdown(output_text)
         if context_type == "email_response":
-            return render_text_output(container, clean_output)
+            return render_text_output(container, clean_output, editable=editable)
 
         order_payload = None
         try:
@@ -729,7 +730,27 @@ class EmailManagerWindow(tk.Toplevel):
             ttk.Button(actions, text="💾 Guardar como CSV", command=lambda: self._save_treeview_as_csv(tree)).pack(side="left", padx=(6, 0))
             return None
 
-        return render_text_output(container, clean_output)
+        return render_text_output(container, clean_output, editable=editable)
+
+    def _initialize_review_edit_state(self, generated_text: str) -> None:
+        self.original_generated_text = (generated_text or "").strip()
+        self.current_working_text = self.original_generated_text
+        self.edited_text = ""
+        self.is_user_edited = False
+
+    def _update_review_working_text(self, visible_text: str) -> None:
+        self.current_working_text = (visible_text or "").strip()
+
+    def _mark_review_text_edited(self, visible_text: str) -> None:
+        current_text = (visible_text or "").strip()
+        self.current_working_text = current_text
+        self.edited_text = current_text
+        self.is_user_edited = True
+
+    def _get_final_confirmed_text(self) -> str:
+        if self.is_user_edited and self.edited_text.strip():
+            return self.edited_text.strip()
+        return self.current_working_text.strip() or self.original_generated_text.strip()
 
     @staticmethod
     def _is_order_json_payload(parsed_json: object) -> bool:
@@ -3428,7 +3449,10 @@ class EmailManagerWindow(tk.Toplevel):
 
         original_output = self._apply_user_signature(draft_ai_response).strip()
         current_output = original_output
-        editor = self._render_output_widget(output_frame, current_output, context_type="email_response")
+        editor = self._render_output_widget(output_frame, current_output, context_type="email_response", editable=False)
+        self._initialize_review_edit_state(original_output)
+        is_edit_mode = False
+        edit_status_var = tk.StringVar(value="Sin editar")
         input_original = build_email_training_input_text(
             subject=row.get("subject", ""),
             sender=row.get("real_sender") or row.get("sender", ""),
@@ -3447,17 +3471,60 @@ class EmailManagerWindow(tk.Toplevel):
         panel.seed_history(original_output)
         panel.sync_output_format_with_content(original_output)
         refinement_instructions_used: list[str] = []
+        dictation_controls: ttk.Frame | None = None
+
+        def update_review_state_from_editor(*, mark_edited: bool) -> str:
+            if editor is None:
+                return self.current_working_text
+            visible_text = editor.get("1.0", "end").strip()
+            if mark_edited:
+                self._mark_review_text_edited(visible_text)
+                edit_status_var.set("Versión final editada")
+            else:
+                self._update_review_working_text(visible_text)
+            return visible_text
+
+        def _bind_editor_change_tracking(current_editor: tk.Text) -> None:
+            def on_editor_change(_event: tk.Event) -> None:
+                self._mark_review_text_edited(current_editor.get("1.0", "end").strip())
+                edit_status_var.set("Versión final editada")
+                current_editor.edit_modified(False)
+
+            current_editor.bind("<<Modified>>", on_editor_change, add="+")
+
+        def enable_edit_mode() -> None:
+            nonlocal dictation_controls, is_edit_mode
+            if editor is None:
+                return
+            editor.config(state="normal")
+            editor.focus_set()
+            if dictation_controls is None:
+                dictation_controls = attach_dictation(editor, buttons)
+                dictation_controls.pack(side="left", padx=6)
+            if not is_edit_mode:
+                is_edit_mode = True
+                self._mark_review_text_edited(editor.get("1.0", "end").strip())
+                edit_status_var.set("Versión final editada")
+                _bind_editor_change_tracking(editor)
 
         def get_current_output() -> str:
             nonlocal current_output
             if editor is not None:
-                current_output = editor.get("1.0", "end").strip()
+                current_output = update_review_state_from_editor(mark_edited=is_edit_mode)
             return current_output
 
         def set_current_output(value: str) -> None:
             nonlocal current_output, editor
             current_output = (value or "").strip()
-            editor = self._render_output_widget(output_frame, current_output, context_type="email_response")
+            editor = self._render_output_widget(
+                output_frame,
+                current_output,
+                context_type="email_response",
+                editable=is_edit_mode,
+            )
+            self._update_review_working_text(current_output)
+            if editor is not None and is_edit_mode:
+                _bind_editor_change_tracking(editor)
             panel.sync_output_format_with_content(current_output)
 
         panel.on_restore_version = set_current_output
@@ -3490,6 +3557,7 @@ class EmailManagerWindow(tk.Toplevel):
 
         buttons = ttk.Frame(dialog)
         buttons.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 12))
+        ttk.Label(dialog, textvariable=edit_status_var).grid(row=4, column=0, sticky="w", padx=12, pady=(0, 6))
 
         ttk.Button(buttons, text="Mejorar resultado", command=refine_response).pack(side="left")
         ttk.Button(
@@ -3503,13 +3571,20 @@ class EmailManagerWindow(tk.Toplevel):
         ttk.Button(buttons, text="Restaurar versión", command=panel.restore_selected_version).pack(side="left")
 
         def use_response() -> None:
-            final_text = self._ensure_plain_email_response(get_current_output())
+            get_current_output()
+            final_text = self._ensure_plain_email_response(self._get_final_confirmed_text())
             if not final_text:
                 messagebox.showwarning("Atención", "La respuesta no puede estar vacía.")
                 return
             self.response_text.delete("1.0", "end")
             self.response_text.insert("1.0", final_text)
-            self._save_email_response_feedback_async(row=row, output_text=final_text, edited_by_user=final_text != original_output)
+            self._save_email_response_feedback_async(
+                row=row,
+                output_text=final_text,
+                edited_by_user=bool(self.is_user_edited),
+                generated_text_original=original_output,
+                confirmed_text_final=final_text,
+            )
             self._save_email_reply_learning_async(
                 input_email=input_original,
                 ai_output=original_output,
@@ -3520,30 +3595,23 @@ class EmailManagerWindow(tk.Toplevel):
             dialog.destroy()
 
         def edit_and_use_response() -> None:
-            edited_text = self._ensure_plain_email_response(get_current_output())
-            if not edited_text:
-                messagebox.showwarning("Atención", "La respuesta no puede estar vacía.")
-                return
-            self.response_text.delete("1.0", "end")
-            self.response_text.insert("1.0", edited_text)
-            self._save_email_response_feedback_async(row=row, output_text=edited_text, edited_by_user=True)
-            self._save_email_reply_learning_async(
-                input_email=input_original,
-                ai_output=original_output,
-                user_final=edited_text,
-                refinement_instructions="\n".join(refinement_instructions_used).strip(),
-                output_format=panel.output_format,
-            )
-            dialog.destroy()
+            enable_edit_mode()
 
         def save_final_version() -> None:
-            final_text = self._ensure_plain_email_response(get_current_output())
+            get_current_output()
+            final_text = self._ensure_plain_email_response(self._get_final_confirmed_text())
             if not final_text:
                 messagebox.showwarning("Atención", "La respuesta no puede estar vacía.")
                 return
             self.response_text.delete("1.0", "end")
             self.response_text.insert("1.0", final_text)
-            self._save_email_response_feedback_async(row=row, output_text=final_text, edited_by_user=final_text != original_output)
+            self._save_email_response_feedback_async(
+                row=row,
+                output_text=final_text,
+                edited_by_user=bool(self.is_user_edited),
+                generated_text_original=original_output,
+                confirmed_text_final=final_text,
+            )
             self._save_email_reply_learning_async(
                 input_email=input_original,
                 ai_output=original_output,
@@ -3596,7 +3664,10 @@ class EmailManagerWindow(tk.Toplevel):
         output_frame.grid_columnconfigure(0, weight=1)
         output_frame.grid_rowconfigure(0, weight=1)
         current_output = original_output
-        editor = self._render_output_widget(output_frame, current_output, context_type="summary")
+        editor = self._render_output_widget(output_frame, current_output, context_type="summary", editable=False)
+        self._initialize_review_edit_state(original_output)
+        is_edit_mode = False
+        edit_status_var = tk.StringVar(value="Sin editar")
 
         input_original = preview_body.strip() or build_email_training_input_text(
             subject=row.get("subject", ""),
@@ -3619,17 +3690,60 @@ class EmailManagerWindow(tk.Toplevel):
         else:
             panel.sync_output_format_with_content(original_output)
         refinement_instructions_used: list[str] = []
+        dictation_controls: ttk.Frame | None = None
+
+        def update_review_state_from_editor(*, mark_edited: bool) -> str:
+            if editor is None:
+                return self.current_working_text
+            visible_text = editor.get("1.0", "end").strip()
+            if mark_edited:
+                self._mark_review_text_edited(visible_text)
+                edit_status_var.set("Versión final editada")
+            else:
+                self._update_review_working_text(visible_text)
+            return visible_text
+
+        def _bind_editor_change_tracking(current_editor: tk.Text) -> None:
+            def on_editor_change(_event: tk.Event) -> None:
+                self._mark_review_text_edited(current_editor.get("1.0", "end").strip())
+                edit_status_var.set("Versión final editada")
+                current_editor.edit_modified(False)
+
+            current_editor.bind("<<Modified>>", on_editor_change, add="+")
+
+        def enable_edit_mode() -> None:
+            nonlocal dictation_controls, is_edit_mode
+            if editor is None:
+                return
+            editor.config(state="normal")
+            editor.focus_set()
+            if dictation_controls is None:
+                dictation_controls = attach_dictation(editor, buttons)
+                dictation_controls.pack(side="left", padx=6)
+            if not is_edit_mode:
+                is_edit_mode = True
+                self._mark_review_text_edited(editor.get("1.0", "end").strip())
+                edit_status_var.set("Versión final editada")
+                _bind_editor_change_tracking(editor)
 
         def get_current_output() -> str:
             nonlocal current_output
             if editor is not None:
-                current_output = editor.get("1.0", "end").strip()
+                current_output = update_review_state_from_editor(mark_edited=is_edit_mode)
             return current_output
 
         def set_current_output(value: str) -> None:
             nonlocal current_output, editor
             current_output = (value or "").strip()
-            editor = self._render_output_widget(output_frame, current_output, context_type="summary")
+            editor = self._render_output_widget(
+                output_frame,
+                current_output,
+                context_type="summary",
+                editable=is_edit_mode,
+            )
+            self._update_review_working_text(current_output)
+            if editor is not None and is_edit_mode:
+                _bind_editor_change_tracking(editor)
             if order_lineas is not None:
                 panel.set_output_format(OUTPUT_FORMAT_PEDIDO)
             else:
@@ -3664,13 +3778,15 @@ class EmailManagerWindow(tk.Toplevel):
 
         buttons = ttk.Frame(dialog)
         buttons.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 12))
+        ttk.Label(dialog, textvariable=edit_status_var).grid(row=4, column=0, sticky="w", padx=12, pady=(0, 6))
 
         ttk.Button(buttons, text="Mejorar resultado", command=refine_summary).pack(side="left")
         ttk.Button(buttons, text="Restablecer", command=lambda: (set_current_output(original_output), panel.clear_refinements())).pack(side="left", padx=6)
         ttk.Button(buttons, text="Restaurar versión", command=panel.restore_selected_version).pack(side="left")
 
         def confirm_summary() -> None:
-            current_summary = get_current_output()
+            get_current_output()
+            current_summary = self._get_final_confirmed_text()
             if not current_summary:
                 messagebox.showwarning("Atención", "El resumen no puede estar vacío.")
                 return
@@ -3690,10 +3806,12 @@ class EmailManagerWindow(tk.Toplevel):
             self._save_email_summary_feedback_async(
                 row=row,
                 output_text=current_summary,
-                edited_by_user=current_summary != original_output,
+                edited_by_user=bool(self.is_user_edited),
                 preview_body=preview_body,
                 summary_source=summary_source,
                 attachment_types=attachment_types,
+                generated_text_original=original_output,
+                confirmed_text_final=current_summary,
             )
             self._save_email_summary_learning_async(
                 input_email=input_original,
@@ -3705,25 +3823,11 @@ class EmailManagerWindow(tk.Toplevel):
             dialog.destroy()
 
         def edit_summary() -> None:
-            edited_summary = get_current_output()
-            if not edited_summary:
-                messagebox.showwarning("Atención", "El resumen no puede estar vacío.")
-                return
-            self.response_text.delete("1.0", "end")
-            self.response_text.insert("1.0", f"Resumen rápido:\n\n{edited_summary}\n")
-            self._update_prepared_context_summary(row=row, summary_source=summary_source, summary_value=edited_summary)
-            self._save_email_summary_feedback_async(
-                row=row,
-                output_text=edited_summary,
-                edited_by_user=True,
-                preview_body=preview_body,
-                summary_source=summary_source,
-                attachment_types=attachment_types,
-            )
-            dialog.destroy()
+            enable_edit_mode()
 
         def save_final_version() -> None:
-            final_summary = get_current_output()
+            get_current_output()
+            final_summary = self._get_final_confirmed_text()
             if not final_summary:
                 messagebox.showwarning("Atención", "El resumen no puede estar vacío.")
                 return
@@ -3733,10 +3837,12 @@ class EmailManagerWindow(tk.Toplevel):
             self._save_email_summary_feedback_async(
                 row=row,
                 output_text=final_summary,
-                edited_by_user=final_summary != original_output,
+                edited_by_user=bool(self.is_user_edited),
                 preview_body=preview_body,
                 summary_source=summary_source,
                 attachment_types=attachment_types,
+                generated_text_original=original_output,
+                confirmed_text_final=final_summary,
             )
             dialog.destroy()
 
@@ -3747,12 +3853,24 @@ class EmailManagerWindow(tk.Toplevel):
 
         self.wait_window(dialog)
 
-    def _save_email_response_feedback_async(self, row: dict[str, str], output_text: str, edited_by_user: bool) -> None:
+    def _save_email_response_feedback_async(
+        self,
+        row: dict[str, str],
+        output_text: str,
+        edited_by_user: bool,
+        generated_text_original: str = "",
+        confirmed_text_final: str = "",
+    ) -> None:
         sender = row.get("real_sender") or row.get("sender", "")
         metadata = self._build_training_metadata(
             row=row,
             edited_by_user=edited_by_user,
-            extra={"email_category": row.get("category", "")},
+            extra={
+                "email_category": row.get("category", ""),
+                "generated_text_original": generated_text_original,
+                "confirmed_text_final": confirmed_text_final or output_text,
+                "was_user_edited": bool(edited_by_user),
+            },
         )
         input_text = build_email_training_input_text(
             subject=row.get("subject", ""),
@@ -3770,6 +3888,9 @@ class EmailManagerWindow(tk.Toplevel):
             jsonl_metadata={
                 "email_id": str(row.get("gmail_id", "") or "").strip(),
                 "edited_by_user": bool(edited_by_user),
+                "generated_text_original": generated_text_original,
+                "confirmed_text_final": confirmed_text_final or output_text,
+                "was_user_edited": bool(edited_by_user),
             },
         )
 
@@ -3845,6 +3966,8 @@ class EmailManagerWindow(tk.Toplevel):
         preview_body: str,
         summary_source: str = "email",
         attachment_types: list[str] | None = None,
+        generated_text_original: str = "",
+        confirmed_text_final: str = "",
     ) -> None:
         sender = row.get("real_sender") or row.get("sender", "")
         if summary_source == "attachment":
@@ -3870,6 +3993,9 @@ class EmailManagerWindow(tk.Toplevel):
                 "summary_type": "email_summary",
                 "summary_source": summary_source,
                 "attachment_types": attachment_types or [],
+                "generated_text_original": generated_text_original,
+                "confirmed_text_final": confirmed_text_final or output_text,
+                "was_user_edited": bool(edited_by_user),
             },
             body_text=preview_body,
         )
@@ -3885,6 +4011,9 @@ class EmailManagerWindow(tk.Toplevel):
                 "email_id": str(row.get("gmail_id", "") or "").strip(),
                 "edited_by_user": bool(edited_by_user),
                 "summary_source": summary_source,
+                "generated_text_original": generated_text_original,
+                "confirmed_text_final": confirmed_text_final or output_text,
+                "was_user_edited": bool(edited_by_user),
             },
         )
 
