@@ -252,7 +252,8 @@ def test_flatten_order_rows_expands_order_and_lines_for_vertical_table() -> None
         ]
     }
 
-    rows = EmailManagerWindow._flatten_order_rows(parsed_json)
+    window = EmailManagerWindow.__new__(EmailManagerWindow)
+    rows = EmailManagerWindow._flatten_order_rows(window, parsed_json)
 
     assert ["Campo", "25/109774/1"] in rows
     assert ["Cliente", "LIDL Alemania"] in rows
@@ -260,6 +261,86 @@ def test_flatten_order_rows_expands_order_and_lines_for_vertical_table() -> None
     assert ["Campo", "Línea 1"] in rows
     assert ["Palets", "360"] in rows
     assert ["Mercancia", "Naranjas Navel Lane Late"] in rows
+
+
+def test_normalizar_pedidos_json_convierte_estructura_nueva() -> None:
+    window = EmailManagerWindow.__new__(EmailManagerWindow)
+    data = {
+        "Pedidos": [
+            {
+                "PedidoID": "P-1",
+                "Cliente": "ACME",
+                "Comercial": "Ana",
+                "FCarga": "2026-03-19",
+                "Plataforma": "Madrid",
+                "Pais": "España",
+                "PCarga": "SEV",
+                "Lineas": [
+                    {"Linea": 1, "Palets": 2, "NombrePalet": "Euro.Retor", "Mercancia": "Naranja"},
+                ],
+            }
+        ]
+    }
+    lineas = EmailManagerWindow._normalizar_pedidos_json(window, data)
+    assert len(lineas) == 1
+    assert lineas[0]["PedidoID"] == "P-1"
+    assert lineas[0]["TipoPalet"] == "Euro.Retor"
+    assert lineas[0]["Cliente"] == "ACME"
+
+
+def test_calcular_estado_linea_nuevo_rectificado_cancelado() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE pedidos_lineas (pedido_id TEXT, linea INTEGER)")
+    conn.execute("INSERT INTO pedidos_lineas (pedido_id, linea) VALUES ('P-1', 1)")
+    conn.commit()
+
+    window = EmailManagerWindow.__new__(EmailManagerWindow)
+    window.conn = conn
+
+    assert EmailManagerWindow._calcular_estado_linea(window, {"PedidoID": "P-2", "Linea": 1}) == "Nuevo"
+    assert EmailManagerWindow._calcular_estado_linea(window, {"PedidoID": "P-1", "Linea": 1}) == "Rectificado"
+    assert (
+        EmailManagerWindow._calcular_estado_linea(
+            window,
+            {"PedidoID": "P-3", "Linea": 1, "Observaciones": "pedido cancelado por cliente"},
+        )
+        == "Cancelado"
+    )
+
+
+def test_validar_linea_pedido_detecta_errores_basicos() -> None:
+    window = EmailManagerWindow.__new__(EmailManagerWindow)
+    errores = EmailManagerWindow._validar_linea_pedido(
+        window,
+        {
+            "PedidoID": "",
+            "Cliente": "",
+            "Linea": "",
+            "Palets": "abc",
+            "TCajas": "-1",
+            "CP": "0",
+            "Categoria": "Fruta",
+            "PO": "REF-123",
+            "Estado": "Desconocido",
+        },
+    )
+    assert "Falta PedidoID" in errores
+    assert "Falta Cliente" in errores
+    assert "Palets no es numérico" in errores
+    assert "Categoria inválida" in errores
+    assert "PO no parece un precio válido" in errores
+    assert "Estado inválido" in errores
+
+
+def test_detectar_errores_erp_linea_detecta_incoherencias() -> None:
+    window = EmailManagerWindow.__new__(EmailManagerWindow)
+    errores = EmailManagerWindow._detectar_errores_erp_linea(
+        window,
+        {"Palets": 10, "TCajas": 300, "CP": 20, "Estado": "Cancelado"},
+    )
+    assert any("CP incoherente" in error for error in errores)
+    assert "Línea cancelada con cantidades informadas" in errores
 
 
 def test_export_to_csv_writes_headers_and_rows(tmp_path: Path) -> None:
@@ -567,7 +648,7 @@ def test_summarize_email_opens_review_dialog_with_generated_summary() -> None:
 
     captured: dict[str, str] = {}
 
-    def _capture_dialog(*, row, ai_summary, preview_body):
+    def _capture_dialog(*, row, ai_summary, preview_body, **_kwargs):
         captured["row_gmail_id"] = row["gmail_id"]
         captured["summary"] = ai_summary
         captured["preview_body"] = preview_body
@@ -614,7 +695,7 @@ def test_summarize_attachments_renders_expected_format() -> None:
     window.attachment_cache = type("Cache", (), {"ensure_downloaded": lambda *_args, **_kwargs: "/tmp/informe.txt"})()
     captured: dict[str, object] = {}
 
-    def _capture_dialog(*, row, ai_summary, preview_body, summary_source, attachment_types):
+    def _capture_dialog(*, row, ai_summary, preview_body, summary_source, attachment_types, **_kwargs):
         captured["row"] = row
         captured["summary"] = ai_summary
         captured["preview_body"] = preview_body
@@ -634,6 +715,38 @@ def test_summarize_attachments_renders_expected_format() -> None:
         "summary_source": "attachment",
         "attachment_types": ["txt"],
     }
+
+
+def test_summarize_attachments_order_no_persiste_antes_de_confirmar() -> None:
+    window = EmailManagerWindow.__new__(EmailManagerWindow)
+    tree = _TreeStub()
+    tree.selection_set(("id-8",))
+    window.tree = tree
+    window._rows_by_id = {"id-8": {"gmail_id": "id-8", "subject": "Pedido", "sender": "acme@example.com"}}
+    window.response_text = _TextStub()
+    window.log = lambda *_args, **_kwargs: None
+    window._build_email_attachments = lambda *_args: [{"filename": "pedido.pdf"}]
+    window.attachment_cache = type("Cache", (), {"ensure_downloaded": lambda *_args, **_kwargs: "/tmp/pedido.pdf"})()
+    window._summarize_attachments_content = lambda *_args, **_kwargs: (
+        '{"Pedidos":[{"PedidoID":"P-1","Cliente":"ACME","Lineas":[{"Linea":1,"Palets":10,"TCajas":300,"CP":30}]}]}'
+    )
+
+    called = {"guardar": 0}
+    window.pedidos_repo = type(
+        "PedidosRepo",
+        (),
+        {
+            "guardar_pedidos_desde_json": lambda *_args, **_kwargs: called.__setitem__("guardar", called["guardar"] + 1),
+        },
+    )()
+    captured: dict[str, object] = {}
+    window._open_summary_review_dialog = lambda **kwargs: captured.update(kwargs)
+
+    with patch("app.ui.email_manager_window.extract_text_and_types_from_attachments", return_value=("Pedido 10 Euro.Retor.X30", ["attachment"])):
+        EmailManagerWindow._summarize_attachments(window)
+
+    assert called["guardar"] == 0
+    assert captured["order_lineas"] is not None
 
 
 def test_is_summarizable_attachment_extracts_real_filename_from_label() -> None:

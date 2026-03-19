@@ -18,6 +18,7 @@ def detectar_cancelado(linea: dict[str, Any]) -> bool:
         linea.get("Observaciones", ""),
         linea.get("Mercancia", ""),
         linea.get("NombreCaja", ""),
+        linea.get("TipoPalet", ""),
     ]
 
     for campo in campos:
@@ -184,7 +185,7 @@ class PedidosRepository:
                     pedido_id,
                     linea_numero,
                     self._as_int(linea.get("Palets") or linea.get("palets")),
-                    self._as_text(linea.get("NombrePalet") or linea.get("nombre_palet")),
+                    self._as_text(linea.get("TipoPalet") or linea.get("NombrePalet") or linea.get("tipo_palet") or linea.get("nombre_palet")),
                     self._as_int(linea.get("TCajas") or linea.get("total_cajas")),
                     self._as_int(linea.get("CP") or linea.get("cajas_palet")),
                     self._as_text(linea.get("NombreCaja") or linea.get("nombre_caja")),
