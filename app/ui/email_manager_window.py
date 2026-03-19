@@ -608,6 +608,7 @@ class EmailManagerWindow(tk.Toplevel):
         self.email_checker_thread: EmailCheckerThread | None = None
         self._queue_after_id: str | None = None
         self._last_email_check_error: str = ""
+        self.confirm_attempts: int = 0
 
         self._build_layout()
         self.refresh_emails()
@@ -3147,6 +3148,45 @@ class EmailManagerWindow(tk.Toplevel):
             linea["Estado"] = self._calcular_estado_linea(linea)
         return lineas
 
+    def _campos_obligatorios_pedido(self) -> set[str]:
+        validation_config = self.config_manager.get_order_validation()
+        required = validation_config.get("required_fields", [])
+        if not isinstance(required, list):
+            return set()
+        return {str(field).strip() for field in required if str(field).strip()}
+
+    def _validar_pedido_para_confirmacion(self, lineas: list[dict[str, Any]]) -> dict[str, list[str]]:
+        warnings: list[str] = []
+        errors: list[str] = []
+        required = self._campos_obligatorios_pedido()
+        pedido_agrupado = self._agrupar_lineas_en_pedidos(lineas)
+
+        for pedido in pedido_agrupado.get("Pedidos", []):
+            if not isinstance(pedido, dict):
+                continue
+            pedido_id = str(pedido.get("NumeroPedido") or pedido.get("PedidoID") or "Pedido").strip() or "Pedido"
+            if "Cliente" in required and not str(pedido.get("Cliente") or "").strip():
+                errors.append(f"Pedido {pedido_id}: Falta cliente")
+            if "FCarga" in required and not str(pedido.get("FCarga") or "").strip():
+                errors.append(f"Pedido {pedido_id}: Falta fecha de carga")
+            if "PCarga" in required and not str(pedido.get("PCarga") or "").strip():
+                errors.append(f"Pedido {pedido_id}: Falta punto de carga")
+
+            for index, linea in enumerate(pedido.get("Lineas", []) or [], start=1):
+                if "Cantidad" in required and not str(linea.get("Cantidad") or "").strip():
+                    errors.append(f"Pedido {pedido_id} · Línea {index}: Falta número de palets")
+                if "Mercancia" in required and not str(linea.get("Mercancia") or "").strip():
+                    errors.append(f"Pedido {pedido_id} · Línea {index}: Falta mercancía")
+                if "Confeccion" in required and not str(linea.get("Confeccion") or "").strip():
+                    errors.append(f"Pedido {pedido_id} · Línea {index}: Falta confección")
+                if linea.get("CP") is None or str(linea.get("CP") or "").strip() == "":
+                    warnings.append(f"Pedido {pedido_id} · Línea {index}: CP no definido")
+                categoria = str(linea.get("Categoria") or "").strip()
+                if categoria not in {"I", "II", "Estandar", ""}:
+                    warnings.append(f"Pedido {pedido_id} · Línea {index}: Categoría inválida")
+
+        return {"warnings": warnings, "errors": errors}
+
     def _validar_linea_pedido(self, linea: dict[str, Any]) -> list[str]:
         errores: list[str] = []
         NumeroPedido = str(linea.get("NumeroPedido") or linea.get("PedidoID") or "").strip()
@@ -3619,6 +3659,8 @@ class EmailManagerWindow(tk.Toplevel):
         dialog.grab_set()
         dialog.grid_columnconfigure(0, weight=1)
         dialog.grid_rowconfigure(1, weight=1)
+        if order_lineas is not None:
+            self.confirm_attempts = 0
 
         ttk.Label(dialog, text="RESUMEN GENERADO", font=("Segoe UI", 11, "bold")).grid(
             row=0,
@@ -3761,13 +3803,26 @@ class EmailManagerWindow(tk.Toplevel):
                 messagebox.showwarning("Atención", "El resumen no puede estar vacío.")
                 return
             if order_lineas is not None:
-                incidencias_confirmacion = self._analizar_calidad_pedido(order_lineas)
-                if incidencias_confirmacion:
+                validacion = self._validar_pedido_para_confirmacion(order_lineas)
+                if validacion["errors"]:
+                    self.confirm_attempts += 1
+                    if self.confirm_attempts < 3:
+                        messagebox.showerror(
+                            "🔴 Errores graves detectados",
+                            "No se puede confirmar todavía.\n\n"
+                            + "\n".join(validacion["errors"])
+                            + f"\n\nIntento {self.confirm_attempts}/3.",
+                        )
+                        return
                     messagebox.showwarning(
-                        "Pedido con incidencias",
-                        "Se detectaron incidencias en el pedido. Corrige los errores antes de guardar.",
+                        "🔴 Override activado",
+                        "Errores graves ignorados tras 3 intentos:\n\n" + "\n".join(validacion["errors"]),
                     )
-                    return
+                if validacion["warnings"]:
+                    messagebox.showwarning(
+                        "🟡 Advertencias de pedido",
+                        "\n".join(validacion["warnings"]),
+                    )
                 inserted = self.pedidos_repo.guardar_pedidos_desde_json(order_lineas, order_filename)
                 self.log(f"Pedido persistido: {inserted} líneas ({order_filename})")
             self.response_text.delete("1.0", "end")

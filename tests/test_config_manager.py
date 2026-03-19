@@ -14,6 +14,14 @@ def test_config_manager_creates_default_schema(tmp_path) -> None:
     }
     assert config["email_account"]["provider"] == "gmail"
     assert config["email_settings"]["interval"] == 60
+    assert config["order_validation"]["required_fields"] == [
+        "Cantidad",
+        "Mercancia",
+        "Cliente",
+        "FCarga",
+        "PCarga",
+        "Confeccion",
+    ]
 
 
 def test_config_manager_normalizes_profile(tmp_path) -> None:
@@ -36,3 +44,12 @@ def test_config_manager_normalizes_profile(tmp_path) -> None:
     assert loaded["user_profile"]["dominio"] == "@example.com"
     assert loaded["user_profile"]["alias"] == ["a@example.com", "b@example.com"]
     assert loaded["email_settings"]["interval"] == 10
+
+
+def test_config_manager_normalizes_order_validation_required_fields(tmp_path) -> None:
+    manager = ConfigManager(config_path=tmp_path / "config.json")
+    manager.save({"order_validation": {"required_fields": ["Cantidad", " Cliente ", "", 99]}})
+
+    loaded = manager.load()
+
+    assert loaded["order_validation"]["required_fields"] == ["Cantidad", "Cliente", "99"]

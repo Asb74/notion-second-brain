@@ -81,16 +81,19 @@ class SettingsDialog(tk.Toplevel):
         self.tab_email = ttk.Frame(self.notebook)
         self.tab_notifications = ttk.Frame(self.notebook)
         self.tab_master_data = ttk.Frame(self.notebook)
+        self.tab_order_validation = ttk.Frame(self.notebook)
 
         self.notebook.add(self.tab_general, text="General")
         self.notebook.add(self.tab_email, text="Email")
         self.notebook.add(self.tab_notifications, text="Notificaciones")
         self.notebook.add(self.tab_master_data, text="Datos maestros")
+        self.notebook.add(self.tab_order_validation, text="Validación pedidos")
 
         self._build_general_tab()
         self._build_email_tab()
         self._build_notifications_tab()
         self._build_master_data_tab()
+        self._build_order_validation_tab()
         self._build_footer()
 
         tab_map = {
@@ -98,6 +101,7 @@ class SettingsDialog(tk.Toplevel):
             "email": 1,
             "notificaciones": 2,
             "datos maestros": 3,
+            "validación pedidos": 4,
         }
         self.notebook.select(tab_map.get(initial_tab.lower().strip(), 0))
 
@@ -187,6 +191,22 @@ class SettingsDialog(tk.Toplevel):
 
         ttk.Button(footer, text="Guardar", command=self._save_config).pack(side="right", padx=(5, 0))
         ttk.Button(footer, text="Cancelar", command=self.destroy).pack(side="right")
+
+    def _build_order_validation_tab(self) -> None:
+        body = self._create_tab_body(self.tab_order_validation)
+        ttk.Label(
+            body,
+            text="Selecciona los campos obligatorios para bloquear confirmación de pedidos:",
+        ).grid(row=0, column=0, sticky="w", pady=(0, 8))
+
+        order_validation = self.config_manager.get_order_validation()
+        required_fields = set(order_validation.get("required_fields", []))
+        self._required_field_vars: dict[str, tk.BooleanVar] = {}
+        configurable_fields = ("Cantidad", "Mercancia", "Cliente", "FCarga", "PCarga", "Confeccion")
+        for index, field in enumerate(configurable_fields, start=1):
+            var = tk.BooleanVar(value=field in required_fields)
+            self._required_field_vars[field] = var
+            ttk.Checkbutton(body, text=field, variable=var).grid(row=index, column=0, sticky="w", pady=2)
 
     def _load_config(self) -> None:
         runtime_config = self.config_manager.load()
@@ -350,6 +370,13 @@ class SettingsDialog(tk.Toplevel):
             config["email_settings"] = {
                 "auto_check": bool(self.config_vars["auto_check_email"].get()),
                 "interval": max(10, int(self.config_vars["email_interval"].get() or 60)),
+            }
+            config["order_validation"] = {
+                "required_fields": [
+                    field
+                    for field, is_required in self._required_field_vars.items()
+                    if bool(is_required.get())
+                ],
             }
             self.config_manager.save(config)
             self.destroy()
