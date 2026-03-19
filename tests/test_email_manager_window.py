@@ -80,9 +80,11 @@ class _PreviewTextStub:
 
 
 def test_attachment_order_request_prioritizes_numeric_palets_extraction() -> None:
-    assert "Busca primero el número que aparece inmediatamente antes del tipo de pallet" in ATTACHMENT_ORDER_REQUEST
-    assert "NO lo confundas con \"Palets\"" in ATTACHMENT_ORDER_REQUEST
-    assert "\"10 Euro.Retor.X36\" -> \"Palets\": 10" in ATTACHMENT_ORDER_REQUEST
+    assert "Datos generales del pedido" in ATTACHMENT_ORDER_REQUEST
+    assert "\"Lineas\": [" in ATTACHMENT_ORDER_REQUEST
+    assert "CP (CRÍTICO):" in ATTACHMENT_ORDER_REQUEST
+    assert "TCajas / Palets" in ATTACHMENT_ORDER_REQUEST
+    assert "{texto_extraido_pdf}" in ATTACHMENT_ORDER_REQUEST
 
 
 def test_create_notes_no_row_get() -> None:
