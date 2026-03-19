@@ -6,6 +6,44 @@ import json
 from pathlib import Path
 from typing import Any
 
+ORDER_VALIDATION_FIELDS_BY_GROUP: dict[str, tuple[str, ...]] = {
+    "pedido": (
+        "NumeroPedido",
+        "Cliente",
+        "Comercial",
+        "FCarga",
+        "Plataforma",
+        "Pais",
+        "PCarga",
+        "Estado",
+    ),
+    "linea": (
+        "Linea",
+        "Cantidad",
+        "TipoPalet",
+        "CajasTotales",
+        "CP",
+        "NombreCaja",
+        "Mercancia",
+        "Confeccion",
+        "Calibre",
+        "Categoria",
+        "Marca",
+        "PO",
+        "Lote",
+        "Observaciones",
+    ),
+}
+
+DEFAULT_REQUIRED_ORDER_FIELDS: tuple[str, ...] = (
+    "Cliente",
+    "FCarga",
+    "PCarga",
+    "Cantidad",
+    "Mercancia",
+    "Confeccion",
+)
+
 DEFAULT_CONFIG: dict[str, Any] = {
     "user_profile": {
         "nombre": "",
@@ -22,14 +60,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "interval": 60,
     },
     "order_validation": {
-        "required_fields": [
-            "Cantidad",
-            "Mercancia",
-            "Cliente",
-            "FCarga",
-            "PCarga",
-            "Confeccion",
-        ],
+        "required_fields": list(DEFAULT_REQUIRED_ORDER_FIELDS),
     },
 }
 
@@ -125,9 +156,9 @@ class ConfigManager:
             if isinstance(required_fields, list):
                 normalized_required = [str(item).strip() for item in required_fields if str(item).strip()]
             else:
-                normalized_required = list(DEFAULT_CONFIG["order_validation"]["required_fields"])
+                normalized_required = list(DEFAULT_REQUIRED_ORDER_FIELDS)
             config["order_validation"] = {
-                "required_fields": normalized_required or list(DEFAULT_CONFIG["order_validation"]["required_fields"]),
+                "required_fields": normalized_required or list(DEFAULT_REQUIRED_ORDER_FIELDS),
             }
 
         return config
