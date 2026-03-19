@@ -6,7 +6,11 @@ import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 from typing import Callable
 
-from app.config.config_manager import ConfigManager
+from app.config.config_manager import (
+    DEFAULT_REQUIRED_ORDER_FIELDS,
+    ORDER_VALIDATION_FIELDS_BY_GROUP,
+    ConfigManager,
+)
 from app.core.models import AppSettings
 from app.ui.app_icons import apply_app_icon
 from app.ui.dictation_widgets import attach_dictation
@@ -194,19 +198,34 @@ class SettingsDialog(tk.Toplevel):
 
     def _build_order_validation_tab(self) -> None:
         body = self._create_tab_body(self.tab_order_validation)
+        body.columnconfigure(0, weight=1)
+
         ttk.Label(
             body,
-            text="Selecciona los campos obligatorios para bloquear confirmación de pedidos:",
+            text="Selecciona los campos obligatorios para bloquear la confirmación del pedido.",
         ).grid(row=0, column=0, sticky="w", pady=(0, 8))
 
         order_validation = self.config_manager.get_order_validation()
         required_fields = set(order_validation.get("required_fields", []))
-        self._required_field_vars: dict[str, tk.BooleanVar] = {}
-        configurable_fields = ("Cantidad", "Mercancia", "Cliente", "FCarga", "PCarga", "Confeccion")
-        for index, field in enumerate(configurable_fields, start=1):
-            var = tk.BooleanVar(value=field in required_fields)
-            self._required_field_vars[field] = var
-            ttk.Checkbutton(body, text=field, variable=var).grid(row=index, column=0, sticky="w", pady=2)
+        if not required_fields:
+            required_fields = set(DEFAULT_REQUIRED_ORDER_FIELDS)
+
+        self.checkboxes: dict[str, tk.BooleanVar] = {}
+
+        groups = (
+            ("Campos de Pedido", ORDER_VALIDATION_FIELDS_BY_GROUP["pedido"]),
+            ("Campos de Línea", ORDER_VALIDATION_FIELDS_BY_GROUP["linea"]),
+        )
+
+        for index, (title, fields) in enumerate(groups, start=1):
+            frame = ttk.LabelFrame(body, text=title)
+            frame.grid(row=index, column=0, sticky="ew", pady=(0, 10))
+            frame.columnconfigure(0, weight=1)
+
+            for row, field in enumerate(fields):
+                var = tk.BooleanVar(value=field in required_fields)
+                self.checkboxes[field] = var
+                ttk.Checkbutton(frame, text=field, variable=var).grid(row=row, column=0, sticky="w", padx=8, pady=2)
 
     def _load_config(self) -> None:
         runtime_config = self.config_manager.load()
@@ -374,8 +393,8 @@ class SettingsDialog(tk.Toplevel):
             config["order_validation"] = {
                 "required_fields": [
                     field
-                    for field, is_required in self._required_field_vars.items()
-                    if bool(is_required.get())
+                    for field, var in self.checkboxes.items()
+                    if bool(var.get())
                 ],
             }
             self.config_manager.save(config)

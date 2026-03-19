@@ -25,7 +25,10 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from tkinter.scrolledtext import ScrolledText
 from tkcalendar import DateEntry
 
-from app.config.config_manager import ConfigManager
+from app.config.config_manager import (
+    ORDER_VALIDATION_FIELDS_BY_GROUP,
+    ConfigManager,
+)
 from app.config.mail_config import USER_EMAIL
 from app.config.email_runtime_config import load_config, save_config
 from app.core.email.category_manager import CategoryManager
@@ -3210,21 +3213,46 @@ class EmailManagerWindow(tk.Toplevel):
         canonical_lines = self._build_canonical_order_lines(lineas)
         self.log(f"VALIDANDO LINEAS CANÓNICAS: {canonical_lines}", level="INFO")
 
+        order_fields = set(ORDER_VALIDATION_FIELDS_BY_GROUP["pedido"])
+        label_map = {
+            "NumeroPedido": "número de pedido",
+            "Cliente": "cliente",
+            "Comercial": "comercial",
+            "FCarga": "fecha de carga",
+            "Plataforma": "plataforma",
+            "Pais": "país",
+            "PCarga": "punto de carga",
+            "Estado": "estado",
+            "Linea": "línea",
+            "Cantidad": "cantidad",
+            "TipoPalet": "tipo de palet",
+            "CajasTotales": "cajas totales",
+            "CP": "CP",
+            "NombreCaja": "nombre de caja",
+            "Mercancia": "mercancía",
+            "Confeccion": "confección",
+            "Calibre": "calibre",
+            "Categoria": "categoría",
+            "Marca": "marca",
+            "PO": "PO",
+            "Lote": "lote",
+            "Observaciones": "observaciones",
+        }
+
         for linea in canonical_lines:
             pedido_ref = str(linea.get("NumeroPedido", "")).strip() or "Pedido sin número"
             linea_ref = str(linea.get("Linea", "")).strip() or "?"
-            if "Cliente" in required and not str(linea.get("Cliente", "")).strip():
-                errors.append(f"Pedido {pedido_ref}: Falta cliente")
-            if "FCarga" in required and not str(linea.get("FCarga", "")).strip():
-                errors.append(f"Pedido {pedido_ref}: Falta fecha de carga")
-            if "PCarga" in required and not str(linea.get("PCarga", "")).strip():
-                errors.append(f"Pedido {pedido_ref}: Falta punto de carga")
-            if "Cantidad" in required and not str(linea.get("Cantidad", "")).strip():
-                errors.append(f"Pedido {pedido_ref} · Línea {linea_ref}: Falta número de palets")
-            if "Mercancia" in required and not str(linea.get("Mercancia", "")).strip():
-                errors.append(f"Pedido {pedido_ref} · Línea {linea_ref}: Falta mercancía")
-            if "Confeccion" in required and not str(linea.get("Confeccion", "")).strip():
-                errors.append(f"Pedido {pedido_ref} · Línea {linea_ref}: Falta confección")
+
+            for field in required:
+                value = str(linea.get(field, "")).strip()
+                if value:
+                    continue
+                field_label = label_map.get(field, field)
+                if field in order_fields:
+                    errors.append(f"Pedido {pedido_ref}: Falta {field_label}")
+                else:
+                    errors.append(f"Pedido {pedido_ref} · Línea {linea_ref}: Falta {field_label}")
+
             cp = linea.get("CP", "")
             if cp in ("", None):
                 warnings.append(f"Pedido {pedido_ref} · Línea {linea_ref}: CP no definido")
