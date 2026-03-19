@@ -47,6 +47,7 @@ from app.ml.retraining_service import DatasetRetrainingService
 from app.persistence.user_profile_repository import UserProfileRepository
 from app.services.email_entity_extractor import EmailEntityExtractor
 from app.services.email_background_checker import EmailCheckerThread
+from app.services.openai_service import OpenAIService
 from app.ui.app_icons import apply_app_icon
 from app.ui.excel_filter import ExcelTreeFilter
 from app.ui.dictation_widgets import attach_dictation
@@ -2940,23 +2941,12 @@ class EmailManagerWindow(tk.Toplevel):
         sender = row.get("real_sender") or row.get("sender", "")
         if output_format == OUTPUT_FORMAT_PEDIDO:
             prompt = PROMPT_PEDIDOS.replace("{texto_extraido_pdf}", (extracted_text or "").strip()[:MAX_ATTACHMENT_TEXT])
-            try:
-                client = build_openai_client()
-                response = client.responses.create(
-                    model="gpt-4o-mini",
-                    input=prompt,
-                    text={"format": "json_object"},
-                )
-                response_text = str(response.output_text or "").strip()
-                try:
-                    parsed_response = json.loads(response_text)
-                except json.JSONDecodeError as exc:
-                    self.log(f"Respuesta JSON inválida al extraer pedido: {exc}", level="WARNING")
-                    return ""
-                return json.dumps(parsed_response, ensure_ascii=False)
-            except Exception as exc:  # noqa: BLE001
-                self.log(f"No se pudo generar extracción de pedido: {exc}", level="WARNING")
+            data = OpenAIService.generate_json(prompt)
+            if not data:
+                self.log("No se pudo generar JSON válido", level="WARNING")
                 return ""
+
+            return json.dumps(data, ensure_ascii=False)
 
         summary_request = AUDIO_MEETING_SUMMARY_REQUEST if content_type == "audio_meeting" else ATTACHMENT_SUMMARY_REQUEST
         format_instruction = OUTPUT_FORMAT_PROMPTS.get(output_format, OUTPUT_FORMAT_PROMPTS[OUTPUT_FORMAT_DEFAULT])
