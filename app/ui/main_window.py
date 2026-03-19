@@ -191,6 +191,7 @@ class MainWindow(ttk.Frame):
         configuracion.add_command(label="Email", command=lambda: self._open_settings("Email"))
         configuracion.add_command(label="Notificaciones", command=lambda: self._open_settings("Notificaciones"))
         configuracion.add_command(label="Datos maestros", command=lambda: self._open_settings("Datos maestros"))
+        configuracion.add_command(label="Validación pedidos", command=self.abrir_validacion_pedidos)
         menubar.add_cascade(label="Configuración", menu=configuracion)
 
         ayuda = tk.Menu(menubar, tearoff=0)
@@ -714,6 +715,9 @@ class MainWindow(ttk.Frame):
             on_open_master=self._open_masters_dialog,
             initial_tab=initial_tab,
         )
+
+    def abrir_validacion_pedidos(self) -> None:
+        self._open_settings("Validación pedidos")
 
     def _show_logs_info(self) -> None:
         messagebox.showinfo(
