@@ -11,6 +11,74 @@ def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
     return {str(row[1]) for row in rows}
 
 
+def _ensure_schema_version_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS schema_version (
+            version INTEGER PRIMARY KEY
+        )
+        """
+    )
+    row = conn.execute(
+        "SELECT version FROM schema_version ORDER BY version DESC LIMIT 1"
+    ).fetchone()
+    if row is None:
+        conn.execute("INSERT INTO schema_version (version) VALUES (0)")
+
+
+def obtener_version(conn: sqlite3.Connection) -> int:
+    _ensure_schema_version_table(conn)
+    row = conn.execute(
+        "SELECT version FROM schema_version ORDER BY version DESC LIMIT 1"
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def guardar_version(conn: sqlite3.Connection, version: int) -> None:
+    _ensure_schema_version_table(conn)
+    conn.execute("DELETE FROM schema_version")
+    conn.execute("INSERT INTO schema_version (version) VALUES (?)", (version,))
+
+
+def migracion_1(conn: sqlite3.Connection) -> None:
+    table_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pedidos'"
+    ).fetchone()
+    if table_exists is None:
+        return
+    columns = _table_columns(conn, "pedidos")
+    if "fecha" not in columns:
+        conn.execute("ALTER TABLE pedidos ADD COLUMN fecha TEXT")
+
+
+def migracion_2(conn: sqlite3.Connection) -> None:
+    table_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pedidos'"
+    ).fetchone()
+    if table_exists is None:
+        return
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_pedidos_numero
+        ON pedidos (numero_pedido)
+        """
+    )
+
+
+def run_migrations(conn: sqlite3.Connection) -> None:
+    current_version = obtener_version(conn)
+
+    if current_version < 1:
+        migracion_1(conn)
+        guardar_version(conn, 1)
+
+    if current_version < 2:
+        migracion_2(conn)
+        guardar_version(conn, 2)
+
+    conn.commit()
+
+
 class Database:
     """Simple SQLite wrapper with schema migrations."""
 
@@ -153,6 +221,8 @@ class Database:
                 )
                 """
             )
+            # Legacy databases might have been created without this column.
+            self._ensure_column(conn, "pedidos", "fecha", "TEXT")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS lineas (
@@ -206,6 +276,7 @@ class Database:
                 ON CONFLICT(id) DO NOTHING
                 """
             )
+            run_migrations(conn)
             conn.commit()
 
     def _migrate_masters_table(self, conn: sqlite3.Connection) -> None:
