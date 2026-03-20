@@ -10,6 +10,34 @@ from typing import Any
 COLUMN_NUMERO_PEDIDO = "NumeroPedido"
 COLUMN_ESTADO = "Estado"
 COLUMN_FECHA = "fecha"
+MAPEO_DB = {
+    "NumeroPedido": "numero_pedido",
+    "Cliente": "cliente",
+    "Comercial": "comercial",
+    "FechaSalida": "fecha_salida",
+    "Plataforma": "plataforma",
+    "Pais": "pais",
+    "PuntoCarga": "punto_carga",
+    "Estado": "estado",
+    "Linea": "linea",
+    "Cantidad": "cantidad",
+    "TipoPalet": "tipo_palet",
+    "CajasTotales": "cajas_totales",
+    "NombreCaja": "nombre_caja",
+    "Mercancia": "mercancia",
+    "Confeccion": "confeccion",
+    "Calibre": "calibre",
+    "Categoria": "categoria",
+    "Marca": "marca",
+    "PO": "po",
+    "Lote": "lote",
+    "Observaciones": "observaciones",
+    "CP": "cp",
+}
+
+
+def mapear_a_db(linea: dict[str, Any]) -> dict[str, Any]:
+    return {MAPEO_DB.get(k, k): v for k, v in linea.items()}
 
 
 def normalizar_texto(texto: Any) -> str:
@@ -135,6 +163,7 @@ class PedidosRepository:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
         self.ensure_table()
+        self._lineas_numero_pedido_col = self._resolve_lineas_numero_pedido_column()
 
     def ensure_table(self) -> None:
         self.conn.execute(
@@ -200,10 +229,23 @@ class PedidosRepository:
         total_rows = 0
 
         for pedido, linea in self._iter_line_items(payload):
-            pedido_id = str(linea.get("NumeroPedido") or linea.get("PedidoID") or pedido.get("NumeroPedido") or pedido.get("PedidoID") or pedido.get("pedido_id") or "").strip()
-            cliente = str(linea.get("Cliente") or pedido.get("Cliente") or pedido.get("cliente") or "").strip()
-            comercial = str(linea.get("Comercial") or pedido.get("Comercial") or pedido.get("comercial") or "").strip()
-            linea_numero = self._as_int(linea.get("Linea") or linea.get("linea"))
+            linea_db = mapear_a_db(linea)
+            pedido_db = mapear_a_db(pedido)
+            pedido_id = str(
+                linea.get("NumeroPedido")
+                or linea_db.get("numero_pedido")
+                or linea.get("PedidoID")
+                or pedido.get("NumeroPedido")
+                or pedido_db.get("numero_pedido")
+                or pedido.get("PedidoID")
+                or pedido.get("pedido_id")
+                or ""
+            ).strip()
+            cliente = str(linea.get("Cliente") or linea_db.get("cliente") or pedido.get("Cliente") or pedido_db.get("cliente") or pedido.get("cliente") or "").strip()
+            comercial = str(
+                linea.get("Comercial") or linea_db.get("comercial") or pedido.get("Comercial") or pedido_db.get("comercial") or pedido.get("comercial") or ""
+            ).strip()
+            linea_numero = self._as_int(linea.get("Linea") or linea_db.get("linea") or linea.get("linea"))
             lineas_existentes = _obtener_lineas_ultima_version(self.conn, pedido_id) if pedido_id else []
             estado_pedido = calcular_estado_pedido(
                 {"Lineas": [_linea_para_comparacion(linea)], "cancelado": detectar_cancelado(linea)},
@@ -223,7 +265,7 @@ class PedidosRepository:
             self.conn.execute(
                 f"""
                 INSERT INTO lineas (
-                    pedido_id, {COLUMN_NUMERO_PEDIDO}, linea,
+                    pedido_id, {self._lineas_numero_pedido_col}, linea,
                     cantidad, cajas_totales, cp, tipo_palet,
                     nombre_caja, mercancia, confeccion, calibre, categoria, marca,
                     po, lote, observaciones,
@@ -236,25 +278,25 @@ class PedidosRepository:
                     pedido_row_id,
                     pedido_id,
                     linea_numero,
-                    self._as_int(linea.get("Cantidad") or linea.get("Palets") or linea.get("palets")),
-                    self._as_int(linea.get("CajasTotales") or linea.get("TCajas") or linea.get("total_cajas")),
-                    self._as_int(linea.get("CP") or linea.get("cajas_palet")),
-                    self._as_text(linea.get("TipoPalet") or linea.get("NombrePalet") or linea.get("tipo_palet") or linea.get("nombre_palet")),
-                    self._as_text(linea.get("NombreCaja") or linea.get("nombre_caja")),
-                    self._as_text(linea.get("Mercancia") or linea.get("mercancia")),
-                    self._as_text(linea.get("Confeccion") or linea.get("confeccion")),
-                    self._as_text(linea.get("Calibre") or linea.get("calibre")),
-                    self._as_text(linea.get("Categoria") or linea.get("categoria")),
-                    self._as_text(linea.get("Marca") or linea.get("marca")),
-                    self._as_text(linea.get("PO") or linea.get("po") or linea.get("precio")),
-                    self._as_text(linea.get("Lote") or linea.get("lote")),
-                    self._as_text(linea.get("Observaciones") or linea.get("observaciones")),
+                    self._as_int(linea.get("Cantidad") or linea_db.get("cantidad") or linea.get("Palets") or linea.get("palets")),
+                    self._as_int(linea.get("CajasTotales") or linea_db.get("cajas_totales") or linea.get("TCajas") or linea.get("total_cajas")),
+                    self._as_int(linea.get("CP") or linea_db.get("cp") or linea.get("cajas_palet")),
+                    self._as_text(linea.get("TipoPalet") or linea_db.get("tipo_palet") or linea.get("NombrePalet") or linea.get("tipo_palet") or linea.get("nombre_palet")),
+                    self._as_text(linea.get("NombreCaja") or linea_db.get("nombre_caja") or linea.get("nombre_caja")),
+                    self._as_text(linea.get("Mercancia") or linea_db.get("mercancia") or linea.get("mercancia")),
+                    self._as_text(linea.get("Confeccion") or linea_db.get("confeccion") or linea.get("confeccion")),
+                    self._as_text(linea.get("Calibre") or linea_db.get("calibre") or linea.get("calibre")),
+                    self._as_text(linea.get("Categoria") or linea_db.get("categoria") or linea.get("categoria")),
+                    self._as_text(linea.get("Marca") or linea_db.get("marca") or linea.get("marca")),
+                    self._as_text(linea.get("PO") or linea_db.get("po") or linea.get("po") or linea.get("precio")),
+                    self._as_text(linea.get("Lote") or linea_db.get("lote") or linea.get("lote")),
+                    self._as_text(linea.get("Observaciones") or linea_db.get("observaciones") or linea.get("observaciones")),
                     self._as_text(cliente),
                     self._as_text(comercial),
-                    self._as_text(linea.get("FCarga") or linea.get("fecha_carga")),
-                    self._as_text(linea.get("Plataforma") or linea.get("plataforma")),
-                    self._as_text(linea.get("Pais") or linea.get("pais")),
-                    self._as_text(linea.get("PCarga") or linea.get("punto_carga")),
+                    self._as_text(linea.get("FCarga") or linea.get("FechaSalida") or linea_db.get("fecha_carga") or linea_db.get("fecha_salida") or linea.get("fecha_carga")),
+                    self._as_text(linea.get("Plataforma") or linea_db.get("plataforma") or linea.get("plataforma")),
+                    self._as_text(linea.get("Pais") or linea_db.get("pais") or linea.get("pais")),
+                    self._as_text(linea.get("PCarga") or linea.get("PuntoCarga") or linea_db.get("punto_carga") or linea.get("punto_carga")),
                     estado_pedido,
                     (archivo_nombre or "").strip(),
                 ),
@@ -341,3 +383,13 @@ class PedidosRepository:
     @staticmethod
     def _as_text(value: Any) -> str:
         return str(value or "").strip()
+
+    def _resolve_lineas_numero_pedido_column(self) -> str:
+        columnas_lineas = {
+            str(row[1]) for row in self.conn.execute("PRAGMA table_info(lineas)").fetchall()
+        }
+        if "numero_pedido" in columnas_lineas:
+            return "numero_pedido"
+        if COLUMN_NUMERO_PEDIDO in columnas_lineas:
+            return COLUMN_NUMERO_PEDIDO
+        return COLUMN_NUMERO_PEDIDO
