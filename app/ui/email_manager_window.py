@@ -3343,12 +3343,21 @@ class EmailManagerWindow(tk.Toplevel):
         return errores
 
     def _validar_pedido_completo(self, lineas: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        incidencias: list[dict[str, Any]] = []
-        for linea in lineas:
-            errores = self._validar_linea_pedido(linea)
-            if errores:
-                incidencias.append({"NumeroPedido": linea.get("NumeroPedido", linea.get("PedidoID", "")), "Linea": linea.get("Linea", ""), "Errores": errores})
-        return incidencias
+    incidencias: list[dict[str, Any]] = []
+
+    # 🔥 NORMALIZACIÓN AQUÍ
+    lineas = [normalizar_campos_linea(l) for l in lineas]
+
+    for linea in lineas:
+        errores = self._validar_linea_pedido(linea)
+        if errores:
+            incidencias.append({
+                "NumeroPedido": linea.get("NumeroPedido", linea.get("PedidoID", "")),
+                "Linea": linea.get("Linea", ""),
+                "Errores": errores
+            })
+
+    return incidencias
 
     def _detectar_errores_erp_linea(self, linea: dict[str, Any]) -> list[str]:
         errores: list[str] = []
