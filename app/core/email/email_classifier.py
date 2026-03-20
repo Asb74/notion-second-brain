@@ -179,6 +179,11 @@ class EmailClassifier:
         texts = [MLEmailModel.compose_features(row["subject"], row["sender"], row["body_text"]) for row in dataset]
         labels = [str(row["label"] or "other") for row in dataset]
         self.all_classes = sorted(set(self.all_classes) | set(labels))
+        categories = self._available_categories()
+        self._known_categories = list(categories)
+        self.categories_count = len(categories)
+        if categories != previous_categories:
+            category_changed = True
 
         logger.info("Training examples: %s", len(texts))
         logger.info("Unique labels: %s", len(set(labels)))
@@ -194,6 +199,7 @@ class EmailClassifier:
             logger.warning(self.last_training_warning)
             return False
 
+        training_ok = False
         try:
             if category_changed or not self.ml_model.is_trained:
                 logger.info("Entrenamiento email classifier: ejecutando fit completo")
@@ -201,9 +207,11 @@ class EmailClassifier:
                 candidate_model.fit(texts, labels, classes=categories)
                 if candidate_model.is_trained:
                     self.ml_model = candidate_model
+                    training_ok = True
             else:
                 logger.info("Entrenamiento email classifier: ejecutando partial_fit")
-                self.ml_model.partial_fit(texts, labels)
+                self.ml_model.partial_fit(texts, labels, classes=categories)
+                training_ok = self.ml_model.last_warning is None
         except Exception as exc:  # noqa: BLE001
             detail = str(exc).strip()
             if detail.startswith("Entrenamiento"):
@@ -215,9 +223,12 @@ class EmailClassifier:
             logger.exception("Entrenamiento cancelado por excepción")
             return False
 
-        if self.ml_model.last_warning:
-            self.last_training_warning = self.ml_model.last_warning
-            logger.warning("Entrenamiento cancelado por warning del modelo: %s", self.ml_model.last_warning)
+        if not training_ok:
+            if self.ml_model.last_warning:
+                self.last_training_warning = self.ml_model.last_warning
+            elif not self.last_training_warning:
+                self.last_training_warning = "Entrenamiento fallido: el modelo no quedó entrenado tras el intento de fit."
+            logger.warning("Entrenamiento cancelado: %s", self.last_training_warning)
             return False
 
         if not self.ml_model.is_trained:

@@ -8,17 +8,13 @@ from pathlib import Path
 from typing import Sequence
 
 try:
-    import numpy as np
     import joblib
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.linear_model import SGDClassifier
-    from sklearn.utils.class_weight import compute_class_weight
 except Exception:  # noqa: BLE001
-    np = None
     joblib = None
     TfidfVectorizer = None
     SGDClassifier = None
-    compute_class_weight = None
 
 
 logger = logging.getLogger(__name__)
@@ -47,14 +43,8 @@ class MLEmailModel:
             self.vectorizer = TfidfVectorizer(ngram_range=(1, 2))
         return True
 
-    def _build_classifier(self, labels: Sequence[str]) -> SGDClassifier:
-        class_weight_dict = None
-        if compute_class_weight and np is not None:
-            classes = np.unique(np.asarray(labels))
-            if classes.size:
-                weights = compute_class_weight("balanced", classes=classes, y=np.asarray(labels))
-                class_weight_dict = dict(zip(classes.tolist(), weights.tolist()))
-        return SGDClassifier(loss="log_loss", random_state=42, class_weight=class_weight_dict)
+    def _build_classifier(self) -> SGDClassifier:
+        return SGDClassifier(loss="log_loss", random_state=42)
 
     def _filter_low_sample_classes(self, texts: Sequence[str], labels: Sequence[str]) -> tuple[list[str], list[str]]:
         counts = Counter(str(label) for label in labels)
@@ -98,7 +88,7 @@ class MLEmailModel:
             raise RuntimeError("Training aborted: vectorizer produced 0 features (empty vocabulary)")
 
         try:
-            self.classifier = self._build_classifier(labels)
+            self.classifier = self._build_classifier()
             self.classifier.fit(features, labels)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Training failed during fit()")
@@ -128,7 +118,7 @@ class MLEmailModel:
 
         if not self.is_fitted:
             model_classes = sorted(set(classes or []) | set(self.known_classes) | unique_labels)
-            self.classifier = self._build_classifier(filtered_labels)
+            self.classifier = self._build_classifier()
             self.classifier.partial_fit(features, filtered_labels, classes=model_classes)
             self.known_classes = model_classes
             self.is_fitted = True
@@ -137,21 +127,20 @@ class MLEmailModel:
             return
 
         known_set = set(self.known_classes)
-        train_indices = [index for index, label in enumerate(filtered_labels) if label in known_set]
         unseen_labels = sorted(unique_labels - known_set)
         if unseen_labels:
-            logger.info("Detected new classes in incremental training: %s. Keeping current model without reinitialization.", unseen_labels)
-        if not train_indices:
+            logger.info(
+                "Detected new classes in incremental training: %s. "
+                "Incremental partial_fit will be skipped until a full fit includes those classes.",
+                unseen_labels,
+            )
             self.last_warning = (
-                f"Incremental training omitido: clases nuevas sin calibración suficiente ({', '.join(unseen_labels)})."
-                if unseen_labels
-                else "Incremental training omitido: sin ejemplos compatibles."
+                f"Incremental training omitido: clases nuevas detectadas ({', '.join(unseen_labels)}). "
+                "Ejecuta un entrenamiento completo para incorporarlas."
             )
             return
 
-        features = features[train_indices]
-        train_labels = [filtered_labels[index] for index in train_indices]
-        self.classifier.partial_fit(features, train_labels)
+        self.classifier.partial_fit(features, filtered_labels)
         self.known_classes = sorted(set(self.known_classes) | unique_labels)
         self.is_trained = True
         self.last_warning = None
