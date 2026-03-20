@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from pathlib import Path
 from typing import Sequence
 
 try:
+    import numpy as np
     import joblib
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.linear_model import SGDClassifier
+    from sklearn.utils.class_weight import compute_class_weight
 except Exception:  # noqa: BLE001
+    np = None
     joblib = None
     TfidfVectorizer = None
     SGDClassifier = None
+    compute_class_weight = None
 
 
 logger = logging.getLogger(__name__)
@@ -23,6 +28,7 @@ class MLEmailModel:
     """Encapsulates a lightweight incremental text classifier."""
 
     DEFAULT_CLASSES = ["priority", "order", "subscription", "marketing", "other"]
+    MIN_SAMPLES = 3
 
     def __init__(self, model_path: str | Path):
         self.model_path = Path(model_path)
@@ -37,11 +43,28 @@ class MLEmailModel:
     def _ensure_model_components(self) -> bool:
         if not self.is_available:
             return False
-        if self.classifier is None:
-            self.classifier = SGDClassifier(loss="log_loss", random_state=42, class_weight="balanced")
         if self.vectorizer is None:
             self.vectorizer = TfidfVectorizer(ngram_range=(1, 2))
         return True
+
+    def _build_classifier(self, labels: Sequence[str]) -> SGDClassifier:
+        class_weight_dict = None
+        if compute_class_weight and np is not None:
+            classes = np.unique(np.asarray(labels))
+            if classes.size:
+                weights = compute_class_weight("balanced", classes=classes, y=np.asarray(labels))
+                class_weight_dict = dict(zip(classes.tolist(), weights.tolist()))
+        return SGDClassifier(loss="log_loss", random_state=42, class_weight=class_weight_dict)
+
+    def _filter_low_sample_classes(self, texts: Sequence[str], labels: Sequence[str]) -> tuple[list[str], list[str]]:
+        counts = Counter(str(label) for label in labels)
+        known = set(self.known_classes)
+        filtered: list[tuple[str, str]] = [
+            (text, str(label))
+            for text, label in zip(texts, labels)
+            if counts[str(label)] >= self.MIN_SAMPLES or str(label) in known
+        ]
+        return [text for text, _ in filtered], [label for _, label in filtered]
 
     def fit(self, texts: Sequence[str], labels: Sequence[str], classes: Sequence[str] | None = None) -> None:
         if not texts:
@@ -75,6 +98,7 @@ class MLEmailModel:
             raise RuntimeError("Training aborted: vectorizer produced 0 features (empty vocabulary)")
 
         try:
+            self.classifier = self._build_classifier(labels)
             self.classifier.fit(features, labels)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Training failed during fit()")
@@ -89,38 +113,45 @@ class MLEmailModel:
         if not texts or not self._ensure_model_components():
             return
 
-        unique_labels = {str(label) for label in labels}
+        filtered_texts, filtered_labels = self._filter_low_sample_classes(texts, labels)
+        if not filtered_texts:
+            self.last_warning = "Entrenamiento insuficiente: clases con pocos ejemplos para entrenamiento incremental."
+            return
+
+        unique_labels = {str(label) for label in filtered_labels}
         if len(unique_labels) == 1:
             self.last_warning = "Entrenamiento insuficiente: solo una categoría detectada."
             return
 
         vectorizer_ready = hasattr(self.vectorizer, "vocabulary_") and bool(self.vectorizer.vocabulary_)
-        features = self.vectorizer.transform(texts) if vectorizer_ready else self.vectorizer.fit_transform(texts)
+        features = self.vectorizer.transform(filtered_texts) if vectorizer_ready else self.vectorizer.fit_transform(filtered_texts)
 
         if not self.is_fitted:
-            model_classes = sorted(unique_labels)
-            self.classifier.partial_fit(features, labels, classes=model_classes)
+            model_classes = sorted(set(classes or []) | set(self.known_classes) | unique_labels)
+            self.classifier = self._build_classifier(filtered_labels)
+            self.classifier.partial_fit(features, filtered_labels, classes=model_classes)
             self.known_classes = model_classes
             self.is_fitted = True
             self.is_trained = True
             self.last_warning = None
             return
 
-        unseen_labels = sorted(unique_labels - set(self.known_classes))
+        known_set = set(self.known_classes)
+        train_indices = [index for index, label in enumerate(filtered_labels) if label in known_set]
+        unseen_labels = sorted(unique_labels - known_set)
         if unseen_labels:
-            logger.info("Detected new classes in incremental training: %s. Reinitializing model.", unseen_labels)
-            self.classifier = SGDClassifier(loss="log_loss", random_state=42, class_weight="balanced")
-            self.vectorizer = TfidfVectorizer(ngram_range=(1, 2))
-            refreshed_features = self.vectorizer.fit_transform(texts)
-            refreshed_classes = sorted(unique_labels | set(self.known_classes))
-            self.classifier.partial_fit(refreshed_features, labels, classes=refreshed_classes)
-            self.known_classes = refreshed_classes
-            self.is_fitted = True
-            self.is_trained = True
-            self.last_warning = None
+            logger.info("Detected new classes in incremental training: %s. Keeping current model without reinitialization.", unseen_labels)
+        if not train_indices:
+            self.last_warning = (
+                f"Incremental training omitido: clases nuevas sin calibración suficiente ({', '.join(unseen_labels)})."
+                if unseen_labels
+                else "Incremental training omitido: sin ejemplos compatibles."
+            )
             return
 
-        self.classifier.partial_fit(features, labels)
+        features = features[train_indices]
+        train_labels = [filtered_labels[index] for index in train_indices]
+        self.classifier.partial_fit(features, train_labels)
         self.known_classes = sorted(set(self.known_classes) | unique_labels)
         self.is_trained = True
         self.last_warning = None
