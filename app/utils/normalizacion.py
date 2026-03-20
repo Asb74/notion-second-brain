@@ -1,3 +1,4 @@
+print("🔥 NORMALIZACION CARGADA 🔥")
 def normalizar_campos_linea(linea: dict) -> dict:
     print("ANTES:", linea)
     nueva = {}
