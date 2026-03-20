@@ -15,11 +15,11 @@ def test_config_manager_creates_default_schema(tmp_path) -> None:
     assert config["email_account"]["provider"] == "gmail"
     assert config["email_settings"]["interval"] == 60
     assert config["order_validation"]["required_fields"] == [
+        "Cliente",
+        "FechaSalida",
+        "PuntoCarga",
         "Cantidad",
         "Mercancia",
-        "Cliente",
-        "FCarga",
-        "PCarga",
         "Confeccion",
     ]
 

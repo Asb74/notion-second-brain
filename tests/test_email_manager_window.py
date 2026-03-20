@@ -272,10 +272,10 @@ def test_normalizar_pedidos_json_convierte_estructura_nueva() -> None:
                 "NumeroPedido": "P-1",
                 "Cliente": "ACME",
                 "Comercial": "Ana",
-                "FCarga": "2026-03-19",
+                "FechaSalida": "2026-03-19",
                 "Plataforma": "Madrid",
                 "Pais": "España",
-                "PCarga": "SEV",
+                "PuntoCarga": "SEV",
                 "Lineas": [
                     {"Linea": 1, "Cantidad": 2, "NombrePalet": "Euro.Retor", "Mercancia": "Naranja"},
                 ],
@@ -297,8 +297,8 @@ def test_build_canonical_order_lines_copia_cabecera_y_normaliza_categoria() -> N
             {
                 "NumeroPedido": "P-2",
                 "Cliente": "Cliente Demo",
-                "FCarga": "2026-03-20",
-                "PCarga": "VAL",
+                "FechaSalida": "2026-03-20",
+                "PuntoCarga": "VAL",
                 "Lineas": [{"Linea": 1, "Mercancia": "Naranja", "Confeccion": "Caja", "Cat.": "extra"}],
             }
         ]
@@ -308,17 +308,17 @@ def test_build_canonical_order_lines_copia_cabecera_y_normaliza_categoria() -> N
 
     assert len(lineas) == 1
     assert lineas[0]["Cliente"] == "Cliente Demo"
-    assert lineas[0]["FCarga"] == "2026-03-20"
-    assert lineas[0]["PCarga"] == "VAL"
+    assert lineas[0]["FechaSalida"] == "2026-03-20"
+    assert lineas[0]["PuntoCarga"] == "VAL"
     assert lineas[0]["Categoria"] == "Extra"
     assert set(lineas[0].keys()) == {
         "NumeroPedido",
         "Cliente",
         "Comercial",
-        "FCarga",
+        "FechaSalida",
         "Plataforma",
         "Pais",
-        "PCarga",
+        "PuntoCarga",
         "Estado",
         "Linea",
         "Cantidad",
@@ -398,7 +398,7 @@ def test_validar_pedido_para_confirmacion_separa_warnings_y_errores() -> None:
         (),
         {
             "get_order_validation": lambda *_args: {
-                "required_fields": ["Cantidad", "Mercancia", "Cliente", "FCarga", "PCarga", "Confeccion"]
+                "required_fields": ["Cantidad", "Mercancia", "Cliente", "FechaSalida", "PuntoCarga", "Confeccion"]
             }
         },
     )()
@@ -410,8 +410,8 @@ def test_validar_pedido_para_confirmacion_separa_warnings_y_errores() -> None:
             "Mercancia": "",
             "Confeccion": "",
             "Cliente": "",
-            "FCarga": "",
-            "PCarga": "",
+            "FechaSalida": "",
+            "PuntoCarga": "",
             "CP": "",
             "Categoria": "Premium",
         }
