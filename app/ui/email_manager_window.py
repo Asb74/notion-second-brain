@@ -3345,7 +3345,7 @@ class EmailManagerWindow(tk.Toplevel):
     def _validar_pedido_completo(self, lineas: list[dict[str, Any]]) -> list[dict[str, Any]]:
     incidencias: list[dict[str, Any]] = []
 
-    # 🔥 NORMALIZACIÓN AQUÍ
+    # 🔥 NORMALIZACIÓN
     lineas = [normalizar_campos_linea(l) for l in lineas]
 
     for linea in lineas:
