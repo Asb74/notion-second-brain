@@ -11,10 +11,10 @@ ORDER_VALIDATION_FIELDS_BY_GROUP: dict[str, tuple[str, ...]] = {
         "NumeroPedido",
         "Cliente",
         "Comercial",
-        "FCarga",
+        "FechaSalida",
         "Plataforma",
         "Pais",
-        "PCarga",
+        "PuntoCarga",
         "Estado",
     ),
     "linea": (
@@ -37,8 +37,8 @@ ORDER_VALIDATION_FIELDS_BY_GROUP: dict[str, tuple[str, ...]] = {
 
 DEFAULT_REQUIRED_ORDER_FIELDS: tuple[str, ...] = (
     "Cliente",
-    "FCarga",
-    "PCarga",
+    "FechaSalida",
+    "PuntoCarga",
     "Cantidad",
     "Mercancia",
     "Confeccion",

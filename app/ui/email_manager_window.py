@@ -752,7 +752,7 @@ class EmailManagerWindow(tk.Toplevel):
     ) -> list[list[str]]:
         rows: list[list[str]] = []
         label_map = {"TipoPalet": "Tipo Palet"}
-        general_fields = ["NumeroPedido", "Cliente", "Comercial", "FCarga", "Plataforma", "Pais", "PCarga", "Estado"]
+        general_fields = ["NumeroPedido", "Cliente", "Comercial", "FechaSalida", "Plataforma", "Pais", "PuntoCarga", "Estado"]
         line_fields = [
             "Linea",
             "Cantidad",
@@ -3032,10 +3032,10 @@ class EmailManagerWindow(tk.Toplevel):
             "NumeroPedido",
             "Cliente",
             "Comercial",
-            "FCarga",
+            "FechaSalida",
             "Plataforma",
             "Pais",
-            "PCarga",
+            "PuntoCarga",
             "Estado",
             "Linea",
             "Cantidad",
@@ -3077,10 +3077,10 @@ class EmailManagerWindow(tk.Toplevel):
                 "NumeroPedido": pedido.get("NumeroPedido", pedido.get("PedidoID", "")),
                 "Cliente": pedido.get("Cliente", ""),
                 "Comercial": pedido.get("Comercial", ""),
-                "FCarga": pedido.get("FCarga", ""),
+                "FechaSalida": pedido.get("FechaSalida", pedido.get("FCarga", "")),
                 "Plataforma": pedido.get("Plataforma", ""),
                 "Pais": pedido.get("Pais", ""),
-                "PCarga": pedido.get("PCarga", ""),
+                "PuntoCarga": pedido.get("PuntoCarga", pedido.get("PCarga", "")),
                 "Estado": pedido.get("Estado", ""),
             }
             lineas = pedido.get("Lineas", []) or []
@@ -3106,8 +3106,10 @@ class EmailManagerWindow(tk.Toplevel):
             fila["Cantidad"] = fila.get("Palets")
         if "TCajas" in fila and "CajasTotales" not in fila:
             fila["CajasTotales"] = fila.get("TCajas")
-        if "FechaSalida" in fila and "FCarga" not in fila:
-            fila["FCarga"] = fila.get("FechaSalida")
+        if "FCarga" in fila and "FechaSalida" not in fila:
+            fila["FechaSalida"] = fila.get("FCarga")
+        if "PCarga" in fila and "PuntoCarga" not in fila:
+            fila["PuntoCarga"] = fila.get("PCarga")
         if "Cat." in fila and "Categoria" not in fila:
             fila["Categoria"] = fila.get("Cat.")
         if "Cat" in fila and "Categoria" not in fila:
@@ -3116,7 +3118,7 @@ class EmailManagerWindow(tk.Toplevel):
             fila["Categoria"] = fila.get("Ct")
         if "Categoría" in fila and "Categoria" not in fila:
             fila["Categoria"] = fila.get("Categoría")
-        for key in ("NumeroPedido", "Cliente", "Comercial", "FCarga", "Plataforma", "Pais", "PCarga", "Linea", "Cantidad", "CajasTotales", "CP", "TipoPalet", "NombreCaja", "Mercancia", "Confeccion", "Calibre", "Categoria", "Marca", "PO", "Lote", "Observaciones"):
+        for key in ("NumeroPedido", "Cliente", "Comercial", "FechaSalida", "Plataforma", "Pais", "PuntoCarga", "Linea", "Cantidad", "CajasTotales", "CP", "TipoPalet", "NombreCaja", "Mercancia", "Confeccion", "Calibre", "Categoria", "Marca", "PO", "Lote", "Observaciones"):
             fila[key] = str(fila.get(key, "") or "").strip()
         return fila
 
@@ -3221,10 +3223,10 @@ class EmailManagerWindow(tk.Toplevel):
             "NumeroPedido": "número de pedido",
             "Cliente": "cliente",
             "Comercial": "comercial",
-            "FCarga": "fecha de carga",
+            "FechaSalida": "fecha de salida",
             "Plataforma": "plataforma",
             "Pais": "país",
-            "PCarga": "punto de carga",
+            "PuntoCarga": "punto de carga",
             "Estado": "estado",
             "Linea": "línea",
             "Cantidad": "cantidad",
@@ -3380,10 +3382,10 @@ class EmailManagerWindow(tk.Toplevel):
                     "NumeroPedido": pedido_id,
                     "Cliente": linea.get("Cliente", ""),
                     "Comercial": linea.get("Comercial", ""),
-                    "FCarga": linea.get("FCarga", ""),
+                    "FechaSalida": linea.get("FechaSalida", linea.get("FCarga", "")),
                     "Plataforma": linea.get("Plataforma", ""),
                     "Pais": linea.get("Pais", ""),
-                    "PCarga": linea.get("PCarga", ""),
+                    "PuntoCarga": linea.get("PuntoCarga", linea.get("PCarga", "")),
                     "Lineas": [],
                 },
             )
