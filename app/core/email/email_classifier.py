@@ -178,6 +178,7 @@ class EmailClassifier:
 
         texts = [MLEmailModel.compose_features(row["subject"], row["sender"], row["body_text"]) for row in dataset]
         labels = [str(row["label"] or "other") for row in dataset]
+        self.all_classes = sorted(set(self.all_classes) | set(labels))
 
         logger.info("Training examples: %s", len(texts))
         logger.info("Unique labels: %s", len(set(labels)))
@@ -265,6 +266,7 @@ class EmailClassifier:
         if any(not label for label in normalized_labels):
             self.last_training_warning = "Incremental training omitido: etiqueta vacía."
             return False
+        self.all_classes = sorted(set(self.all_classes) | set(normalized_labels))
 
         if any(not self.can_incremental_train(new_label=label) for label in normalized_labels):
             return False
