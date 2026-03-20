@@ -70,7 +70,7 @@ from app.utils.attachment_text_extractor import (
     SUPPORTED_ATTACHMENT_EXTENSIONS,
     extract_text_and_types_from_attachments,
 )
-from app.utils.normalizacion import normalizar_campos_linea
+from app.utils.normalizacion_pedido import normalizar_campos_linea
 logger = logging.getLogger(__name__)
 
 
