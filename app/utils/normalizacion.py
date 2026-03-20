@@ -1,4 +1,5 @@
 def normalizar_campos_linea(linea: dict) -> dict:
+    print("ANTES:", linea)
     nueva = {}
 
     for k, v in linea.items():
@@ -35,5 +36,6 @@ def normalizar_campos_linea(linea: dict) -> dict:
             
         else:
             nueva[k] = v
-
+    print("DESPUÉS:", nueva)
     return nueva
+    
