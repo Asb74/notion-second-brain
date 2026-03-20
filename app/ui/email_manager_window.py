@@ -3343,6 +3343,7 @@ class EmailManagerWindow(tk.Toplevel):
         return errores
 
     def _validar_pedido_completo(self, lineas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        print("VALIDANDO LINEAS:", lineas)
         incidencias: list[dict[str, Any]] = []
               
         for linea in lineas:
