@@ -140,3 +140,59 @@ def test_aplicar_estados_modifica_lineas_en_memoria() -> None:
 
     assert resultado[0]["Estado"] == "Sin cambios"
     assert resultado[1]["Estado"] == "Nuevo"
+
+
+def test_guardar_pedidos_compatible_con_numero_pedido_snake_case() -> None:
+    conn = _conn()
+    conn.execute(
+        """
+        CREATE TABLE pedidos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            NumeroPedido TEXT,
+            Estado TEXT,
+            fecha TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE lineas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pedido_id INTEGER NOT NULL,
+            numero_pedido TEXT,
+            linea INTEGER,
+            cantidad REAL,
+            cajas_totales REAL,
+            cp REAL,
+            tipo_palet TEXT,
+            nombre_caja TEXT,
+            mercancia TEXT,
+            confeccion TEXT,
+            calibre TEXT,
+            categoria TEXT,
+            marca TEXT,
+            po TEXT,
+            lote TEXT,
+            observaciones TEXT,
+            cliente TEXT,
+            comercial TEXT,
+            fecha_carga TEXT,
+            plataforma TEXT,
+            pais TEXT,
+            punto_carga TEXT,
+            estado TEXT,
+            archivo_origen TEXT
+        )
+        """
+    )
+    repo = PedidosRepository(conn)
+
+    inserted = repo.guardar_pedidos_desde_json(
+        [{"NumeroPedido": "P-6", "Linea": 1, "Cantidad": 2, "CajasTotales": 60, "CP": 30, "TipoPalet": "Euro.Retor"}],
+        "pedido-6.pdf",
+    )
+
+    assert inserted == 1
+    row = conn.execute("SELECT numero_pedido FROM lineas LIMIT 1").fetchone()
+    assert row is not None
+    assert row["numero_pedido"] == "P-6"
