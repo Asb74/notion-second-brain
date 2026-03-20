@@ -14,34 +14,6 @@ import csv
 import threading
 import shutil
 import sqlite3
-import tempfiledef normalizar_campos_linea(linea: dict[str, Any]) -> dict[str, Any]:
-    print("🔥 USANDO1 ESTA NORMALIZACION 🔥")
-    print("CLAVES:", list(linea.keys()))
-    mapa = {
-        "NumeroPedido": ["NumeroPedido", "PedidoID", "Pedido", "NumPedido", "Nº Pedido"],
-        "Cliente": ["Cliente", "ClienteNombre", "NombreCliente"],
-        "FechaSalida": ["FechaSalida", "Fecha", "FSalida"],
-        "PCarga": ["PCarga", "PuntoCarga", "Origen"],
-        "Mercancia": ["Mercancia", "Producto"],
-        "Confeccion": ["Confeccion", "Formato"],
-        "Categoria": ["Categoria", "Cat", "Cat.", "Ct"],
-    }
-
-    nueva: dict[str, Any] = {}
-    for key_std, variantes in mapa.items():
-        for var in variantes:
-            if var in linea and linea[var]:
-                valor = linea[var]
-                if key_std == "Categoria":
-                    valor = str(valor).strip().upper()
-                nueva[key_std] = valor
-                break
-
-    for k, v in linea.items():
-        if k not in nueva:
-            nueva[k] = v
-
-    return nueva
 import tkinter as tk
 from datetime import datetime
 from email.utils import getaddresses, parseaddr
