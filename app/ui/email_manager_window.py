@@ -73,6 +73,34 @@ from app.utils.attachment_text_extractor import (
 from app.utils.normalizacion_pedido import normalizar_campos_linea
 logger = logging.getLogger(__name__)
 
+CANONICAL_ORDER_FIELDS = [
+    "NumeroPedido",
+    "Cliente",
+    "Comercial",
+    "FechaSalida",
+    "Plataforma",
+    "Pais",
+    "PuntoCarga",
+    "Estado",
+]
+
+CANONICAL_LINE_FIELDS = [
+    "Linea",
+    "Cantidad",
+    "TipoPalet",
+    "CajasTotales",
+    "CP",
+    "NombreCaja",
+    "Mercancia",
+    "Confeccion",
+    "Calibre",
+    "Categoria",
+    "Marca",
+    "PO",
+    "Lote",
+    "Observaciones",
+]
+
 
 def _sanitize_tk_color(color: str | None, fallback: str = "#000000") -> str:
     """Return a Tkinter-safe color value for known invalid system color aliases."""
@@ -752,24 +780,8 @@ class EmailManagerWindow(tk.Toplevel):
     ) -> list[list[str]]:
         rows: list[list[str]] = []
         label_map = {"TipoPalet": "Tipo Palet"}
-        general_fields = ["NumeroPedido", "Cliente", "Comercial", "FechaSalida", "Plataforma", "Pais", "PuntoCarga", "Estado"]
-        line_fields = [
-            "Linea",
-            "Cantidad",
-            "TipoPalet",
-            "CajasTotales",
-            "CP",
-            "NombreCaja",
-            "Mercancia",
-            "Confeccion",
-            "Calibre",
-            "Categoria",
-            "Marca",
-            "PO",
-            "Lote",
-            "Observaciones",
-            "Estado",
-        ]
+        general_fields = [*CANONICAL_ORDER_FIELDS]
+        line_fields = [*CANONICAL_LINE_FIELDS, "Estado"]
 
         def append_section_header(title: str) -> None:
             if rows:
@@ -3028,30 +3040,7 @@ class EmailManagerWindow(tk.Toplevel):
         return mapa.get(v, "")
 
     def _build_canonical_order_lines(self, data: dict[str, Any] | list[Any]) -> list[dict[str, Any]]:
-        canonical_keys = [
-            "NumeroPedido",
-            "Cliente",
-            "Comercial",
-            "FechaSalida",
-            "Plataforma",
-            "Pais",
-            "PuntoCarga",
-            "Estado",
-            "Linea",
-            "Cantidad",
-            "CajasTotales",
-            "CP",
-            "TipoPalet",
-            "NombreCaja",
-            "Mercancia",
-            "Confeccion",
-            "Calibre",
-            "Categoria",
-            "Marca",
-            "PO",
-            "Lote",
-            "Observaciones",
-        ]
+        canonical_keys = [*CANONICAL_ORDER_FIELDS, *CANONICAL_LINE_FIELDS]
         resultado: list[dict[str, Any]] = []
 
         def with_all_fields(payload: dict[str, Any]) -> dict[str, Any]:
@@ -3118,7 +3107,7 @@ class EmailManagerWindow(tk.Toplevel):
             fila["Categoria"] = fila.get("Ct")
         if "Categoría" in fila and "Categoria" not in fila:
             fila["Categoria"] = fila.get("Categoría")
-        for key in ("NumeroPedido", "Cliente", "Comercial", "FechaSalida", "Plataforma", "Pais", "PuntoCarga", "Linea", "Cantidad", "CajasTotales", "CP", "TipoPalet", "NombreCaja", "Mercancia", "Confeccion", "Calibre", "Categoria", "Marca", "PO", "Lote", "Observaciones"):
+        for key in [*CANONICAL_ORDER_FIELDS, *CANONICAL_LINE_FIELDS]:
             fila[key] = str(fila.get(key, "") or "").strip()
         return fila
 
@@ -3189,7 +3178,7 @@ class EmailManagerWindow(tk.Toplevel):
         return row is not None
 
     def _calcular_estado_linea(self, linea: dict[str, Any]) -> str:
-        NumeroPedido = str(linea.get("NumeroPedido") or linea.get("PedidoID") or "").strip()
+        NumeroPedido = str(linea.get("NumeroPedido") or "").strip()
         nuevas_lineas = [self._normalizar_para_comparacion(linea)]
         lineas_existentes = self._obtener_lineas_ultima_version(NumeroPedido) if NumeroPedido else []
         estado = self._calcular_estado_pedido(
@@ -3208,15 +3197,45 @@ class EmailManagerWindow(tk.Toplevel):
         required = validation_config.get("required_fields", [])
         if not isinstance(required, list):
             return set()
-        return {str(field).strip() for field in required if str(field).strip()}
+        alias_to_canonical = {
+            "FCarga": "FechaSalida",
+            "PCarga": "PuntoCarga",
+            "PedidoID": "NumeroPedido",
+            "Palets": "Cantidad",
+            "TCajas": "CajasTotales",
+        }
+        allowed = set(CANONICAL_ORDER_FIELDS) | set(CANONICAL_LINE_FIELDS)
+        normalized: set[str] = set()
+        for field in required:
+            raw = str(field).strip()
+            if not raw:
+                continue
+            canonical = alias_to_canonical.get(raw, raw)
+            if canonical in allowed:
+                normalized.add(canonical)
+        self.log(f"REQUIRED_FIELDS_NORMALIZED: {sorted(normalized)}", level="INFO")
+        return normalized
 
-    def _validar_pedido_para_confirmacion(self, lineas: list[dict[str, Any]]) -> dict[str, list[str]]:
-        warnings: list[str] = []
-        errors: list[str] = []
+    @staticmethod
+    def _build_incidencias_from_findings(findings: list[dict[str, str]]) -> list[dict[str, Any]]:
+        grouped: dict[tuple[str, str], list[str]] = {}
+        for finding in findings:
+            pedido = str(finding.get("pedido", "")).strip()
+            linea = str(finding.get("linea", "")).strip()
+            mensaje = str(finding.get("mensaje", "")).strip()
+            if not mensaje:
+                continue
+            key = (pedido, linea)
+            grouped.setdefault(key, []).append(mensaje)
+        incidencias: list[dict[str, Any]] = []
+        for (pedido, linea), errores in grouped.items():
+            incidencias.append({"NumeroPedido": pedido, "Linea": linea, "Errores": errores})
+        return incidencias
+
+    def _analizar_validacion_pedido(self, lineas: list[dict[str, Any]]) -> dict[str, Any]:
         required = self._campos_obligatorios_pedido()
         canonical_lines = self._build_canonical_order_lines(lineas)
-        canonical_lines = [normalizar_campos_linea(l) for l in canonical_lines]
-        self.log(f"VALIDANDO LINEAS CANÓNICAS: {canonical_lines}", level="INFO")
+        self.log(f"CANONICAL_LINES_CONFIRMACION: {canonical_lines}", level="INFO")
 
         order_fields = set(ORDER_VALIDATION_FIELDS_BY_GROUP["pedido"])
         label_map = {
@@ -3244,6 +3263,11 @@ class EmailManagerWindow(tk.Toplevel):
             "Observaciones": "observaciones",
         }
 
+        warnings: list[str] = []
+        errors: list[str] = []
+        findings: list[dict[str, str]] = []
+        order_missing_registry: set[tuple[str, str]] = set()
+
         for linea in canonical_lines:
             pedido_ref = str(linea.get("NumeroPedido", "")).strip() or "Pedido sin número"
             linea_ref = str(linea.get("Linea", "")).strip() or "?"
@@ -3254,25 +3278,60 @@ class EmailManagerWindow(tk.Toplevel):
                     continue
                 field_label = label_map.get(field, field)
                 if field in order_fields:
-                    errors.append(f"Pedido {pedido_ref}: Falta {field_label}")
+                    dedupe_key = (pedido_ref, field)
+                    if dedupe_key in order_missing_registry:
+                        continue
+                    order_missing_registry.add(dedupe_key)
+                    mensaje = f"Pedido {pedido_ref}: Falta {field_label}"
+                    findings.append({"tipo": "error", "pedido": pedido_ref, "linea": "", "mensaje": mensaje})
+                    errors.append(mensaje)
                 else:
-                    errors.append(f"Pedido {pedido_ref} · Línea {linea_ref}: Falta {field_label}")
+                    mensaje = f"Pedido {pedido_ref} · Línea {linea_ref}: Falta {field_label}"
+                    findings.append({"tipo": "error", "pedido": pedido_ref, "linea": linea_ref, "mensaje": mensaje})
+                    errors.append(mensaje)
 
-            cp = linea.get("CP", "")
-            if cp in ("", None):
-                warnings.append(f"Pedido {pedido_ref} · Línea {linea_ref}: CP no definido")
+            cp = str(linea.get("CP", "")).strip()
+            if not cp:
+                mensaje = f"Pedido {pedido_ref} · Línea {linea_ref}: CP no definido"
+                findings.append({"tipo": "warning", "pedido": pedido_ref, "linea": linea_ref, "mensaje": mensaje})
+                warnings.append(mensaje)
             categoria = self._normalizar_categoria(linea.get("Categoria", ""))
             if str(linea.get("Categoria", "")).strip() and not categoria:
-                warnings.append(f"Pedido {pedido_ref} · Línea {linea_ref}: Categoría inválida")
+                mensaje = f"Pedido {pedido_ref} · Línea {linea_ref}: Categoría inválida"
+                findings.append({"tipo": "warning", "pedido": pedido_ref, "linea": linea_ref, "mensaje": mensaje})
+                warnings.append(mensaje)
 
-        return {"warnings": warnings, "errors": errors}
+            for err in self._validar_linea_pedido(linea):
+                mensaje = f"Pedido {pedido_ref} · Línea {linea_ref}: {err}"
+                findings.append({"tipo": "error", "pedido": pedido_ref, "linea": linea_ref, "mensaje": mensaje})
+                errors.append(mensaje)
+
+            for erp_err in self._detectar_errores_erp_linea(linea):
+                mensaje = f"Pedido {pedido_ref} · Línea {linea_ref}: {erp_err}"
+                findings.append({"tipo": "error", "pedido": pedido_ref, "linea": linea_ref, "mensaje": mensaje})
+                errors.append(mensaje)
+
+        self.log(f"ERRORS_CONFIRMACION: {errors}", level="INFO")
+        self.log(f"WARNINGS_CONFIRMACION: {warnings}", level="INFO")
+        return {
+            "canonical_lines": canonical_lines,
+            "required_fields": sorted(required),
+            "errors": errors,
+            "warnings": warnings,
+            "findings": findings,
+            "incidencias": self._build_incidencias_from_findings(findings),
+        }
+
+    def _validar_pedido_para_confirmacion(self, lineas: list[dict[str, Any]]) -> dict[str, list[str]]:
+        result = self._analizar_validacion_pedido(lineas)
+        return {"warnings": result["warnings"], "errors": result["errors"]}
 
     def _validar_linea_pedido(self, linea: dict[str, Any]) -> list[str]:
         errores: list[str] = []
-        NumeroPedido = str(linea.get("NumeroPedido") or linea.get("PedidoID") or "").strip()
+        NumeroPedido = str(linea.get("NumeroPedido") or "").strip()
         linea_num = str(linea.get("Linea") or "").strip()
-        palets = str(linea.get("Cantidad") or linea.get("Palets") or "").strip()
-        tcajas = str(linea.get("CajasTotales") or linea.get("TCajas") or "").strip()
+        palets = str(linea.get("Cantidad") or "").strip()
+        tcajas = str(linea.get("CajasTotales") or "").strip()
         cp = str(linea.get("CP") or "").strip()
         tipo_palet = str(linea.get("TipoPalet") or "").strip()
         categoria = str(linea.get("Categoria") or "").strip()
@@ -3316,35 +3375,16 @@ class EmailManagerWindow(tk.Toplevel):
         return errores
 
     def _validar_pedido_completo(self, lineas: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        print("VALIDANDO LINEAS:", lineas)
-    
-        incidencias: list[dict[str, Any]] = []
-    
-        # 🔥 NORMALIZA TODO UNA VEZ
-        lineas_normalizadas = [normalizar_campos_linea(l) for l in lineas]
-    
-        print("LINEAS NORMALIZADAS:", lineas_normalizadas)
-    
-        for linea in lineas_normalizadas:
-            errores = self._validar_linea_pedido(linea)
-    
-            if errores:
-                incidencias.append({
-                    "NumeroPedido": linea.get("NumeroPedido", linea.get("PedidoID", "")),
-                    "Linea": linea.get("Linea", ""),
-                    "Errores": errores
-                })
-    
-        return incidencias
+        return self._analizar_validacion_pedido(lineas)["incidencias"]
 
     def _detectar_errores_erp_linea(self, linea: dict[str, Any]) -> list[str]:
         errores: list[str] = []
         try:
-            palets = int(float(linea.get("Cantidad") or linea.get("Palets") or 0))
+            palets = int(float(linea.get("Cantidad") or 0))
         except Exception:  # noqa: BLE001
             palets = None
         try:
-            tcajas = int(float(linea.get("CajasTotales") or linea.get("TCajas") or 0))
+            tcajas = int(float(linea.get("CajasTotales") or 0))
         except Exception:  # noqa: BLE001
             tcajas = None
         try:
@@ -3357,54 +3397,49 @@ class EmailManagerWindow(tk.Toplevel):
             if abs(esperado - cp) > 0.01:
                 errores.append(f"CP incoherente: esperado {esperado:.2f}, detectado {cp}")
         if tcajas and not palets:
-            errores.append("Hay TCajas pero falta Palets")
+            errores.append("Hay CajasTotales pero falta Cantidad")
         if palets and not tcajas:
-            errores.append("Hay Palets pero falta TCajas")
+            errores.append("Hay Cantidad pero falta CajasTotales")
         return errores
 
     def _analizar_calidad_pedido(self, lineas: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        incidencias: list[dict[str, Any]] = []
-        incidencias.extend(self._validar_pedido_completo(lineas))
-        for linea in lineas:
-            errores_erp = self._detectar_errores_erp_linea(linea)
-            if errores_erp:
-                incidencias.append({"NumeroPedido": linea.get("NumeroPedido", linea.get("PedidoID", "")), "Linea": linea.get("Linea", ""), "Errores": errores_erp})
-        return incidencias
+        return self._analizar_validacion_pedido(lineas)["incidencias"]
 
     @staticmethod
     def _agrupar_lineas_en_pedidos(lineas: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
         pedidos_index: dict[str, dict[str, Any]] = {}
         for linea in lineas:
-            pedido_id = str(linea.get("NumeroPedido") or linea.get("PedidoID") or "").strip() or "Pedido"
+            linea_normalizada = normalizar_campos_linea(linea)
+            pedido_id = str(linea_normalizada.get("NumeroPedido") or "").strip() or "Pedido"
             pedido = pedidos_index.setdefault(
                 pedido_id,
                 {
                     "NumeroPedido": pedido_id,
-                    "Cliente": linea.get("Cliente", ""),
-                    "Comercial": linea.get("Comercial", ""),
-                    "FechaSalida": linea.get("FechaSalida", linea.get("FCarga", "")),
-                    "Plataforma": linea.get("Plataforma", ""),
-                    "Pais": linea.get("Pais", ""),
-                    "PuntoCarga": linea.get("PuntoCarga", linea.get("PCarga", "")),
+                    "Cliente": linea_normalizada.get("Cliente", ""),
+                    "Comercial": linea_normalizada.get("Comercial", ""),
+                    "FechaSalida": linea_normalizada.get("FechaSalida", ""),
+                    "Plataforma": linea_normalizada.get("Plataforma", ""),
+                    "Pais": linea_normalizada.get("Pais", ""),
+                    "PuntoCarga": linea_normalizada.get("PuntoCarga", ""),
                     "Lineas": [],
                 },
             )
             pedido["Lineas"].append(
                 {
-                    "Linea": linea.get("Linea", ""),
-                    "Cantidad": linea.get("Cantidad", linea.get("Palets", "")),
-                    "TipoPalet": linea.get("TipoPalet", ""),
-                    "CajasTotales": linea.get("CajasTotales", linea.get("TCajas", "")),
-                    "CP": linea.get("CP", ""),
-                    "NombreCaja": linea.get("NombreCaja", ""),
-                    "Mercancia": linea.get("Mercancia", ""),
-                    "Confeccion": linea.get("Confeccion", ""),
-                    "Calibre": linea.get("Calibre", ""),
-                    "Categoria": linea.get("Categoria", ""),
-                    "Marca": linea.get("Marca", ""),
-                    "PO": linea.get("PO", ""),
-                    "Lote": linea.get("Lote", ""),
-                    "Observaciones": linea.get("Observaciones", ""),
+                    "Linea": linea_normalizada.get("Linea", ""),
+                    "Cantidad": linea_normalizada.get("Cantidad", ""),
+                    "TipoPalet": linea_normalizada.get("TipoPalet", ""),
+                    "CajasTotales": linea_normalizada.get("CajasTotales", ""),
+                    "CP": linea_normalizada.get("CP", ""),
+                    "NombreCaja": linea_normalizada.get("NombreCaja", ""),
+                    "Mercancia": linea_normalizada.get("Mercancia", ""),
+                    "Confeccion": linea_normalizada.get("Confeccion", ""),
+                    "Calibre": linea_normalizada.get("Calibre", ""),
+                    "Categoria": linea_normalizada.get("Categoria", ""),
+                    "Marca": linea_normalizada.get("Marca", ""),
+                    "PO": linea_normalizada.get("PO", ""),
+                    "Lote": linea_normalizada.get("Lote", ""),
+                    "Observaciones": linea_normalizada.get("Observaciones", ""),
                 }
             )
         return {"Pedidos": list(pedidos_index.values())}
@@ -3897,10 +3932,11 @@ class EmailManagerWindow(tk.Toplevel):
                 messagebox.showwarning("Atención", "El resumen no puede estar vacío.")
                 return
             if order_lineas is not None:
-                validacion = self._validar_pedido_para_confirmacion(order_lineas)
+                validacion = self._analizar_validacion_pedido(order_lineas)
                 if validacion["errors"]:
                     self.confirm_attempts += 1
                     if self.confirm_attempts < 3:
+                        self.log(f"OVERRIDE_ACTIVO: False (intento {self.confirm_attempts}/3)", level="INFO")
                         messagebox.showerror(
                             "🔴 Errores graves detectados",
                             "No se puede confirmar todavía.\n\n"
@@ -3908,6 +3944,7 @@ class EmailManagerWindow(tk.Toplevel):
                             + f"\n\nIntento {self.confirm_attempts}/3.",
                         )
                         return
+                    self.log("OVERRIDE_ACTIVO: True", level="INFO")
                     messagebox.showwarning(
                         "🔴 Override activado",
                         "Errores graves ignorados tras 3 intentos:\n\n" + "\n".join(validacion["errors"]),
@@ -3917,7 +3954,9 @@ class EmailManagerWindow(tk.Toplevel):
                         "🟡 Advertencias de pedido",
                         "\n".join(validacion["warnings"]),
                     )
-                inserted = self.pedidos_repo.guardar_pedidos_desde_json(order_lineas, order_filename)
+                canonical_for_save = validacion["canonical_lines"]
+                self.log("SE_PROCEDE_A_GUARDAR: True", level="INFO")
+                inserted = self.pedidos_repo.guardar_pedidos_desde_json(canonical_for_save, order_filename)
                 self.log(f"Pedido persistido: {inserted} líneas ({order_filename})")
             self.response_text.delete("1.0", "end")
             self.response_text.insert("1.0", f"Resumen rápido:\n\n{current_summary}\n")
