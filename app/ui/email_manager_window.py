@@ -136,6 +136,34 @@ def sanitize_html_for_tk(html_content: str) -> str:
     return sanitized
 
 
+def normalizar_campos_linea(linea: dict[str, Any]) -> dict[str, Any]:
+    mapa = {
+        "NumeroPedido": ["NumeroPedido", "PedidoID", "Pedido", "NumPedido", "Nº Pedido"],
+        "Cliente": ["Cliente", "ClienteNombre", "NombreCliente"],
+        "FechaSalida": ["FechaSalida", "Fecha", "FSalida"],
+        "PCarga": ["PCarga", "PuntoCarga", "Origen"],
+        "Mercancia": ["Mercancia", "Producto"],
+        "Confeccion": ["Confeccion", "Formato"],
+        "Categoria": ["Categoria", "Cat", "Cat.", "Ct"],
+    }
+
+    nueva: dict[str, Any] = {}
+    for key_std, variantes in mapa.items():
+        for var in variantes:
+            if var in linea and linea[var]:
+                valor = linea[var]
+                if key_std == "Categoria":
+                    valor = str(valor).strip().upper()
+                nueva[key_std] = valor
+                break
+
+    for k, v in linea.items():
+        if k not in nueva:
+            nueva[k] = v
+
+    return nueva
+
+
 ATTACHMENT_SUMMARY_REQUEST = (
     "Analiza el contenido consolidado de adjuntos y devuelve un resumen accionable en español.\n"
     "Reglas:\n"
@@ -3098,6 +3126,7 @@ class EmailManagerWindow(tk.Toplevel):
 
     @staticmethod
     def _normalizar_campos_linea_pedido(fila: dict[str, Any]) -> dict[str, Any]:
+        fila = normalizar_campos_linea(fila)
         if "PedidoID" in fila and "NumeroPedido" not in fila:
             fila["NumeroPedido"] = fila.get("PedidoID")
         if "NombrePalet" in fila and "TipoPalet" not in fila:
@@ -3106,6 +3135,8 @@ class EmailManagerWindow(tk.Toplevel):
             fila["Cantidad"] = fila.get("Palets")
         if "TCajas" in fila and "CajasTotales" not in fila:
             fila["CajasTotales"] = fila.get("TCajas")
+        if "FechaSalida" in fila and "FCarga" not in fila:
+            fila["FCarga"] = fila.get("FechaSalida")
         if "Cat." in fila and "Categoria" not in fila:
             fila["Categoria"] = fila.get("Cat.")
         if "Cat" in fila and "Categoria" not in fila:
@@ -3211,6 +3242,7 @@ class EmailManagerWindow(tk.Toplevel):
         errors: list[str] = []
         required = self._campos_obligatorios_pedido()
         canonical_lines = self._build_canonical_order_lines(lineas)
+        canonical_lines = [normalizar_campos_linea(l) for l in canonical_lines]
         self.log(f"VALIDANDO LINEAS CANÓNICAS: {canonical_lines}", level="INFO")
 
         order_fields = set(ORDER_VALIDATION_FIELDS_BY_GROUP["pedido"])
