@@ -137,6 +137,8 @@ def sanitize_html_for_tk(html_content: str) -> str:
 
 
 def normalizar_campos_linea(linea: dict[str, Any]) -> dict[str, Any]:
+    print("🔥 USANDO ESTA NORMALIZACION 🔥")
+    print("CLAVES:", list(linea.keys()))
     mapa = {
         "NumeroPedido": ["NumeroPedido", "PedidoID", "Pedido", "NumPedido", "Nº Pedido"],
         "Cliente": ["Cliente", "ClienteNombre", "NombreCliente"],
