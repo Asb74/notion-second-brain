@@ -11,13 +11,13 @@ def normalizar_campos_linea(linea: dict) -> dict:
         elif key in ["cliente", "customer"]:
             nueva["Cliente"] = v
 
-        elif key in ["fecha", "fecha salida", "fecha_salida"]:
+        elif key in ["fecha", "fecha salida", "fecha_salida","FCarga"]:
             nueva["FechaSalida"] = v
 
         elif key in ["mercancia", "producto", "articulo"]:
             nueva["Mercancia"] = v
 
-        elif key in ["origen", "carga", "punto carga"]:
+        elif key in ["origen", "carga", "punto carga","PCarga"]:
             nueva["PuntoCarga"] = v
 
         elif key in ["categoria", "cat", "cat.", "ct"]:
