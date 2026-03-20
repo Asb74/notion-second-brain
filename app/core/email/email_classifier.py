@@ -202,7 +202,7 @@ class EmailClassifier:
                     self.ml_model = candidate_model
             else:
                 logger.info("Entrenamiento email classifier: ejecutando partial_fit")
-                self.ml_model.partial_fit(texts, labels, classes=self.all_classes)
+                self.ml_model.partial_fit(texts, labels)
         except Exception as exc:  # noqa: BLE001
             detail = str(exc).strip()
             if detail.startswith("Entrenamiento"):
@@ -249,11 +249,6 @@ class EmailClassifier:
             logger.warning("Incremental training omitido: etiqueta inválida")
             return False
 
-        if normalized_label not in categories:
-            self.last_training_warning = f"Incremental training omitido: etiqueta desconocida ({normalized_label})"
-            logger.warning("Incremental training omitido: etiqueta desconocida (%s)", normalized_label)
-            return False
-
         if self.ml_model.last_warning:
             self.last_training_warning = f"Incremental training omitido por warning previo: {self.ml_model.last_warning}"
             logger.warning("Incremental training omitido por warning previo: %s", self.ml_model.last_warning)
@@ -275,9 +270,10 @@ class EmailClassifier:
             return False
 
         try:
-            features = self.ml_model.vectorizer.transform(texts)
-            self.ml_model.classifier.partial_fit(features, normalized_labels, classes=self.all_classes)
-            self.ml_model.last_warning = None
+            self.ml_model.partial_fit(texts, normalized_labels)
+            if self.ml_model.last_warning:
+                self.last_training_warning = self.ml_model.last_warning
+                return False
             self.ml_model.save()
             self.last_training_warning = None
             logger.info("Incremental training aplicado correctamente")

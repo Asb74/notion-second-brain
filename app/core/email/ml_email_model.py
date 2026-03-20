@@ -28,6 +28,8 @@ class MLEmailModel:
         self.model_path = Path(model_path)
         self.is_available = bool(joblib and TfidfVectorizer and SGDClassifier)
         self.is_trained = False
+        self.is_fitted = False
+        self.known_classes: list[str] = []
         self.last_warning: str | None = None
         self.vectorizer = None
         self.classifier = None
@@ -36,7 +38,7 @@ class MLEmailModel:
         if not self.is_available:
             return False
         if self.classifier is None:
-            self.classifier = SGDClassifier(loss="log_loss", random_state=42)
+            self.classifier = SGDClassifier(loss="log_loss", random_state=42, class_weight="balanced")
         if self.vectorizer is None:
             self.vectorizer = TfidfVectorizer(ngram_range=(1, 2))
         return True
@@ -44,9 +46,13 @@ class MLEmailModel:
     def fit(self, texts: Sequence[str], labels: Sequence[str], classes: Sequence[str] | None = None) -> None:
         if not texts:
             self.is_trained = False
+            self.is_fitted = False
+            self.known_classes = []
             raise RuntimeError("Training aborted: empty dataset")
         if not self._ensure_model_components():
             self.is_trained = False
+            self.is_fitted = False
+            self.known_classes = []
             raise RuntimeError("Training aborted: ML dependencies unavailable")
 
         logger.info("Training dataset size: %s", len(texts))
@@ -74,7 +80,9 @@ class MLEmailModel:
             logger.exception("Training failed during fit()")
             raise RuntimeError(f"Training failed during fit(): {str(exc)}") from exc
 
+        self.known_classes = sorted(unique_labels)
         self.is_trained = True
+        self.is_fitted = True
         self.last_warning = None
 
     def partial_fit(self, texts: Sequence[str], labels: Sequence[str], classes: Sequence[str] | None = None) -> None:
@@ -88,12 +96,33 @@ class MLEmailModel:
 
         vectorizer_ready = hasattr(self.vectorizer, "vocabulary_") and bool(self.vectorizer.vocabulary_)
         features = self.vectorizer.transform(texts) if vectorizer_ready else self.vectorizer.fit_transform(texts)
-        model_classes = list(classes or self.DEFAULT_CLASSES)
-        if self.is_trained:
-            self.classifier.partial_fit(features, labels)
-        else:
+
+        if not self.is_fitted:
+            model_classes = sorted(unique_labels)
             self.classifier.partial_fit(features, labels, classes=model_classes)
+            self.known_classes = model_classes
+            self.is_fitted = True
             self.is_trained = True
+            self.last_warning = None
+            return
+
+        unseen_labels = sorted(unique_labels - set(self.known_classes))
+        if unseen_labels:
+            logger.info("Detected new classes in incremental training: %s. Reinitializing model.", unseen_labels)
+            self.classifier = SGDClassifier(loss="log_loss", random_state=42, class_weight="balanced")
+            self.vectorizer = TfidfVectorizer(ngram_range=(1, 2))
+            refreshed_features = self.vectorizer.fit_transform(texts)
+            refreshed_classes = sorted(unique_labels | set(self.known_classes))
+            self.classifier.partial_fit(refreshed_features, labels, classes=refreshed_classes)
+            self.known_classes = refreshed_classes
+            self.is_fitted = True
+            self.is_trained = True
+            self.last_warning = None
+            return
+
+        self.classifier.partial_fit(features, labels)
+        self.known_classes = sorted(set(self.known_classes) | unique_labels)
+        self.is_trained = True
         self.last_warning = None
 
     def predict(self, text: str) -> str | None:
@@ -124,7 +153,7 @@ class MLEmailModel:
             return
         self.model_path.parent.mkdir(parents=True, exist_ok=True)
         joblib.dump(
-            {"classifier": self.classifier, "vectorizer": self.vectorizer, "is_trained": self.is_trained},
+            {"classifier": self.classifier, "vectorizer": self.vectorizer, "is_trained": self.is_trained, "is_fitted": self.is_fitted, "known_classes": self.known_classes},
             self.model_path,
         )
 
@@ -137,6 +166,8 @@ class MLEmailModel:
         if self.vectorizer is None:
             self.vectorizer = TfidfVectorizer(ngram_range=(1, 2))
         self.is_trained = bool(payload.get("is_trained", True))
+        self.is_fitted = bool(payload.get("is_fitted", self.is_trained))
+        self.known_classes = [str(label) for label in payload.get("known_classes", getattr(self.classifier, "classes_", []))]
         return self.is_trained
 
     @staticmethod
