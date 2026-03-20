@@ -27,7 +27,7 @@ MAPEO_CAMPOS_PEDIDO = {
     "Lote": ["lote", "batch"],
     "Observaciones": ["observaciones", "notas", "comentarios"]
 }
-def normalizar_campos_pedido(linea: dict) -> dict:
+def normalizar_campos_linea(linea: dict) -> dict:
     print("ANTES:", linea)
 
     nueva = {}
