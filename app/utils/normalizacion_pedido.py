@@ -1,4 +1,6 @@
-print("🔥 NORMALIZACION PEDIDOS CARGADA 🔥")
+from __future__ import annotations
+
+import unicodedata
 
 MAPEO_CAMPOS_PEDIDO = {
     # 📦 Pedido
@@ -27,17 +29,29 @@ MAPEO_CAMPOS_PEDIDO = {
     "Lote": ["lote", "batch"],
     "Observaciones": ["observaciones", "notas", "comentarios"]
 }
-def normalizar_campos_linea(linea: dict) -> dict:
-    print("ANTES:", linea)
 
+
+def _normalize_key(value: str) -> str:
+    raw = str(value or "").strip().lower()
+    normalized = unicodedata.normalize("NFKD", raw)
+    return "".join(ch for ch in normalized if not unicodedata.combining(ch))
+
+
+_VARIANTES_NORMALIZADAS = {
+    campo: {_normalize_key(variante) for variante in variantes}
+    for campo, variantes in MAPEO_CAMPOS_PEDIDO.items()
+}
+
+
+def normalizar_campos_linea(linea: dict) -> dict:
     nueva = {}
 
     for k, v in linea.items():
-        key = k.lower().strip()
+        key = _normalize_key(k)
 
         encontrado = False
 
-        for campo_std, variantes in MAPEO_CAMPOS_PEDIDO.items():
+        for campo_std, variantes in _VARIANTES_NORMALIZADAS.items():
             if key in variantes:
                 nueva[campo_std] = v
                 encontrado = True
@@ -51,5 +65,4 @@ def normalizar_campos_linea(linea: dict) -> dict:
     if "Categoria" in nueva and nueva["Categoria"]:
         nueva["Categoria"] = str(nueva["Categoria"]).strip().upper()
 
-    print("DESPUÉS:", nueva)
     return nueva
