@@ -14,6 +14,7 @@ import csv
 import threading
 import shutil
 import sqlite3
+import tempfile
 import tkinter as tk
 from datetime import datetime
 from email.utils import getaddresses, parseaddr
