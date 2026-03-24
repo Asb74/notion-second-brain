@@ -28,6 +28,8 @@ class _SyncClient(_DummyGmailClient):
                 "headers": [
                     {"name": "Subject", "value": "Fwd: Demo"},
                     {"name": "From", "value": "Forwarder <forwarder@example.com>"},
+                    {"name": "To", "value": "Team <team@example.com>, Ops <ops@example.com>"},
+                    {"name": "Cc", "value": "Boss <boss@example.com>"},
                 ],
                 "parts": [{"mimeType": "text/plain", "body": {"data": body}}],
             },
@@ -136,11 +138,16 @@ def test_sync_unread_emails_persists_real_sender() -> None:
 
     processed = service.sync_unread_emails(max_results=5)
 
-    row = conn.execute("SELECT sender, real_sender, entities_json FROM emails WHERE gmail_id = ?", ("gmail-1",)).fetchone()
+    row = conn.execute(
+        "SELECT sender, real_sender, original_to, original_cc, entities_json FROM emails WHERE gmail_id = ?",
+        ("gmail-1",),
+    ).fetchone()
     assert processed == ["gmail-1"]
     assert row is not None
     assert row["sender"] == "Forwarder <forwarder@example.com>"
     assert row["real_sender"] == "real.sender@example.com"
+    assert row["original_to"] == "Team <team@example.com>, Ops <ops@example.com>"
+    assert row["original_cc"] == "Boss <boss@example.com>"
 
 
 def test_sync_unread_emails_persists_entities_json() -> None:
