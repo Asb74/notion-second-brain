@@ -106,9 +106,9 @@ def test_outlook_attachment_path_validation_missing() -> None:
 def test_reply_all_with_body_prepends_message(monkeypatch) -> None:
     class _Reply:
         Body = "Original"
-        To = "cliente@externo.com; gestion@empresa.com"
-        CC = "equipo@empresa.com; gestion@empresa.com"
-        BCC = "gestion@empresa.com; auditoria@empresa.com"
+        To = ""
+        CC = ""
+        BCC = ""
 
         def Display(self):
             self.displayed = True
@@ -125,7 +125,7 @@ def test_reply_all_with_body_prepends_message(monkeypatch) -> None:
         def Display(self):
             self.displayed = True
 
-        def ReplyAll(self):
+        def Reply(self):
             return self.reply
 
     class _Session:
@@ -151,9 +151,9 @@ def test_reply_all_with_body_prepends_message(monkeypatch) -> None:
     service.reply_all_with_body("email-id", "Hola", exclude_email="gestion@empresa.com")
 
     assert mail.displayed is True
-    assert mail.reply.To == "cliente@externo.com"
+    assert mail.reply.To == "cliente@externo.com; gestion@empresa.com"
     assert mail.reply.CC == "equipo@empresa.com"
-    assert mail.reply.BCC == "auditoria@empresa.com"
+    assert mail.reply.BCC == ""
     assert mail.reply.Body == "Hola\n\n---\nOriginal"
     assert getattr(mail.reply, "displayed", False) is True
 

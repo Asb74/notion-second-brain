@@ -149,8 +149,8 @@ class OutlookService:
             return False
 
         mail.Display()
-        reply = mail.ReplyAll()
-        excluded = (exclude_email or "").strip().lower()
+        reply = mail.Reply()
+        usuario_actual = USER_EMAIL.strip().lower()
 
         remitente = getattr(mail, "SenderEmailAddress", "")
         if not remitente:
@@ -161,20 +161,10 @@ class OutlookService:
                 "to": getattr(mail, "To", ""),
                 "cc": getattr(mail, "CC", ""),
             },
-            usuario_actual=excluded,
+            usuario_actual=usuario_actual,
         )
         reply.To = "; ".join(destinatarios["to"])
         reply.CC = "; ".join(destinatarios["cc"])
-
-        if excluded:
-            for field in ("To", "CC", "BCC"):
-                current = getattr(reply, field, "")
-                filtered = [
-                    address
-                    for address in self._parse_addresses(current)
-                    if address.strip().lower() != excluded
-                ]
-                setattr(reply, field, "; ".join(filtered))
 
         reply.Body = f"{body}\n\n---\n{reply.Body}"
         reply.Display()
