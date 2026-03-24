@@ -4,6 +4,38 @@ import types
 from app.core.outlook.outlook_service import OutlookService
 
 
+def test_construir_destinatarios_respuesta_reply_all_rules() -> None:
+    result = OutlookService.construir_destinatarios_respuesta(
+        email_original={
+            "from": "a.crespo@sansebas.es",
+            "to": "l.oliver@sansebas.es; sanchez@sansebas.es",
+            "cc": "p.cespedes@sansebas.es; c.calidad@sansebas.es",
+        },
+        usuario_actual="sanchez@sansebas.es",
+    )
+
+    assert result == {
+        "to": ["a.crespo@sansebas.es", "l.oliver@sansebas.es"],
+        "cc": ["p.cespedes@sansebas.es", "c.calidad@sansebas.es"],
+    }
+
+
+def test_construir_destinatarios_respuesta_normalizes_and_deduplicates() -> None:
+    result = OutlookService.construir_destinatarios_respuesta(
+        email_original={
+            "from": " Ana <ANA@Empresa.com> ",
+            "to": "ana@empresa.com; Yo@empresa.com; Luis <luis@empresa.com>",
+            "cc": "luis@empresa.com; apoyo@empresa.com; YO@empresa.com; apoyo@empresa.com",
+        },
+        usuario_actual=" yo@empresa.com ",
+    )
+
+    assert result == {
+        "to": ["ana@empresa.com", "luis@empresa.com"],
+        "cc": ["apoyo@empresa.com"],
+    }
+
+
 def test_clean_recipients_excludes_main_duplicates_and_my_email() -> None:
     main, cc = OutlookService.clean_recipients(
         to_list=["Ana <ana@empresa.com>, yo@empresa.com"],
@@ -82,6 +114,10 @@ def test_reply_all_with_body_prepends_message(monkeypatch) -> None:
             self.displayed = True
 
     class _Mail:
+        SenderEmailAddress = "cliente@externo.com"
+        To = "cliente@externo.com; gestion@empresa.com"
+        CC = "equipo@empresa.com; gestion@empresa.com"
+
         def __init__(self):
             self.reply = _Reply()
             self.displayed = False
@@ -104,7 +140,10 @@ def test_reply_all_with_body_prepends_message(monkeypatch) -> None:
             self.Session = _Session(mail)
 
     mail = _Mail()
-    win32_client = types.SimpleNamespace(Dispatch=lambda _name: _Outlook(mail))
+    win32_client = types.SimpleNamespace(
+        Dispatch=lambda _name: _Outlook(mail),
+        DispatchEx=lambda _name: _Outlook(mail),
+    )
     monkeypatch.setitem(sys.modules, "win32com", types.SimpleNamespace(client=win32_client))
     monkeypatch.setitem(sys.modules, "win32com.client", win32_client)
 
@@ -127,7 +166,10 @@ def test_reply_all_with_body_returns_false_when_entry_id_not_found(monkeypatch) 
     class _Outlook:
         Session = _Session()
 
-    win32_client = types.SimpleNamespace(Dispatch=lambda _name: _Outlook())
+    win32_client = types.SimpleNamespace(
+        Dispatch=lambda _name: _Outlook(),
+        DispatchEx=lambda _name: _Outlook(),
+    )
     monkeypatch.setitem(sys.modules, "win32com", types.SimpleNamespace(client=win32_client))
     monkeypatch.setitem(sys.modules, "win32com.client", win32_client)
 
