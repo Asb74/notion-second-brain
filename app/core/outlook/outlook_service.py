@@ -59,6 +59,48 @@ class OutlookService:
         clean_main = "" if main in {mine, configured_user} else (main_recipient or "").strip()
         return clean_main, clean_cc
 
+    @classmethod
+    def construir_destinatarios_respuesta(
+        cls,
+        email_original: dict[str, str] | None,
+        usuario_actual: str,
+    ) -> dict[str, list[str]]:
+        """Construye destinatarios para respuesta tipo "Responder a todos"."""
+
+        payload = email_original or {}
+        usuario_normalizado = (usuario_actual or "").strip().lower()
+
+        from_list = cls._parse_addresses(payload.get("from", ""))
+        to_list = cls._parse_addresses(payload.get("to", ""))
+        cc_list = cls._parse_addresses(payload.get("cc", ""))
+
+        to_final: list[str] = []
+        cc_final: list[str] = []
+        seen_to: set[str] = set()
+        seen_cc: set[str] = set()
+
+        for candidate in [*from_list, *to_list]:
+            normalized = candidate.strip().lower()
+            if not normalized or normalized == usuario_normalizado or normalized in seen_to:
+                continue
+            seen_to.add(normalized)
+            to_final.append(normalized)
+
+        for candidate in cc_list:
+            normalized = candidate.strip().lower()
+            if not normalized or normalized == usuario_normalizado:
+                continue
+            if normalized in seen_cc:
+                continue
+            if normalized in seen_to:
+                continue
+            seen_cc.add(normalized)
+            cc_final.append(normalized)
+
+        print("TO final:", to_final)
+        print("CC final:", cc_final)
+        return {"to": to_final, "cc": cc_final}
+
     def reply_all(self, email_id: str) -> None:
         import win32com.client  # type: ignore[import-not-found]
 
@@ -106,8 +148,23 @@ class OutlookService:
             logger.warning("Email no encontrado en Outlook entry_id=%s", entry_id)
             return False
 
+        mail.Display()
         reply = mail.ReplyAll()
         excluded = (exclude_email or "").strip().lower()
+
+        remitente = getattr(mail, "SenderEmailAddress", "")
+        if not remitente:
+            remitente = getattr(mail, "Sender", "")
+        destinatarios = self.construir_destinatarios_respuesta(
+            {
+                "from": remitente,
+                "to": getattr(mail, "To", ""),
+                "cc": getattr(mail, "CC", ""),
+            },
+            usuario_actual=excluded,
+        )
+        reply.To = "; ".join(destinatarios["to"])
+        reply.CC = "; ".join(destinatarios["cc"])
 
         if excluded:
             for field in ("To", "CC", "BCC"):
