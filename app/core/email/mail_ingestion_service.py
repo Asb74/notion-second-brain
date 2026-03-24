@@ -50,20 +50,13 @@ class MailIngestionService:
             body_text, body_html, has_attachments, attachments = self._extract_body_and_attachments(payload)
             real_sender = extract_real_sender(body_text, sender)
 
-            original_from = real_sender or headers["from"]
+            original_from = headers["from"]
             original_to = headers["to"]
             original_cc = headers["cc"]
             original_reply_to = headers["reply_to"]
             forwarded = extract_forwarded_headers(body_text)
             if forwarded.get("from"):
-                original_from = forwarded["from"]
                 real_sender = forwarded["from"]
-            if forwarded.get("to_list"):
-                original_to = ", ".join(forwarded["to_list"])
-            if forwarded.get("cc_list"):
-                original_cc = ", ".join(forwarded["cc_list"])
-            if forwarded.get("reply_to"):
-                original_reply_to = forwarded["reply_to"]
 
             received_at = self._convert_internal_date(full_message.get("internalDate"))
             email_type = self.classifier.classify(subject=subject, sender=sender, body_text=body_text)
@@ -266,20 +259,21 @@ class MailIngestionService:
         return cursor.rowcount > 0
 
     def _extract_headers(self, payload: Dict[str, Any]) -> Dict[str, str]:
-        extracted = {"subject": "", "from": "", "to": "", "cc": "", "reply_to": ""}
-        for header in payload.get("headers", []):
-            name = header.get("name", "").lower()
-            if name == "subject":
-                extracted["subject"] = header.get("value", "")
-            elif name == "from":
-                extracted["from"] = header.get("value", "")
-            elif name == "to":
-                extracted["to"] = header.get("value", "")
-            elif name == "cc":
-                extracted["cc"] = header.get("value", "")
-            elif name == "reply-to":
-                extracted["reply_to"] = header.get("value", "")
-        return extracted
+        headers = payload.get("headers", [])
+        return {
+            "subject": self._get_header(headers, "Subject"),
+            "from": self._get_header(headers, "From"),
+            "to": self._get_header(headers, "To"),
+            "cc": self._get_header(headers, "Cc"),
+            "reply_to": self._get_header(headers, "Reply-To"),
+        }
+
+    @staticmethod
+    def _get_header(headers: List[Dict[str, Any]], name: str) -> str:
+        for header in headers:
+            if str(header.get("name", "")).lower() == name.lower():
+                return str(header.get("value", ""))
+        return ""
 
     def _extract_body_and_attachments(self, payload: Dict[str, Any]) -> Tuple[str, str, int, List[Dict[str, Any]]]:
         body_text = ""
