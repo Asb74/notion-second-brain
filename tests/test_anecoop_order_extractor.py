@@ -8,7 +8,13 @@ def test_extraer_pedido_desde_pdf_anecoop_extrae_cabecera_y_linea() -> None:
     F. Carga Sabado 28/03/2026 Plataforma: PX-1
     Nº Pedido: 25/111599/1 P.Carga: LORA DEL RIO
     De: Juan Perez AE-mail: comercial@demo.com
-    1 10 300 NARANJA CAL 3
+    Lin.
+    4 EuroChepX60
+    Simple
+    Total Cajas: 240
+    (*) Naranja Navel Lane Late
+    Calibre: 2/3
+    Observaciones
     """
 
     lineas = extraer_pedido_desde_pdf(texto)
@@ -18,12 +24,13 @@ def test_extraer_pedido_desde_pdf_anecoop_extrae_cabecera_y_linea() -> None:
     assert lineas[0]["Cliente"] == "EDEKA"
     assert lineas[0]["FechaSalida"] == "28/03/2026"
     assert lineas[0]["PuntoCarga"] == "LORA DEL RIO"
-    assert lineas[0]["Cantidad"] == "10"
-    assert lineas[0]["CajasTotales"] == "300"
-    assert lineas[0]["Mercancia"] == "NARANJA"
+    assert lineas[0]["Linea"] == "4"
+    assert lineas[0]["Cantidad"] == "60"
+    assert lineas[0]["CajasTotales"] == "240"
+    assert lineas[0]["Mercancia"] == "Naranja Navel Lane Late"
+    assert lineas[0]["Calibre"] == "2/3"
 
 
 def test_extraer_pedido_desde_pdf_sin_numero_no_devuelve_pedido() -> None:
     texto = "Anecoop ORDEN DE PEDIDO CLIENTE: EDEKA F. Carga Sabado 28/03/2026"
     assert extraer_pedido_desde_pdf(texto) == []
-
