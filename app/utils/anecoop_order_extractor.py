@@ -8,8 +8,9 @@ from typing import Any
 
 def _limpiar_texto(texto: str) -> str:
     limpio = str(texto or "")
-    limpio = limpio.replace("\n", " ")
-    limpio = re.sub(r"\s+", " ", limpio)
+    limpio = limpio.replace("\r\n", "\n").replace("\r", "\n")
+    limpio = re.sub(r"[ \t]+", " ", limpio)
+    limpio = re.sub(r"\n{3,}", "\n\n", limpio)
     return limpio.strip()
 
 
@@ -34,25 +35,40 @@ def extraer_cabecera(texto: str) -> dict[str, str]:
 
 def extraer_lineas(texto: str) -> list[dict[str, str]]:
     lineas: list[dict[str, str]] = []
-    # Patrón tolerante para líneas tipo: "1 10 300 NARANJA CAL 3"
-    pattern = re.compile(
-        r"\b(?P<linea>\d{1,3})\s+"
-        r"(?P<cantidad>\d+(?:[.,]\d+)?)\s+"
-        r"(?P<cajas>\d+(?:[.,]\d+)?)\s+"
-        r"(?P<mercancia>[A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9\s\-]{2,}?)"
-        r"(?:\s+(?P<calibre>(?:CAL\.?|CAT\.?|CT\.?)?\s*[A-Z0-9./-]{1,10}))?"
-        r"(?=\s+\d{1,3}\s+\d+(?:[.,]\d+)?\s+\d+(?:[.,]\d+)?\s+[A-ZÁÉÍÓÚÑ]|$)",
-        re.IGNORECASE,
-    )
 
-    for match in pattern.finditer(texto):
+    bloque_match = re.search(r"Lin\.\s*(?P<bloque>.*?)\s*Observaciones", texto, re.IGNORECASE | re.DOTALL)
+    if not bloque_match:
+        return []
+
+    bloque = str(bloque_match.group("bloque") or "").strip()
+    if not bloque:
+        return []
+
+    candidatos = re.split(r"\n(?=\s*\d+\s+EuroChep)", bloque, flags=re.IGNORECASE)
+    for candidato in candidatos:
+        chunk = str(candidato or "").strip()
+        if not chunk:
+            continue
+
+        linea = _match_group(r"^\s*(\d{1,4})\b", chunk, flags=re.MULTILINE)
+        if not linea:
+            continue
+
+        cantidad = _match_group(r"\b(?:\d+\s+)?EuroChep\S*?(\d+(?:[.,]\d+)?)\b", chunk)
+        if not cantidad:
+            cantidad = _match_group(r"^\s*\d{1,4}\s+(\d+(?:[.,]\d+)?)\b", chunk, flags=re.MULTILINE)
+
+        cajas = _match_group(r"Total\s+Cajas\s*:\s*(\d+(?:[.,]\d+)?)", chunk)
+        mercancia = _match_group(r"^\s*\(\*\)\s*(.+)$", chunk, flags=re.MULTILINE)
+        calibre = _match_group(r"Calibre\s*:\s*([^\n]+)", chunk)
+
         lineas.append(
             {
-                "Linea": str(match.group("linea") or "").strip(),
-                "Cantidad": str(match.group("cantidad") or "").replace(",", ".").strip(),
-                "CajasTotales": str(match.group("cajas") or "").replace(",", ".").strip(),
-                "Mercancia": str(match.group("mercancia") or "").strip(),
-                "Calibre": str(match.group("calibre") or "").strip(),
+                "Linea": linea,
+                "Cantidad": cantidad.replace(",", "."),
+                "CajasTotales": cajas.replace(",", "."),
+                "Mercancia": mercancia,
+                "Calibre": calibre,
             }
         )
     return lineas
@@ -63,34 +79,31 @@ def extraer_pedido_desde_pdf(texto: str) -> list[dict[str, Any]]:
 
     Reglas:
     - Si no hay número de pedido, no se devuelve nada.
-    - Si faltan campos de cabecera pero existe número de pedido, se conserva como incompleto.
+    - Si no hay líneas válidas en el bloque Lin./Observaciones, no se devuelve nada.
     """
     texto_limpio = _limpiar_texto(texto)
-    print("TEXTO LIMPIO:", texto_limpio)
+    print("=== DEBUG PDF ===")
 
     if "Anecoop" not in texto_limpio and "ORDEN DE PEDIDO" not in texto_limpio:
         return []
 
     cabecera = extraer_cabecera(texto_limpio)
-    print("CABECERA EXTRAIDA:", cabecera)
+    print("CABECERA:", cabecera)
 
     numero_pedido = str(cabecera.get("NumeroPedido", "")).strip()
     if not numero_pedido:
         return []
 
     lineas = extraer_lineas(texto_limpio)
-    print("LINEAS EXTRAIDAS:", lineas)
+    print("LINEAS:", lineas)
 
     if not lineas:
-        lineas = [{}]
+        return []
 
     resultado: list[dict[str, Any]] = []
     for linea in lineas:
         linea_final = {**cabecera, **linea}
         if not linea_final.get("NumeroPedido"):
             continue
-        if any(not str(linea_final.get(k, "")).strip() for k in ("Cliente", "Comercial", "FechaSalida", "PuntoCarga")):
-            linea_final["Estado"] = str(linea_final.get("Estado") or "Incompleto")
         resultado.append(linea_final)
     return resultado
-
