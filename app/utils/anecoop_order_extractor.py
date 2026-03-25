@@ -36,15 +36,20 @@ def extraer_cabecera(texto: str) -> dict[str, str]:
 def extraer_lineas(texto: str) -> list[dict[str, str]]:
     lineas: list[dict[str, str]] = []
 
-    bloque_match = re.search(r"Lin\.\s*(?P<bloque>.*?)\s*Observaciones", texto, re.IGNORECASE | re.DOTALL)
-    if not bloque_match:
+    inicio_match = re.search(r"\bLin\.?\b", texto, re.IGNORECASE)
+    if not inicio_match:
         return []
 
-    bloque = str(bloque_match.group("bloque") or "").strip()
+    bloque = str(texto[inicio_match.end() :] or "")
+    fin_match = re.search(r"(?im)^\s*Observa\w*[^\n]*$", bloque)
+    if fin_match:
+        bloque = bloque[: fin_match.start()]
+    bloque = bloque.strip()
+    print("BLOQUE LINEAS:", bloque)
     if not bloque:
         return []
 
-    candidatos = re.split(r"\n(?=\s*\d+\s+EuroChep)", bloque, flags=re.IGNORECASE)
+    candidatos = re.split(r"\n(?=\s*\d+\s+[A-Za-z][\w./-]*)", bloque, flags=re.IGNORECASE)
     for candidato in candidatos:
         chunk = str(candidato or "").strip()
         if not chunk:
@@ -54,18 +59,33 @@ def extraer_lineas(texto: str) -> list[dict[str, str]]:
         if not linea:
             continue
 
-        cantidad = _match_group(r"\b(?:\d+\s+)?EuroChep\S*?(\d+(?:[.,]\d+)?)\b", chunk)
+        cantidad = _match_group(r"^\s*\d{1,4}\s+(\d+(?:[.,]\d+)?)\b", chunk, flags=re.MULTILINE)
         if not cantidad:
-            cantidad = _match_group(r"^\s*\d{1,4}\s+(\d+(?:[.,]\d+)?)\b", chunk, flags=re.MULTILINE)
+            cantidad = _match_group(r"^\s*(\d+(?:[.,]\d+)?)\s+[A-Za-z][\w./-]*\b", chunk, flags=re.MULTILINE)
+
+        tipo_palet = _match_group(r"^\s*\d{1,4}\s+([A-Za-z][\w./-]*)\b", chunk, flags=re.MULTILINE)
+        if not tipo_palet:
+            tipo_palet = _match_group(r"^\s*\d{1,4}\s+\d+(?:[.,]\d+)?\s+([A-Za-z][\w./-]*)\b", chunk, flags=re.MULTILINE)
 
         cajas = _match_group(r"Total\s+Cajas\s*:\s*(\d+(?:[.,]\d+)?)", chunk)
-        mercancia = _match_group(r"^\s*\(\*\)\s*(.+)$", chunk, flags=re.MULTILINE)
+        mercancia_match = re.search(
+            r"(?im)^\s*\(\*\)\s*(?P<base>[^\n]*)(?P<rest>(?:\n(?!\s*(?:Calibre|Total\s*Cajas|Observa\w*|\d+\s+[A-Za-z]))[^\n]+)*)",
+            chunk,
+        )
+        mercancia = ""
+        if mercancia_match:
+            partes = [mercancia_match.group("base") or ""]
+            resto = mercancia_match.group("rest") or ""
+            if resto:
+                partes.extend(linea.strip() for linea in resto.splitlines())
+            mercancia = " ".join(parte.strip() for parte in partes if parte and parte.strip())
         calibre = _match_group(r"Calibre\s*:\s*([^\n]+)", chunk)
 
         lineas.append(
             {
                 "Linea": linea,
                 "Cantidad": cantidad.replace(",", "."),
+                "TipoPalet": tipo_palet,
                 "CajasTotales": cajas.replace(",", "."),
                 "Mercancia": mercancia,
                 "Calibre": calibre,
