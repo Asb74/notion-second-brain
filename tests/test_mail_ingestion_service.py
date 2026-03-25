@@ -139,7 +139,7 @@ def test_sync_unread_emails_persists_real_sender() -> None:
     processed = service.sync_unread_emails(max_results=5)
 
     row = conn.execute(
-        "SELECT sender, real_sender, original_to, original_cc, entities_json FROM emails WHERE gmail_id = ?",
+        "SELECT sender, real_sender, original_to, original_cc, entities_json, pedido_json FROM emails WHERE gmail_id = ?",
         ("gmail-1",),
     ).fetchone()
     assert processed == ["gmail-1"]
@@ -150,13 +150,14 @@ def test_sync_unread_emails_persists_real_sender() -> None:
     assert row["original_cc"] == "Boss <boss@example.com>"
 
 
-def test_sync_unread_emails_persists_entities_json() -> None:
+def test_sync_unread_emails_persists_entities_json_and_empty_pedido_json() -> None:
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     service = MailIngestionService(gmail_client=_SyncClient(), db_connection=conn)
 
     service.sync_unread_emails(max_results=5)
 
-    row = conn.execute("SELECT entities_json FROM emails WHERE gmail_id = ?", ("gmail-1",)).fetchone()
+    row = conn.execute("SELECT entities_json, pedido_json FROM emails WHERE gmail_id = ?", ("gmail-1",)).fetchone()
     assert row is not None
     assert "pedido" in str(row["entities_json"] or "")
+    assert str(row["pedido_json"] or "") == ""
