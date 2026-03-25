@@ -4,14 +4,32 @@ from __future__ import annotations
 
 import logging
 import os
+import sqlite3
 
-from app.config.mail_config import USER_EMAIL
+from app.core.config.user_context import get_user_email
 
 logger = logging.getLogger(__name__)
 
 
 class OutlookService:
     """Create drafts in Outlook desktop without auto-sending."""
+
+    def __init__(self, conn: sqlite3.Connection | None = None):
+        self.conn = conn
+        self._user_email_cache: str | None = None
+
+    def _require_user_email(self) -> str:
+        if self._user_email_cache:
+            return self._user_email_cache
+        if self.conn is None:
+            raise ValueError("No hay conexión de base de datos para resolver user_profile")
+
+        user_email = get_user_email(self.conn)
+        if not user_email:
+            raise ValueError("No hay email configurado en user_profile")
+
+        self._user_email_cache = user_email
+        return user_email
 
     @staticmethod
     def _parse_addresses(raw_value: str | None) -> list[str]:
@@ -36,10 +54,11 @@ class OutlookService:
         cc_list: list[str] | str,
         main_recipient: str,
         my_email: str,
+        conn: sqlite3.Connection | None = None,
     ) -> tuple[str, list[str]]:
         main = (main_recipient or "").strip().lower()
         mine = (my_email or "").strip().lower()
-        configured_user = USER_EMAIL.strip().lower()
+        configured_user = get_user_email(conn) if conn is not None else ""
 
         normalized_to = [to_list] if isinstance(to_list, str) else (to_list or [])
         normalized_cc = [cc_list] if isinstance(cc_list, str) else (cc_list or [])
@@ -97,8 +116,6 @@ class OutlookService:
             seen_cc.add(normalized)
             cc_final.append(normalized)
 
-        print("TO final:", to_final)
-        print("CC final:", cc_final)
         return {"to": to_final, "cc": cc_final}
 
     def reply_all(self, email_id: str) -> None:
@@ -124,12 +141,14 @@ class OutlookService:
         reply = original.ReplyAll()
         reply.Display()
 
-    def reply_all_with_body(self, email_id: str, body: str, exclude_email: str | None = None) -> bool:
+    def reply_all_with_body(self, email_id: str, body: str) -> bool:
         import win32com.client  # type: ignore[import-not-found]
 
         entry_id = (email_id or "").strip()
         if not entry_id:
             raise ValueError("entry_id es obligatorio")
+
+        user_email = self._require_user_email()
 
         outlook = win32com.client.DispatchEx("Outlook.Application")
 
@@ -150,7 +169,6 @@ class OutlookService:
 
         mail.Display()
         reply = mail.Reply()
-        usuario_actual = USER_EMAIL.strip().lower()
 
         remitente = getattr(mail, "SenderEmailAddress", "")
         if not remitente:
@@ -161,7 +179,7 @@ class OutlookService:
                 "to": getattr(mail, "To", ""),
                 "cc": getattr(mail, "CC", ""),
             },
-            usuario_actual=usuario_actual,
+            usuario_actual=user_email,
         )
         reply.To = "; ".join(destinatarios["to"])
         reply.CC = "; ".join(destinatarios["cc"])
@@ -191,6 +209,7 @@ class OutlookService:
             cc_list=original_cc,
             main_recipient=main_recipient,
             my_email=my_email,
+            conn=self.conn,
         )
 
         outlook = win32com.client.Dispatch("Outlook.Application")

@@ -1,1 +1,1 @@
-USER_EMAIL = "a.sanchez@sansebas.es"
+"""Deprecated mail config module (kept for backwards compatibility)."""
