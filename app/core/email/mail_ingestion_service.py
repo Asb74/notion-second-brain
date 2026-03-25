@@ -2,6 +2,7 @@ import base64
 import json
 import logging
 import sqlite3
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -14,6 +15,23 @@ from app.persistence.email_repository import EmailRepository
 from app.services.email_entity_extractor import EmailEntityExtractor
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_real_sender(original_from: str, fallback_sender: str) -> str:
+    source = str(original_from or "").strip()
+    fallback = str(fallback_sender or "").strip()
+    if not source:
+        return fallback
+
+    match = re.search(r"<([^>]+)>", source)
+    if match:
+        return match.group(1).strip()
+
+    match = re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", source)
+    if match:
+        return match.group(0).strip()
+
+    return fallback
 
 
 class MailIngestionService:
@@ -48,15 +66,17 @@ class MailIngestionService:
             subject = headers["subject"]
             sender = headers["from"]
             body_text, body_html, has_attachments, attachments = self._extract_body_and_attachments(payload)
-            real_sender = extract_real_sender(body_text, sender)
-
             original_from = headers["from"]
             original_to = headers["to"]
             original_cc = headers["cc"]
             original_reply_to = headers["reply_to"]
             forwarded = extract_forwarded_headers(body_text)
+            inferred_sender = extract_real_sender(body_text, sender)
             if forwarded.get("from"):
-                real_sender = forwarded["from"]
+                original_from = forwarded["from"]
+            elif inferred_sender and inferred_sender != sender:
+                original_from = inferred_sender
+            real_sender = _extract_real_sender(original_from, inferred_sender or sender)
 
             received_at = self._convert_internal_date(full_message.get("internalDate"))
             email_type = self.classifier.classify(subject=subject, sender=sender, body_text=body_text)
@@ -97,9 +117,7 @@ class MailIngestionService:
         Recalculate original_from and real_sender for all stored emails.
         Temporary maintenance tool.
         """
-        cursor = self.db_connection.execute(
-            "SELECT gmail_id, sender, body_text FROM emails"
-        )
+        cursor = self.db_connection.execute("SELECT gmail_id, sender, body_text, original_from FROM emails")
 
         updated = 0
 
@@ -108,8 +126,8 @@ class MailIngestionService:
             sender = row["sender"]
             body_text = row["body_text"] or ""
 
-            real_sender = extract_real_sender(body_text, sender)
-            original_from = real_sender or sender
+            original_from = row["original_from"] or extract_real_sender(body_text, sender) or sender
+            real_sender = _extract_real_sender(original_from, sender)
 
             self.db_connection.execute(
                 """
