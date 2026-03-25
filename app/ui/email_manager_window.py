@@ -71,6 +71,7 @@ from app.utils.attachment_text_extractor import (
     SUPPORTED_ATTACHMENT_EXTENSIONS,
     extract_text_and_types_from_attachments,
 )
+from app.utils.anecoop_order_extractor import extraer_pedido_desde_pdf
 from app.utils.normalizacion_pedido import normalizar_campos_linea
 logger = logging.getLogger(__name__)
 
@@ -2292,6 +2293,9 @@ class EmailManagerWindow(tk.Toplevel):
         extracted_text, _content_types = self._extract_attachment_content_with_type(prepared_attachments)
         if not extracted_text.strip():
             return None
+        extracted_specific = extraer_pedido_desde_pdf(extracted_text)
+        if extracted_specific:
+            return {"Pedidos": [{"NumeroPedido": extracted_specific[0].get("NumeroPedido", ""), "Lineas": extracted_specific}]}
         prompt_row = {
             "subject": "",
             "real_sender": "",
@@ -2316,12 +2320,8 @@ class EmailManagerWindow(tk.Toplevel):
     def _es_pedido_valido_para_guardar(self, lineas: list[dict[str, Any]]) -> bool:
         if not lineas:
             return False
-        linea = lineas[0]
-        campos_minimos = ["NumeroPedido", "Cliente", "Mercancia", "Cantidad"]
-        for campo in campos_minimos:
-            if not str(linea.get(campo, "")).strip():
-                return False
-        return True
+        numero_pedido = str((lineas[0] or {}).get("NumeroPedido", "")).strip()
+        return bool(numero_pedido)
 
     def _procesar_email_como_pedido(self, row: dict[str, str]) -> None:
         try:
