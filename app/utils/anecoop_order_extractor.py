@@ -82,12 +82,20 @@ def extraer_lineas(texto: str) -> list[dict[str, str]]:
             mercancia = " ".join(parte.strip() for parte in partes if parte and parte.strip())
         calibre = _match_group(r"Calibre\s*:\s*([^\n]+)", chunk)
 
+        cp = ""
+        if cantidad and cajas:
+            try:
+                cp = str(int(float(cajas)) // int(float(cantidad)))
+            except Exception:
+                pass
+
         lineas.append(
             {
                 "Linea": linea,
                 "Cantidad": (cantidad or "").replace(",", "."),
                 "TipoPalet": tipo_palet,
                 "CajasTotales": (cajas or "").replace(",", "."),
+                "CP": cp,
                 "Mercancia": mercancia,
                 "Calibre": calibre,
             }
@@ -105,7 +113,7 @@ def extraer_pedido_desde_pdf(texto: str) -> list[dict[str, Any]]:
     texto_limpio = _limpiar_texto(texto)
     print("=== DEBUG PDF ===")
 
-    if "Anecoop" not in texto_limpio and "ORDEN DE PEDIDO" not in texto_limpio:
+    if not re.search(r"\d{2}/\d{6}/\d{1,2}", texto_limpio):
         return []
 
     cabecera = extraer_cabecera(texto_limpio)
