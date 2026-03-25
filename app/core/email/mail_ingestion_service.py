@@ -79,6 +79,7 @@ class MailIngestionService:
                 raw_payload_json=json.dumps(payload, ensure_ascii=False),
                 attachments_json=json.dumps(attachments, ensure_ascii=False),
                 entities_json=entities_json,
+                pedido_json="",
                 category=category,
                 email_type=email_type,
             )
@@ -148,7 +149,8 @@ class MailIngestionService:
                 original_to TEXT DEFAULT '',
                 original_cc TEXT DEFAULT '',
                 original_reply_to TEXT DEFAULT '',
-                entities_json TEXT
+                entities_json TEXT,
+                pedido_json TEXT
             );
             """
         )
@@ -185,6 +187,8 @@ class MailIngestionService:
             self.db_connection.execute("ALTER TABLE emails ADD COLUMN attachments_json TEXT DEFAULT '[]'")
         if "entities_json" not in column_names:
             self.db_connection.execute("ALTER TABLE emails ADD COLUMN entities_json TEXT")
+        if "pedido_json" not in column_names:
+            self.db_connection.execute("ALTER TABLE emails ADD COLUMN pedido_json TEXT")
 
     def _insert_email(
         self,
@@ -204,6 +208,7 @@ class MailIngestionService:
         raw_payload_json: str,
         attachments_json: str,
         entities_json: str,
+        pedido_json: str,
         category: str,
         email_type: str,
     ) -> bool:
@@ -230,8 +235,9 @@ class MailIngestionService:
                 original_to,
                 original_cc,
                 original_reply_to,
-                entities_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                entities_json,
+                pedido_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 gmail_id,
@@ -254,6 +260,7 @@ class MailIngestionService:
                 original_cc,
                 original_reply_to,
                 entities_json,
+                pedido_json,
             ),
         )
         return cursor.rowcount > 0

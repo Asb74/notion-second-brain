@@ -1540,6 +1540,7 @@ class EmailManagerWindow(tk.Toplevel):
                 "reply_to": row["original_reply_to"] or "",
                 "attachments_json": row["attachments_json"] or "[]",
                 "entities_json": row["entities_json"] or "",
+                "pedido_json": row["pedido_json"] or "",
             }
             self._all_rows.append(normalized)
             self._rows_by_id[str(row["gmail_id"])] = normalized
@@ -2231,36 +2232,32 @@ class EmailManagerWindow(tk.Toplevel):
         self.detected_accion_var.set(str(entities.get("accion", "") or ""))
 
     def _get_datos_pedido_from_email(self, row: dict[str, str]) -> dict[str, Any]:
-        entities_raw = str(row.get("entities_json", "") or "").strip()
-        parsed_entities: dict[str, Any] | list[Any] | None = None
-        if entities_raw:
+        pedido_raw = str(row.get("pedido_json", "") or "").strip()
+        if pedido_raw:
             try:
-                parsed = json.loads(entities_raw)
-                if isinstance(parsed, (dict, list)):
-                    parsed_entities = parsed
+                parsed = json.loads(pedido_raw)
+                if isinstance(parsed, dict):
+                    canonical_lines = self._build_canonical_order_lines(parsed)
+                    grouped = self._agrupar_lineas_en_pedidos(canonical_lines)
+                    pedidos = grouped.get("Pedidos", []) if isinstance(grouped, dict) else []
+                    if pedidos:
+                        pedido = pedidos[0]
+                        if isinstance(pedido, dict):
+                            lineas = pedido.get("Lineas", [])
+                            normalized_lines = [line for line in lineas if isinstance(line, dict)]
+                            return {
+                                "NumeroPedido": str(pedido.get("NumeroPedido", "") or ""),
+                                "Cliente": str(pedido.get("Cliente", "") or ""),
+                                "Comercial": str(pedido.get("Comercial", "") or ""),
+                                "FechaSalida": str(pedido.get("FechaSalida", "") or ""),
+                                "Plataforma": str(pedido.get("Plataforma", "") or ""),
+                                "Pais": str(pedido.get("Pais", "") or ""),
+                                "PuntoCarga": str(pedido.get("PuntoCarga", "") or ""),
+                                "Estado": str(pedido.get("Estado", "") or ""),
+                                "Lineas": normalized_lines,
+                            }
             except json.JSONDecodeError:
-                logger.warning("entities_json inválido para email %s", row.get("gmail_id", ""))
-
-        if parsed_entities is not None and self._is_order_json_payload(parsed_entities):
-            canonical_lines = self._build_canonical_order_lines(parsed_entities)
-            grouped = self._agrupar_lineas_en_pedidos(canonical_lines)
-            pedidos = grouped.get("Pedidos", []) if isinstance(grouped, dict) else []
-            if pedidos:
-                pedido = pedidos[0]
-                if isinstance(pedido, dict):
-                    lineas = pedido.get("Lineas", [])
-                    normalized_lines = [line for line in lineas if isinstance(line, dict)]
-                    return {
-                        "NumeroPedido": str(pedido.get("NumeroPedido", "") or ""),
-                        "Cliente": str(pedido.get("Cliente", "") or ""),
-                        "Comercial": str(pedido.get("Comercial", "") or ""),
-                        "FechaSalida": str(pedido.get("FechaSalida", "") or ""),
-                        "Plataforma": str(pedido.get("Plataforma", "") or ""),
-                        "Pais": str(pedido.get("Pais", "") or ""),
-                        "PuntoCarga": str(pedido.get("PuntoCarga", "") or ""),
-                        "Estado": str(pedido.get("Estado", "") or ""),
-                        "Lineas": normalized_lines,
-                    }
+                logger.warning("pedido_json inválido para email %s", row.get("gmail_id", ""))
 
         fallback_entities = self._resolve_entities(row)
         return {
@@ -2274,6 +2271,16 @@ class EmailManagerWindow(tk.Toplevel):
             "Estado": "",
             "Lineas": [],
         }
+
+    def _save_pedido_json_for_email(self, gmail_id: str, pedido_data: dict[str, Any]) -> None:
+        if not gmail_id:
+            return
+        try:
+            payload = json.dumps(pedido_data, ensure_ascii=False)
+            self.db_connection.execute("UPDATE emails SET pedido_json = ? WHERE gmail_id = ?", (payload, gmail_id))
+            self.db_connection.commit()
+        except Exception:  # noqa: BLE001
+            logger.exception("No se pudo persistir pedido_json para email %s", gmail_id)
 
     def _render_tab_datos(self, datos: dict[str, Any]) -> None:
         if self._datos_campos_tree is None or self._datos_lineas_tree is None:
@@ -4063,6 +4070,8 @@ class EmailManagerWindow(tk.Toplevel):
                 canonical_for_save = validacion["canonical_lines"]
                 self.log("SE_PROCEDE_A_GUARDAR: True", level="INFO")
                 inserted = self.pedidos_repo.guardar_pedidos_desde_json(canonical_for_save, order_filename)
+                pedido_payload = self._agrupar_lineas_en_pedidos(canonical_for_save)
+                self._save_pedido_json_for_email(str(row.get("gmail_id", "") or ""), pedido_payload)
                 self.log(f"Pedido persistido: {inserted} líneas ({order_filename})")
             self.response_text.delete("1.0", "end")
             self.response_text.insert("1.0", f"Resumen rápido:\n\n{current_summary}\n")

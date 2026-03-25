@@ -45,7 +45,8 @@ class EmailRepository:
                 original_to TEXT DEFAULT '',
                 original_cc TEXT DEFAULT '',
                 original_reply_to TEXT DEFAULT '',
-                entities_json TEXT
+                entities_json TEXT,
+                pedido_json TEXT
             )
             """
         )
@@ -63,6 +64,7 @@ class EmailRepository:
         self._ensure_column("original_reply_to", "TEXT DEFAULT ''")
         self._ensure_column("attachments_json", "TEXT DEFAULT '[]'")
         self._ensure_column("entities_json", "TEXT")
+        self._ensure_column("pedido_json", "TEXT")
 
         self.conn.execute(
             """
@@ -171,7 +173,7 @@ class EmailRepository:
         return self.conn.execute(
             f"""
             SELECT gmail_id, subject, sender, real_sender, received_at, body_text, body_html, status, category, type,
-                   original_from, original_to, original_cc, original_reply_to, attachments_json, entities_json
+                   original_from, original_to, original_cc, original_reply_to, attachments_json, entities_json, pedido_json
             FROM emails
             WHERE type IN ({placeholders})
             ORDER BY received_at DESC
@@ -194,7 +196,7 @@ class EmailRepository:
         return self.conn.execute(
             """
             SELECT gmail_id, subject, sender, real_sender, received_at, body_text, body_html, status, category, type,
-                   original_from, original_to, original_cc, original_reply_to, attachments_json, entities_json
+                   original_from, original_to, original_cc, original_reply_to, attachments_json, entities_json, pedido_json
             FROM emails
             WHERE gmail_id = ?
             """,
