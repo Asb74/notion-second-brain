@@ -36,7 +36,7 @@ def extraer_cabecera(texto: str) -> dict[str, str]:
 def extraer_lineas(texto: str) -> list[dict[str, str]]:
     lineas: list[dict[str, str]] = []
 
-    inicio_match = re.search(r"\bLin\.?\b", texto, re.IGNORECASE)
+    inicio_match = re.search(r"\bL[ií]n\.?\b", texto, re.IGNORECASE)
     if not inicio_match:
         return []
 
@@ -49,9 +49,10 @@ def extraer_lineas(texto: str) -> list[dict[str, str]]:
     if not bloque:
         return []
 
-    candidatos = re.split(r"\n(?=\s*\d+\s+[A-Za-z][\w./-]*)", bloque, flags=re.IGNORECASE)
+    candidatos = re.split(r"\n(?=\s*\d+\s+EuroChep)", bloque, flags=re.IGNORECASE)
     for candidato in candidatos:
         chunk = str(candidato or "").strip()
+        print("CHUNK:", chunk)
         if not chunk:
             continue
 
@@ -84,9 +85,9 @@ def extraer_lineas(texto: str) -> list[dict[str, str]]:
         lineas.append(
             {
                 "Linea": linea,
-                "Cantidad": cantidad.replace(",", "."),
+                "Cantidad": (cantidad or "").replace(",", "."),
                 "TipoPalet": tipo_palet,
-                "CajasTotales": cajas.replace(",", "."),
+                "CajasTotales": (cajas or "").replace(",", "."),
                 "Mercancia": mercancia,
                 "Calibre": calibre,
             }
@@ -123,6 +124,8 @@ def extraer_pedido_desde_pdf(texto: str) -> list[dict[str, Any]]:
     resultado: list[dict[str, Any]] = []
     for linea in lineas:
         linea_final = {**cabecera, **linea}
+        for key in ["Cliente", "Comercial", "FechaSalida", "PuntoCarga"]:
+            linea_final[key] = linea_final.get(key) or cabecera.get(key, "")
         if not linea_final.get("NumeroPedido"):
             continue
         resultado.append(linea_final)
