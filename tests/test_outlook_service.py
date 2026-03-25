@@ -1,7 +1,16 @@
+import sqlite3
 import sys
 import types
 
 from app.core.outlook.outlook_service import OutlookService
+
+
+def _conn_with_user(email: str = "yo@empresa.com") -> sqlite3.Connection:
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE user_profile (id INTEGER PRIMARY KEY, email TEXT)")
+    conn.execute("INSERT INTO user_profile (id, email) VALUES (1, ?)", (email,))
+    conn.commit()
+    return conn
 
 
 def test_construir_destinatarios_respuesta_reply_all_rules() -> None:
@@ -42,6 +51,7 @@ def test_clean_recipients_excludes_main_duplicates_and_my_email() -> None:
         cc_list=["ana@empresa.com; Luis <luis@empresa.com>; yo@empresa.com"],
         main_recipient="ana@empresa.com",
         my_email="yo@empresa.com",
+        conn=_conn_with_user(),
     )
 
     assert main == "ana@empresa.com"
@@ -54,6 +64,7 @@ def test_clean_recipients_main_is_cleared_if_my_email() -> None:
         cc_list=["Otro <otro@empresa.com>"],
         main_recipient="yo@empresa.com",
         my_email="yo@empresa.com",
+        conn=_conn_with_user(),
     )
 
     assert main == ""
@@ -66,6 +77,7 @@ def test_clean_recipients_excludes_configured_user_email() -> None:
         cc_list=["Otro <otro@empresa.com>; a.sanchez@sansebas.es"],
         main_recipient="a.sanchez@sansebas.es",
         my_email="",
+        conn=_conn_with_user("a.sanchez@sansebas.es"),
     )
 
     assert main == ""
@@ -78,6 +90,7 @@ def test_clean_recipients_uses_to_plus_cc_and_removes_sender_duplicate() -> None
         cc_list=["Cliente <cliente@externo.com>; apoyo@empresa.com"],
         main_recipient="cliente@externo.com",
         my_email="yo@empresa.com",
+        conn=_conn_with_user(),
     )
 
     assert main == "cliente@externo.com"
@@ -147,11 +160,11 @@ def test_reply_all_with_body_prepends_message(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "win32com", types.SimpleNamespace(client=win32_client))
     monkeypatch.setitem(sys.modules, "win32com.client", win32_client)
 
-    service = OutlookService()
-    service.reply_all_with_body("email-id", "Hola", exclude_email="gestion@empresa.com")
+    service = OutlookService(_conn_with_user("gestion@empresa.com"))
+    service.reply_all_with_body("email-id", "Hola")
 
     assert mail.displayed is True
-    assert mail.reply.To == "cliente@externo.com; gestion@empresa.com"
+    assert mail.reply.To == "cliente@externo.com"
     assert mail.reply.CC == "equipo@empresa.com"
     assert mail.reply.BCC == ""
     assert mail.reply.Body == "Hola\n\n---\nOriginal"
@@ -173,6 +186,6 @@ def test_reply_all_with_body_returns_false_when_entry_id_not_found(monkeypatch) 
     monkeypatch.setitem(sys.modules, "win32com", types.SimpleNamespace(client=win32_client))
     monkeypatch.setitem(sys.modules, "win32com.client", win32_client)
 
-    service = OutlookService()
+    service = OutlookService(_conn_with_user())
 
     assert service.reply_all_with_body("email-id", "Hola") is False

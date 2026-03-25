@@ -29,8 +29,8 @@ from app.config.config_manager import (
     ORDER_VALIDATION_FIELDS_BY_GROUP,
     ConfigManager,
 )
-from app.config.mail_config import USER_EMAIL
 from app.config.email_runtime_config import load_config, save_config
+from app.core.config.user_context import get_user_email
 from app.core.email.category_manager import CategoryManager
 from app.core.email.email_classifier import is_internal_email, is_user_email
 from app.core.email.gmail_client import GmailClient
@@ -584,7 +584,7 @@ class EmailManagerWindow(tk.Toplevel):
         self.ml_training_manager = MLTrainingManager(base_dir=dataset_dir)
         global_training_path = Path(os.getenv("GLOBAL_TRAINING_DATA_PATH", "training_data.json"))
         self.global_learning_store = GlobalLearningStore(file_path=global_training_path)
-        self.outlook_service = OutlookService()
+        self.outlook_service = OutlookService(db_connection)
         self.attachment_cache = AttachmentCache(gmail_client=gmail_client)
         self.my_email = self._resolve_my_email()
 
@@ -4556,25 +4556,10 @@ class EmailManagerWindow(tk.Toplevel):
         return fallback
 
     def _resolve_my_email(self) -> str:
-        profile = self.config_manager.get_user_profile()
-        email_principal = str(profile.get("email_principal", "")).strip()
-        if email_principal:
-            return email_principal
-        try:
-            managed = str(self.note_service.get_settings().managed_email or "").strip()
-            if managed:
-                return managed
-        except Exception:  # noqa: BLE001
-            logger.exception("No se pudo leer correo gestionado desde configuración")
-        profile_email = self.user_profile_repo.get_profile().get("email", "").strip()
-        if profile_email:
-            return profile_email
-        try:
-            resolved = self.gmail_client.get_my_email().strip()
-            return resolved or USER_EMAIL
-        except Exception:  # noqa: BLE001
-            logger.exception("No se pudo obtener el email del usuario desde Gmail")
-            return USER_EMAIL
+        resolved = get_user_email(self.db_connection)
+        if not resolved:
+            raise ValueError("No hay email configurado en user_profile")
+        return resolved
 
     def _apply_user_signature(self, text: str) -> str:
         profile_config = self.config_manager.get_user_profile()

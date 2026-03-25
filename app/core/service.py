@@ -44,7 +44,7 @@ class NoteService:
         self.settings_repo = settings_repo
         self.masters_repo = masters_repo
         self.actions_repo = actions_repo
-        self.outlook_service = outlook_service or OutlookService()
+        self.outlook_service = outlook_service or OutlookService(note_repo.conn)
         self.masters_repo.ensure_default_values()
 
     def get_settings(self) -> AppSettings:

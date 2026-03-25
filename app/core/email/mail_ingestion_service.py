@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from app.config.config_manager import ConfigManager
 from app.core.email.email_classifier import EmailClassifier
 from app.core.email.forwarded_parser import extract_forwarded_headers, extract_real_sender
-from app.config.mail_config import USER_EMAIL
+from app.core.config.user_context import get_user_email
 from app.persistence.email_repository import EmailRepository
 from app.services.email_entity_extractor import EmailEntityExtractor
 
@@ -371,10 +371,10 @@ class MailIngestionService:
         if not self._is_forwarded(subject, body_text):
             return False
         sender_email = self._extract_email(sender)
-        user_profile = self.config_manager.get_user_profile()
-        configured_identity = str(user_profile.get("email_principal", "")).strip() or USER_EMAIL
-        my_email = self._extract_email(configured_identity)
-        return bool(sender_email and my_email and sender_email == my_email)
+        my_email = get_user_email(self.db_connection)
+        if not my_email:
+            raise ValueError("No hay email configurado en user_profile")
+        return bool(sender_email and sender_email == my_email)
 
     @staticmethod
     def _extract_email(raw_value: str) -> str:
