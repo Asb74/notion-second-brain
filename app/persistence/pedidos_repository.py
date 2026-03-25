@@ -94,7 +94,9 @@ def _linea_para_comparacion(linea: dict[str, Any]) -> dict[str, str]:
 
 def _obtener_lineas_ultima_version(db: sqlite3.Connection, NumeroPedido: str) -> list[dict[str, Any]]:
     query = f"""
-    SELECT linea, cantidad, cajas_totales, cp, tipo_palet, nombre_caja, mercancia, confeccion, calibre, categoria, marca, po, lote, observaciones
+    SELECT
+        linea, cantidad, cajas_totales, cp, tipo_palet, nombre_caja, mercancia, confeccion, calibre, categoria, marca, po, lote, observaciones,
+        cliente, comercial, fecha_carga, plataforma, pais, punto_carga, estado
     FROM lineas
     WHERE pedido_id = (
         SELECT id FROM pedidos
@@ -121,6 +123,13 @@ def _obtener_lineas_ultima_version(db: sqlite3.Connection, NumeroPedido: str) ->
             "PO": row["po"],
             "Lote": row["lote"],
             "Observaciones": row["observaciones"],
+            "Cliente": row["cliente"],
+            "Comercial": row["comercial"],
+            "FechaSalida": row["fecha_carga"],
+            "Plataforma": row["plataforma"],
+            "Pais": row["pais"],
+            "PuntoCarga": row["punto_carga"],
+            "Estado": row["estado"],
         }
         for row in rows
     ]

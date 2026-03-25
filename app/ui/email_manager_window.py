@@ -1541,9 +1541,12 @@ class EmailManagerWindow(tk.Toplevel):
                 "attachments_json": row["attachments_json"] or "[]",
                 "entities_json": row["entities_json"] or "",
                 "pedido_json": row["pedido_json"] or "",
+                "numero_pedido": row["numero_pedido"] or "",
             }
             self._all_rows.append(normalized)
             self._rows_by_id[str(row["gmail_id"])] = normalized
+            if str(normalized.get("type", "")).strip().lower() == "order":
+                self._procesar_email_como_pedido(normalized)
 
         self.excel_filter.apply()
         self._refresh_tab_counts()
@@ -1684,6 +1687,7 @@ class EmailManagerWindow(tk.Toplevel):
         for gmail_id in selected_ids:
             row = self.email_repo.get_email_content(gmail_id)
             if row:
+                row_data = dict(row)
                 self.email_repo.register_sender_rule(row["sender"], target_type)
                 subject = str(row["subject"] or "")
                 body_text = str(row["body_text"] or "")
@@ -1712,6 +1716,8 @@ class EmailManagerWindow(tk.Toplevel):
                         f"Incremental training omitido: {learn_result.get('incremental', {}).get('reason', 'pendiente full retrain')}",
                         level="INFO",
                     )
+                if target_type == "order":
+                    self._procesar_email_como_pedido(row_data)
 
         self.status_var.set(f"{len(selected_ids)} correos movidos a {target_label}.")
         self.refresh_emails()
@@ -2232,45 +2238,124 @@ class EmailManagerWindow(tk.Toplevel):
         self.detected_accion_var.set(str(entities.get("accion", "") or ""))
 
     def _get_datos_pedido_from_email(self, row: dict[str, str]) -> dict[str, Any]:
-        pedido_raw = str(row.get("pedido_json", "") or "").strip()
-        if pedido_raw:
-            try:
-                parsed = json.loads(pedido_raw)
-                if isinstance(parsed, dict):
-                    canonical_lines = self._build_canonical_order_lines(parsed)
-                    grouped = self._agrupar_lineas_en_pedidos(canonical_lines)
-                    pedidos = grouped.get("Pedidos", []) if isinstance(grouped, dict) else []
-                    if pedidos:
-                        pedido = pedidos[0]
-                        if isinstance(pedido, dict):
-                            lineas = pedido.get("Lineas", [])
-                            normalized_lines = [line for line in lineas if isinstance(line, dict)]
-                            return {
-                                "NumeroPedido": str(pedido.get("NumeroPedido", "") or ""),
-                                "Cliente": str(pedido.get("Cliente", "") or ""),
-                                "Comercial": str(pedido.get("Comercial", "") or ""),
-                                "FechaSalida": str(pedido.get("FechaSalida", "") or ""),
-                                "Plataforma": str(pedido.get("Plataforma", "") or ""),
-                                "Pais": str(pedido.get("Pais", "") or ""),
-                                "PuntoCarga": str(pedido.get("PuntoCarga", "") or ""),
-                                "Estado": str(pedido.get("Estado", "") or ""),
-                                "Lineas": normalized_lines,
-                            }
-            except json.JSONDecodeError:
-                logger.warning("pedido_json inválido para email %s", row.get("gmail_id", ""))
+        numero_pedido = str(row.get("numero_pedido", "") or "").strip()
+        if not numero_pedido:
+            entities = self._resolve_entities(row)
+            numero_pedido = str(entities.get("pedido", "") or "").strip()
+        if not numero_pedido:
+            return {}
 
-        fallback_entities = self._resolve_entities(row)
+        lineas = self.pedidos_repo.obtener_lineas_ultima_version_por_pedido(numero_pedido)
+        if not lineas:
+            return {}
+
+        primera = lineas[0]
         return {
-            "NumeroPedido": str(fallback_entities.get("pedido", "") or ""),
-            "Cliente": str(fallback_entities.get("cliente", "") or ""),
-            "Comercial": str(fallback_entities.get("persona", "") or ""),
-            "FechaSalida": "",
-            "Plataforma": "",
-            "Pais": "",
-            "PuntoCarga": "",
-            "Estado": "",
-            "Lineas": [],
+            "NumeroPedido": numero_pedido,
+            "Cliente": str(primera.get("Cliente", "") or ""),
+            "Comercial": str(primera.get("Comercial", "") or ""),
+            "FechaSalida": str(primera.get("FechaSalida", "") or ""),
+            "Plataforma": str(primera.get("Plataforma", "") or ""),
+            "Pais": str(primera.get("Pais", "") or ""),
+            "PuntoCarga": str(primera.get("PuntoCarga", "") or ""),
+            "Estado": str(primera.get("Estado", "") or ""),
+            "Lineas": lineas,
         }
+
+    def _extract_order_data_from_attachments(
+        self,
+        gmail_id: str,
+        attachments: list[dict[str, str]],
+    ) -> dict[str, Any] | list[Any] | None:
+        prepared_attachments: list[dict[str, str]] = []
+        for attachment in attachments:
+            if not self._is_summarizable_attachment(attachment):
+                continue
+            filename = self._extract_attachment_filename(str(attachment.get("filename") or "adjunto")) or "adjunto"
+            try:
+                local_path = self.attachment_cache.ensure_downloaded(gmail_id, attachment)
+            except Exception as exc:  # noqa: BLE001
+                self.log(f"No se pudo preparar adjunto {filename}: {exc}", level="WARNING")
+                continue
+            prepared_attachments.append(
+                {
+                    "file_path": local_path,
+                    "local_path": local_path,
+                    "filename": filename,
+                    "mime_type": str(attachment.get("mime") or attachment.get("mime_type") or ""),
+                }
+            )
+
+        if not prepared_attachments:
+            return None
+        extracted_text, _content_types = self._extract_attachment_content_with_type(prepared_attachments)
+        if not extracted_text.strip():
+            return None
+        prompt_row = {
+            "subject": "",
+            "real_sender": "",
+            "sender": "",
+        }
+        summary = self._summarize_attachments_content(
+            row=prompt_row,
+            extracted_text=extracted_text,
+            content_type="attachment",
+            output_format=OUTPUT_FORMAT_PEDIDO,
+        )
+        if not summary:
+            return None
+        return self._parse_order_json(summary)
+
+    def _asociar_email_con_pedido(self, gmail_id: str, numero_pedido: str) -> None:
+        try:
+            self.email_repo.associate_order_number(gmail_id, numero_pedido)
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"Error asociando email con pedido: {exc}", level="WARNING")
+
+    def _procesar_email_como_pedido(self, row: dict[str, str]) -> None:
+        try:
+            gmail_id = str(row.get("gmail_id", "")).strip()
+            if not gmail_id:
+                return
+            numero_pedido_actual = str(row.get("numero_pedido", "") or "").strip()
+            if numero_pedido_actual and self.pedidos_repo.obtener_lineas_ultima_version_por_pedido(numero_pedido_actual):
+                return
+
+            self.log(f"Procesando email como pedido: {gmail_id}")
+            attachments = self._build_email_attachments(gmail_id)
+            if not attachments:
+                self.log("Sin adjuntos, no se procesa como pedido")
+                return
+
+            extracted = self._extract_order_data_from_attachments(gmail_id, attachments)
+            if not extracted:
+                self.log("No se pudo extraer pedido")
+                return
+
+            canonical_lines = self._build_canonical_order_lines(extracted)
+            grouped = self._agrupar_lineas_en_pedidos(canonical_lines)
+            pedidos = grouped.get("Pedidos", [])
+            if not pedidos:
+                return
+
+            pedido = pedidos[0] if isinstance(pedidos[0], dict) else {}
+            lineas = pedido.get("Lineas", []) if isinstance(pedido, dict) else []
+            if not isinstance(lineas, list) or not lineas:
+                return
+
+            validacion = self._validar_pedido_para_confirmacion(lineas)
+            if validacion["errors"]:
+                self.log(f"Pedido con errores: {validacion['errors']}", level="WARNING")
+
+            numero_pedido = str(pedido.get("NumeroPedido", "")).strip()
+            if not numero_pedido:
+                return
+            self.pedidos_repo.guardar_pedidos_desde_json(lineas, numero_pedido)
+            self._asociar_email_con_pedido(gmail_id, numero_pedido)
+            row["numero_pedido"] = numero_pedido
+            self.log(f"Pedido procesado automáticamente: {numero_pedido}")
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"Error procesando pedido automático: {exc}", level="ERROR")
 
     def _save_pedido_json_for_email(self, gmail_id: str, pedido_data: dict[str, Any]) -> None:
         if not gmail_id:

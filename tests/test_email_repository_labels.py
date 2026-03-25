@@ -47,3 +47,23 @@ def test_get_attachments_returns_saved_rows() -> None:
     assert len(rows) == 1
     assert rows[0]["filename"] == "factura.pdf"
     assert rows[0]["local_path"] == "attachments/g1/factura.pdf"
+
+
+def test_associate_order_number_persists_numero_pedido() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    repo = EmailRepository(conn)
+    conn.execute(
+        """
+        INSERT INTO emails (gmail_id, subject, sender, received_at, body_text, status, category, type)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("g2", "Pedido", "cliente@example.com", "2024-01-01T00:00:00+00:00", "body", "new", "pending", "order"),
+    )
+    conn.commit()
+
+    repo.associate_order_number("g2", "P-2026-001")
+
+    row = conn.execute("SELECT numero_pedido FROM emails WHERE gmail_id = 'g2'").fetchone()
+
+    assert row["numero_pedido"] == "P-2026-001"
