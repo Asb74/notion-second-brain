@@ -630,6 +630,8 @@ class EmailManagerWindow(tk.Toplevel):
         self.detected_cliente_var = tk.StringVar(value="")
         self.detected_persona_var = tk.StringVar(value="")
         self.detected_accion_var = tk.StringVar(value="")
+        self._datos_campos_tree: ttk.Treeview | None = None
+        self._datos_lineas_tree: ttk.Treeview | None = None
         self._pending_note_id_by_gmail_id: dict[str, int] = {}
         self._prepared_context_by_gmail_id: dict[str, dict[str, str]] = {}
         self.calendar_refresh_callback: Callable[[], None] | None = None
@@ -1042,14 +1044,43 @@ class EmailManagerWindow(tk.Toplevel):
         ttk.Button(attachments_actions, text="Adjuntar al borrador", command=self._attach_selected_to_draft).pack(side="left", padx=(6, 0))
 
         entities_tab = ttk.Frame(self.detail_notebook, padding=8)
-        ttk.Label(entities_tab, text="Pedido:").grid(row=0, column=0, sticky="w", padx=4, pady=2)
-        ttk.Label(entities_tab, textvariable=self.detected_pedido_var).grid(row=0, column=1, sticky="w", padx=4, pady=2)
-        ttk.Label(entities_tab, text="Cliente:").grid(row=1, column=0, sticky="w", padx=4, pady=2)
-        ttk.Label(entities_tab, textvariable=self.detected_cliente_var).grid(row=1, column=1, sticky="w", padx=4, pady=2)
-        ttk.Label(entities_tab, text="Persona:").grid(row=2, column=0, sticky="w", padx=4, pady=2)
-        ttk.Label(entities_tab, textvariable=self.detected_persona_var).grid(row=2, column=1, sticky="w", padx=4, pady=2)
-        ttk.Label(entities_tab, text="Acción:").grid(row=3, column=0, sticky="w", padx=4, pady=2)
-        ttk.Label(entities_tab, textvariable=self.detected_accion_var).grid(row=3, column=1, sticky="w", padx=4, pady=2)
+        entities_tab.rowconfigure(1, weight=1)
+        entities_tab.columnconfigure(0, weight=1)
+
+        fields_frame = ttk.LabelFrame(entities_tab, text="Campos principales")
+        fields_frame.grid(row=0, column=0, sticky="ew", padx=4, pady=(2, 6))
+        fields_frame.rowconfigure(0, weight=1)
+        fields_frame.columnconfigure(0, weight=1)
+        self._datos_campos_tree = ttk.Treeview(fields_frame, columns=("campo", "valor"), show="headings", height=7)
+        self._datos_campos_tree.heading("campo", text="Campo")
+        self._datos_campos_tree.heading("valor", text="Valor")
+        self._datos_campos_tree.column("campo", width=180, anchor="w")
+        self._datos_campos_tree.column("valor", width=520, anchor="w")
+        self._datos_campos_tree.grid(row=0, column=0, sticky="nsew")
+        fields_scroll = ttk.Scrollbar(fields_frame, orient="vertical", command=self._datos_campos_tree.yview)
+        self._datos_campos_tree.configure(yscrollcommand=fields_scroll.set)
+        fields_scroll.grid(row=0, column=1, sticky="ns")
+
+        lineas_frame = ttk.LabelFrame(entities_tab, text="Líneas del pedido")
+        lineas_frame.grid(row=1, column=0, sticky="nsew", padx=4, pady=(0, 2))
+        lineas_frame.rowconfigure(0, weight=1)
+        lineas_frame.columnconfigure(0, weight=1)
+        self._datos_lineas_tree = ttk.Treeview(
+            lineas_frame,
+            columns=tuple(CANONICAL_LINE_FIELDS),
+            show="headings",
+            height=8,
+        )
+        for field in CANONICAL_LINE_FIELDS:
+            self._datos_lineas_tree.heading(field, text=field)
+            width = 90 if field in {"Linea", "Cantidad", "CP"} else 130
+            self._datos_lineas_tree.column(field, width=width, anchor="w")
+        self._datos_lineas_tree.grid(row=0, column=0, sticky="nsew")
+        lineas_y_scroll = ttk.Scrollbar(lineas_frame, orient="vertical", command=self._datos_lineas_tree.yview)
+        lineas_x_scroll = ttk.Scrollbar(lineas_frame, orient="horizontal", command=self._datos_lineas_tree.xview)
+        self._datos_lineas_tree.configure(yscrollcommand=lineas_y_scroll.set, xscrollcommand=lineas_x_scroll.set)
+        lineas_y_scroll.grid(row=0, column=1, sticky="ns")
+        lineas_x_scroll.grid(row=1, column=0, sticky="ew")
 
         self.detail_notebook.add(preview_tab, text="Vista previa")
         self.detail_notebook.add(response_tab, text="Respuesta")
@@ -2155,6 +2186,7 @@ class EmailManagerWindow(tk.Toplevel):
         attachments: list[dict[str, str]] = []
         body_html = ""
         body_text = ""
+        row: dict[str, str] | None = None
         detected_entities: dict[str, str] = {}
         if len(selection) == 1:
             row = self._rows_by_id.get(str(selection[0]))
@@ -2167,6 +2199,11 @@ class EmailManagerWindow(tk.Toplevel):
         self._set_html_preview(body_html, body_text)
         self._render_attachments(attachments)
         self._set_detected_entities(detected_entities)
+        if len(selection) == 1 and row and str(row.get("type", "")).strip().lower() == "order":
+            datos_pedido = self._get_datos_pedido_from_email(row)
+            self._render_tab_datos(datos_pedido)
+        else:
+            self._render_tab_datos({})
 
 
     def _resolve_entities(self, row: dict[str, str]) -> dict[str, str]:
@@ -2192,6 +2229,74 @@ class EmailManagerWindow(tk.Toplevel):
         self.detected_cliente_var.set(str(entities.get("cliente", "") or ""))
         self.detected_persona_var.set(str(entities.get("persona", "") or ""))
         self.detected_accion_var.set(str(entities.get("accion", "") or ""))
+
+    def _get_datos_pedido_from_email(self, row: dict[str, str]) -> dict[str, Any]:
+        entities_raw = str(row.get("entities_json", "") or "").strip()
+        parsed_entities: dict[str, Any] | list[Any] | None = None
+        if entities_raw:
+            try:
+                parsed = json.loads(entities_raw)
+                if isinstance(parsed, (dict, list)):
+                    parsed_entities = parsed
+            except json.JSONDecodeError:
+                logger.warning("entities_json inválido para email %s", row.get("gmail_id", ""))
+
+        if parsed_entities is not None and self._is_order_json_payload(parsed_entities):
+            canonical_lines = self._build_canonical_order_lines(parsed_entities)
+            grouped = self._agrupar_lineas_en_pedidos(canonical_lines)
+            pedidos = grouped.get("Pedidos", []) if isinstance(grouped, dict) else []
+            if pedidos:
+                pedido = pedidos[0]
+                if isinstance(pedido, dict):
+                    lineas = pedido.get("Lineas", [])
+                    normalized_lines = [line for line in lineas if isinstance(line, dict)]
+                    return {
+                        "NumeroPedido": str(pedido.get("NumeroPedido", "") or ""),
+                        "Cliente": str(pedido.get("Cliente", "") or ""),
+                        "Comercial": str(pedido.get("Comercial", "") or ""),
+                        "FechaSalida": str(pedido.get("FechaSalida", "") or ""),
+                        "Plataforma": str(pedido.get("Plataforma", "") or ""),
+                        "Pais": str(pedido.get("Pais", "") or ""),
+                        "PuntoCarga": str(pedido.get("PuntoCarga", "") or ""),
+                        "Estado": str(pedido.get("Estado", "") or ""),
+                        "Lineas": normalized_lines,
+                    }
+
+        fallback_entities = self._resolve_entities(row)
+        return {
+            "NumeroPedido": str(fallback_entities.get("pedido", "") or ""),
+            "Cliente": str(fallback_entities.get("cliente", "") or ""),
+            "Comercial": str(fallback_entities.get("persona", "") or ""),
+            "FechaSalida": "",
+            "Plataforma": "",
+            "Pais": "",
+            "PuntoCarga": "",
+            "Estado": "",
+            "Lineas": [],
+        }
+
+    def _render_tab_datos(self, datos: dict[str, Any]) -> None:
+        if self._datos_campos_tree is None or self._datos_lineas_tree is None:
+            return
+
+        self._datos_campos_tree.delete(*self._datos_campos_tree.get_children())
+        self._datos_lineas_tree.delete(*self._datos_lineas_tree.get_children())
+
+        if not datos:
+            return
+
+        for field in CANONICAL_ORDER_FIELDS:
+            value = str(datos.get(field, "") or "")
+            self._datos_campos_tree.insert("", "end", values=(field, value))
+
+        lineas = datos.get("Lineas", [])
+        if not isinstance(lineas, list):
+            return
+        for linea in lineas:
+            if not isinstance(linea, dict):
+                continue
+            values = [str(linea.get(field, "") or "") for field in CANONICAL_LINE_FIELDS]
+            self._datos_lineas_tree.insert("", "end", values=values)
 
     def _set_html_preview(self, body_html: str, body_text: str = "") -> None:
         html_body = strip_outlook_word_html((body_html or "").strip())
