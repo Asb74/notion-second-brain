@@ -40,6 +40,7 @@ sys.modules.setdefault("googleapiclient.errors", errors)
 from app.ui.email_manager_window import (
     ATTACHMENT_ORDER_REQUEST,
     EmailManagerWindow,
+    _extract_real_sender,
     clean_markdown,
     clean_outlook_styles,
     copiar_tabla,
@@ -79,6 +80,14 @@ class _PreviewTextStub:
         self.value = text
 
 
+class _VarStub:
+    def __init__(self) -> None:
+        self.value = ""
+
+    def set(self, value: str) -> None:
+        self.value = value
+
+
 def test_attachment_order_request_prioritizes_numeric_palets_extraction() -> None:
     assert "Debes devolver EXCLUSIVAMENTE un JSON válido" in ATTACHMENT_ORDER_REQUEST
     assert "\"Lineas\": [" in ATTACHMENT_ORDER_REQUEST
@@ -86,6 +95,63 @@ def test_attachment_order_request_prioritizes_numeric_palets_extraction() -> Non
     assert "\"NumeroPedido\": \"\"" in ATTACHMENT_ORDER_REQUEST
     assert "FORMATO JSON OBLIGATORIO" in ATTACHMENT_ORDER_REQUEST
     assert "{texto_extraido_pdf}" in ATTACHMENT_ORDER_REQUEST
+
+
+def test_extract_real_sender_from_mailto_markdown_text() -> None:
+    original_from = "[fjcorredor@anecoop.com](mailto:fjcorredor@anecoop.com) [fjcorredor@anecoop.com](mailto:fjcorredor@anecoop.com)"
+
+    sender = _extract_real_sender(original_from, "fallback@example.com")
+
+    assert sender == "fjcorredor@anecoop.com"
+
+
+def test_refresh_emails_extracts_and_persists_real_sender_from_original_from() -> None:
+    window = EmailManagerWindow.__new__(EmailManagerWindow)
+    updates: list[tuple[str, str]] = []
+    window.email_repo = type(
+        "Repo",
+        (),
+        {
+            "get_emails_by_types": lambda *_args: [
+                {
+                    "gmail_id": "id-123",
+                    "subject": "Prueba",
+                    "sender": "configured@example.com",
+                    "real_sender": "",
+                    "original_from": "[fjcorredor@anecoop.com](mailto:fjcorredor@anecoop.com) [fjcorredor@anecoop.com](mailto:fjcorredor@anecoop.com)",
+                    "type": "priority",
+                    "received_at": "2024-01-01T00:00:00+00:00",
+                    "body_text": "",
+                    "body_html": "",
+                    "status": "new",
+                    "category": "pending",
+                    "original_to": "",
+                    "original_cc": "",
+                    "original_reply_to": "",
+                    "attachments_json": "[]",
+                    "entities_json": "",
+                    "pedido_json": "",
+                    "numero_pedido": "",
+                }
+            ],
+            "bulk_update_real_senders": lambda _self, data: updates.extend(data),
+            "count_labeled_examples": lambda *_args: 0,
+        },
+    )()
+    window._tab_to_types = {"priority": ["priority"]}
+    window._current_tab = "priority"
+    window._format_datetime = lambda *_args: "2024-01-01"
+    window.excel_filter = type("Filter", (), {"apply": lambda *_args: None})()
+    window._refresh_tab_counts = lambda: None
+    window.classifier = type("Classifier", (), {"examples_count": 0, "model_status": lambda *_args: "ok"})()
+    window.model_var = _VarStub()
+    window.status_var = _VarStub()
+    window._refresh_preview = lambda: None
+
+    EmailManagerWindow.refresh_emails(window)
+
+    assert window._rows_by_id["id-123"]["real_sender"] == "fjcorredor@anecoop.com"
+    assert updates == [("id-123", "fjcorredor@anecoop.com")]
 
 
 def test_create_notes_no_row_get() -> None:

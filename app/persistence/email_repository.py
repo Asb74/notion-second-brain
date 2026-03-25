@@ -221,6 +221,15 @@ class EmailRepository:
         self.conn.execute(f"UPDATE emails SET type = ? WHERE gmail_id IN ({placeholders})", tuple(params))
         self.conn.commit()
 
+    def bulk_update_real_senders(self, updates: Sequence[tuple[str, str]]) -> None:
+        if not updates:
+            return
+        self.conn.executemany(
+            "UPDATE emails SET real_sender = ? WHERE gmail_id = ?",
+            [(sender, gmail_id) for gmail_id, sender in updates if gmail_id],
+        )
+        self.conn.commit()
+
     def associate_order_number(self, gmail_id: str, numero_pedido: str) -> None:
         self.conn.execute(
             "UPDATE emails SET numero_pedido = ? WHERE gmail_id = ?",

@@ -130,6 +130,23 @@ def _sanitize_html_colors(html_content: str) -> str:
     return sanitized
 
 
+def _extract_real_sender(original_from: str, fallback_sender: str) -> str:
+    source = str(original_from or "").strip()
+    fallback = str(fallback_sender or "").strip()
+    if not source:
+        return fallback
+
+    match = re.search(r"<([^>]+)>", source)
+    if match:
+        return match.group(1).strip()
+
+    match = re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", source)
+    if match:
+        return match.group(0).strip()
+
+    return fallback
+
+
 def sanitize_html_for_tk(html_content: str) -> str:
     """Sanitize HTML/CSS values that tkhtmlview cannot parse safely."""
     if not html_content:
@@ -1524,12 +1541,16 @@ class EmailManagerWindow(tk.Toplevel):
 
         self._all_rows = []
         self._rows_by_id = {}
+        sender_updates: list[tuple[str, str]] = []
         for row in rows:
+            real_sender = _extract_real_sender(row["original_from"] or "", row["sender"] or "")
+            if str(row["real_sender"] or "") != real_sender:
+                sender_updates.append((str(row["gmail_id"] or ""), real_sender))
             normalized = {
                 "gmail_id": row["gmail_id"],
                 "subject": row["subject"] or "",
                 "sender": row["sender"] or "",
-                "real_sender": row["original_from"] or row["real_sender"] or row["sender"] or "",
+                "real_sender": real_sender,
                 "type": row["type"] or "other",
                 "received_at": row["received_at"] or "",
                 "received_at_display": self._format_datetime(row["received_at"]),
@@ -1549,6 +1570,8 @@ class EmailManagerWindow(tk.Toplevel):
             }
             self._all_rows.append(normalized)
             self._rows_by_id[str(row["gmail_id"])] = normalized
+        if sender_updates:
+            self.email_repo.bulk_update_real_senders(sender_updates)
 
         self.excel_filter.apply()
         self._refresh_tab_counts()
@@ -1646,12 +1669,10 @@ class EmailManagerWindow(tk.Toplevel):
         return {
             "gmail_id": str(row_data.get("gmail_id", "") or "").strip(),
             "thread_id": str(row_data.get("thread_id", "") or "").strip(),
-            "sender": str(
-                row_data.get("original_from", "")
-                or row_data.get("real_sender", "")
-                or row_data.get("sender", "")
-                or ""
-            ).strip(),
+            "sender": _extract_real_sender(
+                str(row_data.get("original_from", "") or ""),
+                str(row_data.get("real_sender", "") or row_data.get("sender", "") or ""),
+            ),
             "subject": str(row_data.get("subject", "") or "").strip(),
         }
 
@@ -2104,7 +2125,7 @@ class EmailManagerWindow(tk.Toplevel):
         include_summary: bool = False,
         prepared_merged_content: str = "",
     ) -> NoteCreateRequest:
-        sender_for_note = row["original_from"] or row["real_sender"] or row["sender"] or ""
+        sender_for_note = row["real_sender"] or row["sender"] or ""
         note_title = (title if title is not None else (row["subject"] or "")).strip()
         email_text = prepared_merged_content.strip() or self._get_email_text_for_note(row)
         if not prepared_merged_content.strip() and include_summary and summary_text:
