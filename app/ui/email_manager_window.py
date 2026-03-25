@@ -1344,6 +1344,9 @@ class EmailManagerWindow(tk.Toplevel):
                 "sender": str(row["sender"] or ""),
             }
             nuevos.append(email_item)
+            row_data = dict(row)
+            if str(row_data.get("type", "")).strip().lower() == "order":
+                self._procesar_email_como_pedido(row_data)
             self.seen_email_ids.add(normalized_id)
         return nuevos
 
@@ -1545,8 +1548,6 @@ class EmailManagerWindow(tk.Toplevel):
             }
             self._all_rows.append(normalized)
             self._rows_by_id[str(row["gmail_id"])] = normalized
-            if str(normalized.get("type", "")).strip().lower() == "order":
-                self._procesar_email_como_pedido(normalized)
 
         self.excel_filter.apply()
         self._refresh_tab_counts()
@@ -2312,6 +2313,16 @@ class EmailManagerWindow(tk.Toplevel):
         except Exception as exc:  # noqa: BLE001
             self.log(f"Error asociando email con pedido: {exc}", level="WARNING")
 
+    def _es_pedido_valido_para_guardar(self, lineas: list[dict[str, Any]]) -> bool:
+        if not lineas:
+            return False
+        linea = lineas[0]
+        campos_minimos = ["NumeroPedido", "Cliente", "Mercancia", "Cantidad"]
+        for campo in campos_minimos:
+            if not str(linea.get(campo, "")).strip():
+                return False
+        return True
+
     def _procesar_email_como_pedido(self, row: dict[str, str]) -> None:
         try:
             gmail_id = str(row.get("gmail_id", "")).strip()
@@ -2350,7 +2361,12 @@ class EmailManagerWindow(tk.Toplevel):
             numero_pedido = str(pedido.get("NumeroPedido", "")).strip()
             if not numero_pedido:
                 return
-            self.pedidos_repo.guardar_pedidos_desde_json(lineas, numero_pedido)
+            if self._es_pedido_valido_para_guardar(lineas):
+                self.pedidos_repo.guardar_pedidos_desde_json(lineas, numero_pedido)
+            else:
+                self.log("Pedido descartado por datos incompletos", level="WARNING")
+                self.log(f"Pedido descartado: {lineas}", level="WARNING")
+                return
             self._asociar_email_con_pedido(gmail_id, numero_pedido)
             row["numero_pedido"] = numero_pedido
             self.log(f"Pedido procesado automáticamente: {numero_pedido}")
