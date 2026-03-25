@@ -49,38 +49,57 @@ def extraer_lineas(texto: str) -> list[dict[str, str]]:
     if not bloque:
         return []
 
-    candidatos = re.split(r"\n(?=\s*\d+\s+EuroChep)", bloque, flags=re.IGNORECASE)
+    partes = re.split(r"(Total\s+Cajas\s*:\s*\d+)", bloque, flags=re.IGNORECASE)
+    if len(partes) < 3:
+        return []
+
+    candidatos: list[str] = []
+    for idx in range(1, len(partes), 2):
+        previo = str(partes[idx - 1] or "")
+        total_cajas = str(partes[idx] or "")
+        siguiente = str(partes[idx + 1] or "") if idx + 1 < len(partes) else ""
+        corte_siguiente = re.search(r"(?m)^\s*\d{1,4}\s*$", siguiente)
+        if corte_siguiente:
+            siguiente = siguiente[: corte_siguiente.start()]
+        candidato = f"{previo}\n{total_cajas}\n{siguiente}".strip()
+        if candidato:
+            candidatos.append(candidato)
+
     for candidato in candidatos:
         chunk = str(candidato or "").strip()
-        print("CHUNK:", chunk)
         if not chunk:
             continue
+        print("BLOQUE PROCESADO:", chunk)
 
-        linea = _match_group(r"^\s*(\d{1,4})\b", chunk, flags=re.MULTILINE)
+        linea = _match_group(r"(?m)^\s*(\d{1,4})\s*$", chunk, flags=0)
+        if not linea:
+            linea = _match_group(r"(?m)^\s*(\d{1,4})\s+EuroChep\w+", chunk, flags=re.IGNORECASE)
         if not linea:
             continue
 
-        cantidad = _match_group(r"^\s*\d{1,4}\s+(\d+(?:[.,]\d+)?)\b", chunk, flags=re.MULTILINE)
-        if not cantidad:
-            cantidad = _match_group(r"^\s*(\d+(?:[.,]\d+)?)\s+[A-Za-z][\w./-]*\b", chunk, flags=re.MULTILINE)
+        cantidad = _match_group(r"(\d+)\s+(EuroChep\w+)", chunk, flags=re.IGNORECASE)
+        tipo_palet = _match_group(r"\d+\s+(EuroChep\w+)", chunk, flags=re.IGNORECASE)
+        cajas = _match_group(r"Total\s+Cajas\s*:\s*(\d+)", chunk)
 
-        tipo_palet = _match_group(r"^\s*\d{1,4}\s+([A-Za-z][\w./-]*)\b", chunk, flags=re.MULTILINE)
-        if not tipo_palet:
-            tipo_palet = _match_group(r"^\s*\d{1,4}\s+\d+(?:[.,]\d+)?\s+([A-Za-z][\w./-]*)\b", chunk, flags=re.MULTILINE)
-
-        cajas = _match_group(r"Total\s+Cajas\s*:\s*(\d+(?:[.,]\d+)?)", chunk)
-        mercancia_match = re.search(
-            r"(?im)^\s*\(\*\)\s*(?P<base>[^\n]*)(?P<rest>(?:\n(?!\s*(?:Calibre|Total\s*Cajas|Observa\w*|\d+\s+[A-Za-z]))[^\n]+)*)",
-            chunk,
-        )
         mercancia = ""
-        if mercancia_match:
-            partes = [mercancia_match.group("base") or ""]
-            resto = mercancia_match.group("rest") or ""
-            if resto:
-                partes.extend(linea.strip() for linea in resto.splitlines())
-            mercancia = " ".join(parte.strip() for parte in partes if parte and parte.strip())
-        calibre = _match_group(r"Calibre\s*:\s*([^\n]+)", chunk)
+        marcador = re.search(r"\(\*\)\s*", chunk)
+        if marcador:
+            resto = chunk[marcador.end() :]
+            lineas_mercancia: list[str] = []
+            for linea_bloque in resto.splitlines():
+                actual = str(linea_bloque or "").strip()
+                if not actual:
+                    continue
+                if re.match(r"(?i)^Calibre\s*:", actual):
+                    break
+                if re.match(r"(?i)^Total\s+Cajas\s*:", actual):
+                    break
+                if re.match(r"(?i)^Observa\w*", actual):
+                    break
+                lineas_mercancia.append(actual)
+            mercancia = " ".join(lineas_mercancia).strip()
+
+        calibre = _match_group(r"Calibre\s*:\s*([^\n]+)", chunk, flags=0)
 
         cp = ""
         if cantidad and cajas:
@@ -92,12 +111,12 @@ def extraer_lineas(texto: str) -> list[dict[str, str]]:
         lineas.append(
             {
                 "Linea": linea,
-                "Cantidad": (cantidad or "").replace(",", "."),
-                "TipoPalet": tipo_palet,
-                "CajasTotales": (cajas or "").replace(",", "."),
+                "Cantidad": (cantidad or "").strip().replace(",", "."),
+                "TipoPalet": (tipo_palet or "").strip().replace(",", "."),
+                "CajasTotales": (cajas or "").strip().replace(",", "."),
                 "CP": cp,
-                "Mercancia": mercancia,
-                "Calibre": calibre,
+                "Mercancia": (mercancia or "").strip().replace(",", "."),
+                "Calibre": (calibre or "").strip().replace(",", "."),
             }
         )
     return lineas
