@@ -2295,7 +2295,14 @@ class EmailManagerWindow(tk.Toplevel):
             return None
         extracted_specific = extraer_pedido_desde_pdf(extracted_text)
         if extracted_specific:
-            return extracted_specific
+            return {
+                "Pedidos": [
+                    {
+                        "NumeroPedido": extracted_specific[0].get("NumeroPedido", ""),
+                        "Lineas": extracted_specific,
+                    }
+                ]
+            }
         prompt_row = {
             "subject": "",
             "real_sender": "",
