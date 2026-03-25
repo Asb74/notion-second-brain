@@ -877,6 +877,12 @@ def test_extract_attachment_filename_sanitizes_mime_suffix() -> None:
     assert cleaned == 'LORARIOSEBAS_20250526_143207.pdf'
 
 
+def test_es_pedido_valido_para_guardar_permite_incompleto_con_numero() -> None:
+    window = EmailManagerWindow.__new__(EmailManagerWindow)
+    lineas = [{"NumeroPedido": "25/111599/1", "Cliente": "", "Mercancia": "", "Cantidad": ""}]
+    assert EmailManagerWindow._es_pedido_valido_para_guardar(window, lineas) is True
+
+
 def test_is_summarizable_attachment_accepts_octet_stream_with_supported_extension() -> None:
     attachment = {
         'filename': 'LORARIOSEBAS_20250526_143207.pdf [application/octet-stream]',
