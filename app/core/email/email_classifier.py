@@ -237,8 +237,24 @@ class EmailClassifier:
             return False
 
         self.ml_model.save()
+        self._persist_runtime_ml_artifacts()
         logger.info("Entrenamiento email classifier completado correctamente")
         return True
+
+    def _persist_runtime_ml_artifacts(self) -> None:
+        if self.ml_model.classifier is None or self.ml_model.vectorizer is None:
+            return
+
+        try:
+            import joblib
+
+            models_dir = Path("models")
+            models_dir.mkdir(parents=True, exist_ok=True)
+            joblib.dump(self.ml_model.classifier, models_dir / "email_classification_model.pkl")
+            joblib.dump(self.ml_model.vectorizer, models_dir / "email_vectorizer.pkl")
+            logger.info("Modelo guardado correctamente")
+        except Exception:  # noqa: BLE001
+            logger.exception("No se pudieron guardar los artefactos ML en models/")
 
 
     def can_incremental_train(self, new_label: str | None = None) -> bool:

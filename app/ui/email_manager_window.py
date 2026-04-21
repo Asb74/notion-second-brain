@@ -36,6 +36,7 @@ from app.core.email.email_classifier import is_internal_email, is_user_email
 from app.core.email.gmail_client import GmailClient
 from app.core.email.attachment_cache import AttachmentCache
 from app.core.email.mail_ingestion_service import MailIngestionService
+from app.core.ml.email_classifier import EmailClassifier as MLEmailClassifier
 from app.core.models import NoteCreateRequest
 from app.core.outlook.outlook_service import OutlookService
 from app.core.service import NoteService
@@ -591,7 +592,12 @@ class EmailManagerWindow(tk.Toplevel):
         self.user_profile_repo = UserProfileRepository(db_connection)
         self.config_manager = ConfigManager()
         self.category_manager = CategoryManager(self.email_repo)
-        self.mail_ingestion_service = MailIngestionService(gmail_client=gmail_client, db_connection=db_connection)
+        self.email_classifier = MLEmailClassifier()
+        self.mail_ingestion_service = MailIngestionService(
+            gmail_client=gmail_client,
+            db_connection=db_connection,
+            ml_email_classifier=self.email_classifier,
+        )
         self.classifier = self.mail_ingestion_service.classifier
         self.retraining_service = DatasetRetrainingService(db_connection, self.email_repo)
         self.continuous_learning_service = ContinuousLearningService(
@@ -1505,6 +1511,8 @@ class EmailManagerWindow(tk.Toplevel):
             reason = str(result.get("reason", ""))
             self.model_var.set(self.classifier.model_status())
             if trained:
+                self.email_classifier.reload_model()
+                self.mail_ingestion_service.reload_model()
                 self.log(f"Entrenamiento OK: {reason}")
                 logger.info("Reentrenamiento manual completado")
                 return

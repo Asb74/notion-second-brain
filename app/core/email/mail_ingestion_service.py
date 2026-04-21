@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.config.config_manager import ConfigManager
 from app.core.email.email_classifier import EmailClassifier
+from app.core.ml.email_classifier import EmailClassifier as MLEmailClassifier
 from app.core.email.forwarded_parser import extract_forwarded_headers, extract_real_sender
 from app.core.config.user_context import get_user_email
 from app.persistence.email_repository import EmailRepository
@@ -43,12 +44,14 @@ class MailIngestionService:
         gmail_client,
         db_connection: sqlite3.Connection,
         attachments_root: Path | None = None,
+        ml_email_classifier: MLEmailClassifier | None = None,
     ):
         self.gmail_client = gmail_client
         self.db_connection = db_connection
         self.email_repo = EmailRepository(db_connection)
         self.config_manager = ConfigManager()
         self.classifier = EmailClassifier(email_repo=self.email_repo, config_manager=self.config_manager)
+        self.ml_email_classifier = ml_email_classifier or MLEmailClassifier()
         self.attachments_root = attachments_root or Path("attachments")
         self.attachments_root.mkdir(parents=True, exist_ok=True)
 
@@ -79,7 +82,7 @@ class MailIngestionService:
             real_sender = _extract_real_sender(original_from, inferred_sender or sender)
 
             received_at = self._convert_internal_date(full_message.get("internalDate"))
-            email_type = self.classifier.classify(subject=subject, sender=sender, body_text=body_text)
+            email_type = self._classify_email(subject=subject, body=body_text, sender=sender)
             category = "marketing" if email_type in {"marketing", "subscription"} else "priority"
             entities_json = json.dumps(EmailEntityExtractor.extract_entities(subject, body_text), ensure_ascii=False)
             inserted = self._insert_email(
@@ -111,6 +114,28 @@ class MailIngestionService:
 
         self.db_connection.commit()
         return processed_ids
+
+
+    def reload_model(self) -> None:
+        self.ml_email_classifier.reload_model()
+
+    def _classify_email(self, subject: str, body: str, sender: str) -> str:
+        logger.info("Clasificando email: %s", (subject or "")[:50])
+
+        category = "other"
+        if self.ml_email_classifier.is_ready():
+            category, confidence = self.ml_email_classifier.predict(subject, body)
+            if confidence < 0.6:
+                category = self._fallback_category(subject, body, sender)
+        else:
+            category = self._fallback_category(subject, body, sender)
+
+        logger.info("Categoría final: %s", category)
+        return category
+
+    def _fallback_category(self, subject: str, body: str, sender: str) -> str:
+        logger.info("Usando fallback de clasificación")
+        return self.classifier.classify(subject=subject, sender=sender, body_text=body)
 
     def recompute_original_senders(self) -> int:
         """
