@@ -3697,25 +3697,14 @@ class EmailManagerWindow(tk.Toplevel):
                     "Plataforma": linea_normalizada.get("Plataforma", ""),
                     "Pais": linea_normalizada.get("Pais", ""),
                     "PuntoCarga": linea_normalizada.get("PuntoCarga", ""),
+                    "Estado": linea_normalizada.get("Estado", ""),
                     "Lineas": [],
                 },
             )
             pedido["Lineas"].append(
                 {
-                    "Linea": linea_normalizada.get("Linea", ""),
-                    "Cantidad": linea_normalizada.get("Cantidad", ""),
-                    "TipoPalet": linea_normalizada.get("TipoPalet", ""),
-                    "CajasTotales": linea_normalizada.get("CajasTotales", ""),
-                    "CP": linea_normalizada.get("CP", ""),
-                    "NombreCaja": linea_normalizada.get("NombreCaja", ""),
-                    "Mercancia": linea_normalizada.get("Mercancia", ""),
-                    "Confeccion": linea_normalizada.get("Confeccion", ""),
-                    "Calibre": linea_normalizada.get("Calibre", ""),
-                    "Categoria": linea_normalizada.get("Categoria", ""),
-                    "Marca": linea_normalizada.get("Marca", ""),
-                    "PO": linea_normalizada.get("PO", ""),
-                    "Lote": linea_normalizada.get("Lote", ""),
-                    "Observaciones": linea_normalizada.get("Observaciones", ""),
+                    key: linea_normalizada.get(key, "")
+                    for key in [*CANONICAL_ORDER_FIELDS, *CANONICAL_LINE_FIELDS]
                 }
             )
         return {"Pedidos": list(pedidos_index.values())}
