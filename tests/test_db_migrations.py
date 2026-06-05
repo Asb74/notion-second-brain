@@ -25,7 +25,7 @@ def test_run_migrations_crea_schema_version_y_migra_pedidos() -> None:
 
     columnas = conn.execute("PRAGMA table_info(pedidos)").fetchall()
     assert "fecha" in {str(row[1]) for row in columnas}
-    assert obtener_version(conn) == 2
+    assert obtener_version(conn) == 3
     idx = conn.execute("PRAGMA index_list(pedidos)").fetchall()
     assert any(str(row[1]) == "idx_pedidos_numero" for row in idx)
 
@@ -46,7 +46,7 @@ def test_run_migrations_es_idempotente() -> None:
     guardar_version(conn, 1)
     run_migrations(conn)
 
-    assert obtener_version(conn) == 2
+    assert obtener_version(conn) == 3
 
 
 def test_run_migrations_no_falla_si_no_existe_columna_NumeroPedido() -> None:
@@ -62,7 +62,7 @@ def test_run_migrations_no_falla_si_no_existe_columna_NumeroPedido() -> None:
 
     run_migrations(conn)
 
-    assert obtener_version(conn) == 2
+    assert obtener_version(conn) == 3
     columnas = conn.execute("PRAGMA table_info(pedidos)").fetchall()
     nombres = {str(row[1]) for row in columnas}
     assert "NumeroPedido" in nombres
@@ -70,3 +70,31 @@ def test_run_migrations_no_falla_si_no_existe_columna_NumeroPedido() -> None:
     assert "fecha" in nombres
     idx = conn.execute("PRAGMA index_list(pedidos)").fetchall()
     assert any(str(row[1]) == "idx_pedidos_numero" for row in idx)
+
+
+def test_run_migrations_crea_tabla_order_training_examples() -> None:
+    conn = _conn()
+
+    run_migrations(conn)
+
+    table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='order_training_examples'"
+    ).fetchone()
+    assert table is not None
+    columns = conn.execute("PRAGMA table_info(order_training_examples)").fetchall()
+    names = {str(row[1]) for row in columns}
+    assert {
+        "id",
+        "gmail_id",
+        "numero_pedido",
+        "source_file",
+        "pdf_text",
+        "extracted_json",
+        "corrected_json",
+        "status",
+        "notes",
+        "created_at",
+        "updated_at",
+    }.issubset(names)
+    indexes = conn.execute("PRAGMA index_list(order_training_examples)").fetchall()
+    assert any(str(row[1]) == "idx_order_training_unique" for row in indexes)
