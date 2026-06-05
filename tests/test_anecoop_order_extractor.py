@@ -140,3 +140,55 @@ def test_extraer_pedido_desde_pdf_sin_numero_con_linea_identificable_no_descarta
     assert lineas[0]["NumeroPedido"] == ""
     assert lineas[0]["Cliente"] == "Cliente Sin Numero"
     assert lineas[0]["Mercancia"] == "Producto Sin Numero"
+
+
+def test_extraer_pedido_desde_pdf_lidl_compacto_total_cajas_no_crea_segunda_linea() -> None:
+    texto = """
+    ORDEN DE PEDIDO
+    Nº Pedido: 25/154926/1
+    CLIENTE: LIDL STIFT HORT
+    F. Carga: Lunes 08/06/2026
+    Plataforma: LIDL (ALEMANIA)
+    P. Carga: LORA DEL RIO SIN TRANSBORDC DIRECTO A
+    Lin. Cantidad Mercancia y Confección Calibre Ct Marca Precio Orientativo N°Lote/Ean Ref.Cliente
+    19 Euro.Retor.X36 Naranja Blanca Valencia Late Del 3/4 al 4/5 | PZ/UV:LIDL Precio Mercado / 80142
+    Simple 10xMALLA 2Kg.60x40x24 CART Caja:LIDL
+
+    4 | Total Cajas: 684 (MALLA) Etiq Caja:LIDL
+
+    Origen: ESPANA
+    Observaciones: !dioma: aleman // 8 -10 Pz
+    IAN: 80142
+    Ean UV 20241681
+    Malla roja // Caja verde
+    BRIX 11 // 40% ZUMO
+    """
+
+    lineas = extraer_pedido_desde_pdf(texto)
+
+    assert len(lineas) == 1
+    linea = lineas[0]
+    assert linea["NumeroPedido"] == "25/154926/1"
+    assert linea["Cliente"] == "LIDL STIFT HORT"
+    assert linea["FechaSalida"] == "Lunes 08/06/2026"
+    assert linea["Plataforma"] == "LIDL"
+    assert linea["Pais"] == "ALEMANIA"
+    assert linea["PuntoCarga"] == "LORA DEL RIO"
+    assert linea["Estado"] == "Nuevo"
+    assert linea["Linea"] == "1"
+    assert linea["Cantidad"] == "19"
+    assert linea["TipoPalet"] == "Euro.Retor. Simple"
+    assert linea["CajasTotales"] == "684"
+    assert linea["CP"] == "36"
+    assert linea["NombreCaja"] == "LIDL"
+    assert linea["Mercancia"] == "Naranja Blanca Valencia Late"
+    assert linea["Confeccion"] == "10xMALLA 2Kg.60x40x24 CART"
+    assert linea["Calibre"] == "Del 3/4 al 4/5"
+    assert linea["Categoria"] == "I"
+    assert linea["Marca"] == "LIDL"
+    assert linea["PO"] == "Precio Mercado"
+    assert linea["Lote"] == "80142"
+    assert linea["Observaciones"] == (
+        "!dioma: aleman // 8 -10 Pz // IAN: 80142 // Ean UV 20241681 // "
+        "Malla roja // Caja verde // BRIX 11 // 40% ZUMO"
+    )
