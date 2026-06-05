@@ -58,6 +58,13 @@ def extract_text_from_attachment(file_path: str, filename: str = "") -> str:
     """Extract plain text from a supported attachment path."""
     path = Path(str(file_path or "").strip())
     suffix = _detect_extension(filename=filename, file_path=str(path))
+    logger.info(
+        "ATTACHMENT_DEBUG: local_path=%s filename=%s exists=%s",
+        path,
+        filename,
+        path.exists(),
+    )
+    logger.info("ATTACHMENT_DEBUG: suffix=%s", suffix)
     if suffix not in SUPPORTED_ATTACHMENT_EXTENSIONS or not path.exists():
         return ""
 
@@ -97,6 +104,13 @@ def extract_text_and_types_from_attachments(attachments: list[dict[str, str]]) -
             continue
 
         suffix = _detect_extension(filename=filename, file_path=local_path)
+        logger.info(
+            "ATTACHMENT_DEBUG: local_path=%s filename=%s exists=%s",
+            local_path,
+            filename,
+            Path(local_path).exists(),
+        )
+        logger.info("ATTACHMENT_DEBUG: suffix=%s", suffix)
         if suffix not in SUPPORTED_ATTACHMENT_EXTENSIONS:
             continue
 
@@ -130,6 +144,12 @@ def process_attachment(file_path: str) -> tuple[str, str]:
     """Process one attachment and return extracted text plus normalized content type."""
     path = Path(str(file_path or "").strip())
     ext = get_extension(str(path))
+    logger.info(
+        "ATTACHMENT_DEBUG: process_attachment path=%s ext=%s exists=%s",
+        path,
+        ext,
+        path.exists(),
+    )
 
     if ext in AUDIO_EXT:
         text = transcribe_audio(str(path))
@@ -182,7 +202,9 @@ def get_extension(file_path: str) -> str:
 
 
 def extract_pdf_text(file_path: str) -> str:
-    return _extract_pdf(Path(file_path))
+    result_text = _extract_pdf(Path(file_path))
+    logger.info("ATTACHMENT_DEBUG: pdf extraction result chars=%s", len(result_text))
+    return result_text
 
 
 def extract_doc_text(file_path: str) -> str:
@@ -202,6 +224,12 @@ def extract_excel_summary(file_path: str) -> str:
 
 def _extract_pdf(path: Path) -> str:
     texts: list[str] = []
+    logger.info(
+        "ATTACHMENT_DEBUG: process_attachment path=%s ext=%s exists=%s",
+        path,
+        path.suffix.lower(),
+        path.exists(),
+    )
 
     try:
         import pdfplumber  # type: ignore
@@ -211,8 +239,8 @@ def _extract_pdf(path: Path) -> str:
                 text = str(page.extract_text() or "").strip()
                 if text:
                     texts.append(text)
-    except Exception:  # noqa: BLE001
-        logger.warning("pdfplumber extraction failed for %s; trying PyPDF2 fallback", path.name)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ATTACHMENT_DEBUG: pdfplumber failed for %s: %s", path.name, exc)
 
     if texts:
         return "\n\n".join(texts)
@@ -225,8 +253,8 @@ def _extract_pdf(path: Path) -> str:
             text = str(page.extract_text() or "").strip()
             if text:
                 texts.append(text)
-    except Exception:  # noqa: BLE001
-        logger.warning("PyPDF2 extraction failed for %s; trying PyMuPDF fallback", path.name)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ATTACHMENT_DEBUG: PyPDF2 failed for %s: %s", path.name, exc)
 
     if texts:
         return "\n\n".join(texts)
@@ -239,8 +267,8 @@ def _extract_pdf(path: Path) -> str:
                 text = (page.get_text("text") or "").strip()
                 if text:
                     texts.append(text)
-    except Exception:  # noqa: BLE001
-        logger.warning("PyMuPDF extraction failed for %s; trying pdfminer fallback", path.name)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ATTACHMENT_DEBUG: PyMuPDF failed for %s: %s", path.name, exc)
 
     if texts:
         return "\n\n".join(texts)
@@ -251,8 +279,8 @@ def _extract_pdf(path: Path) -> str:
         text = str(extract_text(str(path)) or "").strip()
         if text:
             texts.append(text)
-    except Exception:  # noqa: BLE001
-        logger.warning("pdfminer extraction failed for %s", path.name)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ATTACHMENT_DEBUG: pdfminer failed for %s: %s", path.name, exc)
 
     extracted_text = "\n\n".join(texts).strip()
     if len(extracted_text) >= PDF_OCR_MIN_TEXT_LENGTH:
@@ -270,12 +298,16 @@ def _extract_pdf(path: Path) -> str:
 def _extract_pdf_with_ocr(path: Path) -> str:
     try:
         from pdf2image import convert_from_bytes  # type: ignore
-    except Exception:  # noqa: BLE001
-        logger.warning("OCR dependencies are not available for %s", path.name)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ATTACHMENT_DEBUG: OCR unavailable or failed for %s: %s", path.name, exc)
         return ""
 
     if pytesseract is None:
-        logger.warning("OCR dependencies are not available for %s", path.name)
+        logger.warning(
+            "ATTACHMENT_DEBUG: OCR unavailable or failed for %s: %s",
+            path.name,
+            "pytesseract is not available",
+        )
         return ""
 
     logger.info("OCR fallback started")
@@ -284,15 +316,15 @@ def _extract_pdf_with_ocr(path: Path) -> str:
         pdf_bytes = path.read_bytes()
         images = convert_from_bytes(pdf_bytes, dpi=300, poppler_path=POPPLER_PATH)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Failed to convert PDF to images for OCR: %s", exc)
+        logger.warning("ATTACHMENT_DEBUG: OCR unavailable or failed for %s: %s", path.name, exc)
         return ""
 
     texts: list[str] = []
     for image in images:
         try:
             text = str(pytesseract.image_to_string(image) or "").strip()
-        except Exception:  # noqa: BLE001
-            logger.warning("OCR page extraction failed for %s", path.name)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ATTACHMENT_DEBUG: OCR unavailable or failed for %s: %s", path.name, exc)
             continue
         if text:
             texts.append(text)
