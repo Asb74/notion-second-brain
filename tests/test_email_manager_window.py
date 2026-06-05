@@ -356,6 +356,36 @@ def test_normalizar_pedidos_json_convierte_estructura_nueva() -> None:
     assert lineas[0]["Categoria"] == ""
 
 
+def test_agrupar_lineas_en_pedidos_preserva_cabecera_en_cada_linea() -> None:
+    lineas = [
+        {
+            "NumeroPedido": "25/154926/1",
+            "Cliente": "LIDL STIFT HORT",
+            "Comercial": "Ana",
+            "FechaSalida": "Lunes 08/06/2026",
+            "Plataforma": "Hort",
+            "Pais": "Alemania",
+            "PuntoCarga": "LORA DEL RIO",
+            "Estado": "Nuevo",
+            "Linea": "1",
+            "Cantidad": "10",
+            "Mercancia": "Naranja",
+        }
+    ]
+
+    grouped = EmailManagerWindow._agrupar_lineas_en_pedidos(lineas)
+
+    linea = grouped["Pedidos"][0]["Lineas"][0]
+    assert linea["NumeroPedido"] == "25/154926/1"
+    assert linea["Cliente"] == "LIDL STIFT HORT"
+    assert linea["Comercial"] == "Ana"
+    assert linea["FechaSalida"] == "Lunes 08/06/2026"
+    assert linea["Plataforma"] == "Hort"
+    assert linea["Pais"] == "Alemania"
+    assert linea["PuntoCarga"] == "LORA DEL RIO"
+    assert linea["Estado"] == "Nuevo"
+
+
 def test_build_canonical_order_lines_copia_cabecera_y_normaliza_categoria() -> None:
     window = EmailManagerWindow.__new__(EmailManagerWindow)
     data = {
