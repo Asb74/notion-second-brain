@@ -2298,8 +2298,10 @@ class EmailManagerWindow(tk.Toplevel):
         gmail_id: str,
         attachments: list[dict[str, str]],
     ) -> dict[str, Any] | list[Any] | None:
+        self.log(f"ORDER_DEBUG: Adjuntos recibidos: {len(attachments)}")
         prepared_attachments: list[dict[str, str]] = []
         for attachment in attachments:
+            self.log(f"ORDER_DEBUG: Adjunto detectado: {attachment}")
             if not self._is_summarizable_attachment(attachment):
                 continue
             filename = self._extract_attachment_filename(str(attachment.get("filename") or "adjunto")) or "adjunto"
@@ -2308,6 +2310,7 @@ class EmailManagerWindow(tk.Toplevel):
             except Exception as exc:  # noqa: BLE001
                 self.log(f"No se pudo preparar adjunto {filename}: {exc}", level="WARNING")
                 continue
+            self.log(f"ORDER_DEBUG: Adjunto preparado filename={filename} local_path={local_path}")
             prepared_attachments.append(
                 {
                     "file_path": local_path,
@@ -2318,13 +2321,22 @@ class EmailManagerWindow(tk.Toplevel):
             )
 
         if not prepared_attachments:
+            self.log("ORDER_DEBUG: Payload pedido devuelto=None")
             return None
-        extracted_text, _content_types = self._extract_attachment_content_with_type(prepared_attachments)
+        self.log(f"ORDER_DEBUG: Extrayendo texto de adjuntos preparados: {len(prepared_attachments)}")
+        extracted_text, content_types = self._extract_attachment_content_with_type(prepared_attachments)
+        self.log(f"ORDER_DEBUG: Texto extraído chars={len(extracted_text)}")
+        self.log(f"ORDER_DEBUG: Tipos detectados={content_types}")
+        self.log(f"ORDER_DEBUG: Primeros 1500 caracteres PDF={extracted_text[:1500]}")
         if not extracted_text.strip():
+            self.log("ORDER_DEBUG: Payload pedido devuelto=None")
             return None
+        self.log("ORDER_DEBUG: Ejecutando extraer_pedido_desde_pdf")
         extracted_specific = extraer_pedido_desde_pdf(extracted_text)
+        self.log(f"ORDER_DEBUG: Resultado extraer_pedido_desde_pdf={extracted_specific}")
         if extracted_specific:
-            return {
+            self.log(f"ORDER_DEBUG: Extractor específico devolvió {len(extracted_specific)} líneas")
+            payload = {
                 "Pedidos": [
                     {
                         "NumeroPedido": extracted_specific[0].get("NumeroPedido", ""),
@@ -2332,6 +2344,9 @@ class EmailManagerWindow(tk.Toplevel):
                     }
                 ]
             }
+            self.log(f"ORDER_DEBUG: Payload pedido devuelto={payload}")
+            return payload
+        self.log("ORDER_DEBUG: Extractor específico no devolvió datos; se continuará con fallback IA", level="WARNING")
         prompt_row = {
             "subject": "",
             "real_sender": "",
@@ -2344,8 +2359,11 @@ class EmailManagerWindow(tk.Toplevel):
             output_format=OUTPUT_FORMAT_PEDIDO,
         )
         if not summary:
+            self.log("ORDER_DEBUG: Payload pedido devuelto=None")
             return None
-        return self._parse_order_json(summary)
+        payload = self._parse_order_json(summary)
+        self.log(f"ORDER_DEBUG: Payload pedido devuelto={payload}")
+        return payload
 
     def _asociar_email_con_pedido(self, gmail_id: str, numero_pedido: str) -> None:
         try:
