@@ -53,6 +53,21 @@ OBS_RE = re.compile(
     r"(?i)\b(?:GLOBALG\.A\.P\.|Idioma|IAN\b|Ean\s+UV|Malla|Caja\s+(?:verde|roja|azul|negra|blanca)|BRIX|ZUMO|"
     r"Precio\s+Mercado|EUR\s+x|L\s*I\s*N\s*E\s*A\s*--\s*C\s*A\s*N\s*C\s*E\s*L\s*A\s*D\s*A)\b"
 )
+NO_LINE_START_RE = re.compile(
+    r"(?i)\b(?:Total\s+Cajas|Total\s+Ud\.?\s*Venta|Etiq\.?\s*Caja|Origen|"
+    r"Observaciones?|IAN|Ean\s+UV|BRIX|ZUMO)\b"
+)
+COMPACT_ORDER_LINE_RE = re.compile(
+    r"(?is)^\s*(?P<cantidad>\d+(?:[,.]\d+)?)\s+"
+    r"(?P<palet>\S+)\s+"
+    r"(?P<mercancia>.*?)\s+"
+    r"(?P<calibre>Del\s+\d+(?:[/-]\d+)?(?:[A-Za-z]*)\s+al\s+\d+(?:[/-]\d+)?(?:[A-Za-z]*))"
+    r"\s*\|\s*PZ/UV\s*:\s*(?P<marca>.*?)(?=\s+Precio\s+Mercado|\s*/|$)"
+    r"(?P<resto>.*)$"
+)
+SIMPLE_PACKAGING_RE = re.compile(
+    r"(?is)^\s*(?P<modo>Simple|Doble|Triple)\s+(?P<confeccion>.*?)(?:\s+Caja\s*:\s*(?P<caja>[^\n]+))?\s*$"
+)
 
 CONTRACT_TO_INTERNAL = {
     "PedidoID": "NumeroPedido",
@@ -138,10 +153,12 @@ def extraer_cabecera(texto: str) -> dict[str, str]:
         re.IGNORECASE,
     )
     plataforma, pais = _split_plataforma_pais(plataforma_raw)
-    pcarga = _match(
-        rf"(?:P\.?\s*Carga|Punto\s+de\s+Carga)\s*:\s*(.+?)(?=\n|\s+(?:{HEADER_STOP})\b|$)",
-        texto,
-        re.IGNORECASE,
+    pcarga = _normalizar_punto_carga(
+        _match(
+            rf"(?:P\.?\s*Carga|Punto\s+de\s+Carga)\s*:?\s*(.+?)(?=\n|\s+(?:{HEADER_STOP})\b|$)",
+            texto,
+            re.IGNORECASE,
+        )
     )
     comercial = _match(
         r"(?:De:|Comercial\s*:)\s*(.+?)(?=\s+(?:A[Ee]-?mail|E-?mail|Email|Mail|CLIENTE|N[º°o]\s*Pedido)\b|$)",
@@ -214,7 +231,7 @@ def _tiene_senales_linea(filas: list[str]) -> bool:
 
 def _es_inicio_linea_real(lineas: list[str], index: int) -> bool:
     fila = lineas[index]
-    if LABEL_LINE_RE.match(fila) or _es_calibre(fila):
+    if NO_LINE_START_RE.search(fila) or LABEL_LINE_RE.match(fila) or _es_calibre(fila):
         return False
     if re.fullmatch(r"\d{1,3}", fila):
         return _tiene_senales_linea(lineas[index + 1 :])
@@ -437,11 +454,89 @@ def _extraer_observaciones(chunk: str) -> str:
     observaciones: list[str] = []
     for fila in chunk.splitlines():
         actual = _clean(fila)
+        if TOTAL_RE.search(actual) or re.search(r"(?i)\b(?:Etiq\.?\s*Caja|Origen)\b", actual):
+            continue
         if re.match(r"(?i)^Observa\w*\s*:", actual):
             observaciones.append(re.sub(r"(?i)^Observa\w*\s*:\s*", "", actual))
         elif OBS_RE.search(actual):
             observaciones.append(actual)
     return " // ".join(dict.fromkeys(filter(None, observaciones)))
+
+
+def _normalizar_punto_carga(value: str) -> str:
+    value = _clean(value)
+    if not value:
+        return ""
+    return _clean(
+        re.split(
+            r"(?i)\s+SIN\s+TRANSBORD\w*|\s+DIRECTO\s+A\b",
+            value,
+            maxsplit=1,
+        )[0]
+    )
+
+
+def _formatear_tipo_palet_compacto(palet_raw: str, modo: str) -> str:
+    base = re.sub(r"(?i)[x×]\s*\d+\s*$", "", _clean(palet_raw)).strip()
+    if base and not base.endswith("."):
+        base = f"{base}."
+    return _clean(f"{base} {modo}")
+
+
+def _parsear_linea_compacta_lidl(
+    filas: list[str], estado_pedido: str, linea_num: str
+) -> dict[str, str] | None:
+    if not filas:
+        return None
+    match = COMPACT_ORDER_LINE_RE.match(filas[0])
+    if not match:
+        return None
+
+    cantidad = _as_int_text(match.group("cantidad"))
+    palet_raw = _clean(match.group("palet"))
+    mercancia = _clean(match.group("mercancia"))
+    calibre = _clean(match.group("calibre"))
+    marca = _clean(match.group("marca"))
+    resto = _clean(match.group("resto"))
+    po = "Precio Mercado" if re.search(r"(?i)\bPrecio\s+Mercado\b", resto) else ""
+    lote = _match(r"/\s*([A-Z0-9][A-Z0-9.-]*)\b", resto, re.IGNORECASE)
+
+    modo = ""
+    confeccion = ""
+    nombre_caja = ""
+    for fila in filas[1:]:
+        packaging = SIMPLE_PACKAGING_RE.match(fila)
+        if packaging:
+            modo = _clean(packaging.group("modo"))
+            confeccion = _clean(packaging.group("confeccion"))
+            nombre_caja = _clean(packaging.group("caja"))
+            break
+
+    chunk = "\n".join(filas)
+    tcajas = _extraer_total_cajas(chunk, "")
+    cp = _calcular_cp(cantidad, tcajas, "")
+    if modo:
+        tipo_palet = _formatear_tipo_palet_compacto(palet_raw, modo)
+    else:
+        tipo_palet = _extraer_nombre_palet(palet_raw, filas, 0)
+
+    return {
+        "Linea": linea_num,
+        "Palets": cantidad,
+        "NombrePalet": tipo_palet,
+        "TCajas": tcajas,
+        "CP": cp,
+        "NombreCaja": nombre_caja or _extraer_nombre_caja(chunk),
+        "Mercancia": mercancia,
+        "Confeccion": confeccion,
+        "Calibre": calibre,
+        "Categoria": "I",
+        "Marca": marca or _extraer_marca(chunk, nombre_caja),
+        "PO": po or _extraer_po(chunk),
+        "Lote": lote or _extraer_lote(chunk),
+        "Observaciones": _extraer_observaciones("\n".join(filas[1:])),
+        "Estado": _estado_linea(estado_pedido, chunk, linea_num),
+    }
 
 
 def _estado_linea(estado_pedido: str, chunk: str, linea: str) -> str:
@@ -468,12 +563,20 @@ def _normalizar_linea_contrato(linea: dict[str, str]) -> dict[str, Any]:
 
 def extraer_lineas(texto: str, estado_pedido: str = "Nuevo") -> list[dict[str, Any]]:
     lineas: list[dict[str, Any]] = []
-    for chunk in _segmentar_lineas(texto):
+    for index_linea, chunk in enumerate(_segmentar_lineas(texto), start=1):
         filas = _lineas_utiles(chunk)
         if not filas:
             continue
         linea_num = ""
         filas_datos = filas
+        linea_compacta = _parsear_linea_compacta_lidl(
+            filas, estado_pedido, str(index_linea)
+        )
+        if linea_compacta:
+            normalizada = _normalizar_linea_contrato(linea_compacta)
+            logger.info("LINEA NORMALIZADA %s", normalizada)
+            lineas.append(normalizada)
+            continue
         if re.fullmatch(r"\d{1,3}", filas[0]):
             linea_num = filas[0]
             filas_datos = filas[1:]

@@ -3349,6 +3349,12 @@ class EmailManagerWindow(tk.Toplevel):
                 fila: dict[str, Any] = {}
                 fila.update(cabecera)
                 fila.update(linea)
+                for field in CANONICAL_ORDER_FIELDS:
+                    if (
+                        not str(fila.get(field, "") or "").strip()
+                        and str(cabecera.get(field, "") or "").strip()
+                    ):
+                        fila[field] = cabecera[field]
                 resultado.append(with_all_fields(fila))
         return resultado
 
@@ -3502,7 +3508,9 @@ class EmailManagerWindow(tk.Toplevel):
 
     def _analizar_validacion_pedido(self, lineas: list[dict[str, Any]]) -> dict[str, Any]:
         required = self._campos_obligatorios_pedido()
+        self.log(f"ORDER_DEBUG: BEFORE_BUILD_CANONICAL={lineas}", level="INFO")
         canonical_lines = self._build_canonical_order_lines(lineas)
+        self.log(f"ORDER_DEBUG: AFTER_BUILD_CANONICAL={canonical_lines}", level="INFO")
         self.log(f"CANONICAL_LINES_CONFIRMACION: {canonical_lines}", level="INFO")
 
         order_fields = set(ORDER_VALIDATION_FIELDS_BY_GROUP["pedido"])
