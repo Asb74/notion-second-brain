@@ -2229,9 +2229,11 @@ class EmailManagerWindow(tk.Toplevel):
         if len(selection) == 1:
             row = self._rows_by_id.get(str(selection[0]))
             if row:
+                gmail_id = str(row.get("gmail_id", "") or "").strip()
+                self.log(f"ORDER_UI_DEBUG: email seleccionado gmail_id={gmail_id}")
                 body_html = row.get("body_html", "").strip()
                 body_text = row.get("body_text", "")
-                attachments = self._build_email_attachments(str(row["gmail_id"]))
+                attachments = self._build_email_attachments(gmail_id)
                 detected_entities = self._resolve_entities(row)
 
         self._set_html_preview(body_html, body_text)
@@ -2270,13 +2272,19 @@ class EmailManagerWindow(tk.Toplevel):
 
     def _get_datos_pedido_from_email(self, row: dict[str, str]) -> dict[str, Any]:
         numero_pedido = str(row.get("numero_pedido", "") or "").strip()
+        self.log(f"ORDER_UI_DEBUG: numero_pedido email={numero_pedido}")
         if not numero_pedido:
             entities = self._resolve_entities(row)
             numero_pedido = str(entities.get("pedido", "") or "").strip()
+            self.log(f"ORDER_UI_DEBUG: numero_pedido email={numero_pedido}")
         if not numero_pedido:
             return {}
 
+        self.log(f"ORDER_UI_DEBUG: buscando pedido numero={numero_pedido}")
+        pedido = self._get_pedido_header_by_numero(numero_pedido)
+        self.log(f"ORDER_UI_DEBUG: pedido encontrado={pedido}")
         lineas = self.pedidos_repo.obtener_lineas_ultima_version_por_pedido(numero_pedido)
+        self.log(f"ORDER_UI_DEBUG: lineas encontradas={lineas}")
         if not lineas:
             return {}
 
@@ -2292,6 +2300,23 @@ class EmailManagerWindow(tk.Toplevel):
             "Estado": str(primera.get("Estado", "") or ""),
             "Lineas": lineas,
         }
+
+    def _get_pedido_header_by_numero(self, numero_pedido: str) -> dict[str, Any] | None:
+        try:
+            row = self.db_connection.execute(
+                """
+                SELECT *
+                FROM pedidos
+                WHERE NumeroPedido = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (str(numero_pedido or "").strip(),),
+            ).fetchone()
+        except sqlite3.Error as exc:
+            self.log(f"Error consultando pedido {numero_pedido}: {exc}", level="WARNING")
+            return None
+        return dict(row) if row is not None else None
 
     def _extract_order_data_from_attachments(
         self,
@@ -4223,7 +4248,17 @@ class EmailManagerWindow(tk.Toplevel):
                 self.log("SE_PROCEDE_A_GUARDAR: True", level="INFO")
                 inserted = self.pedidos_repo.guardar_pedidos_desde_json(canonical_for_save, order_filename)
                 pedido_payload = self._agrupar_lineas_en_pedidos(canonical_for_save)
-                self._save_pedido_json_for_email(str(row.get("gmail_id", "") or ""), pedido_payload)
+                gmail_id = str(row.get("gmail_id", "") or "").strip()
+                self._save_pedido_json_for_email(gmail_id, pedido_payload)
+                if inserted > 0 and canonical_for_save:
+                    numero_pedido = str(
+                        canonical_for_save[0].get("NumeroPedido")
+                        or canonical_for_save[0].get("PedidoID")
+                        or ""
+                    ).strip()
+                    if numero_pedido:
+                        self._asociar_email_con_pedido(gmail_id, numero_pedido)
+                        row["numero_pedido"] = numero_pedido
                 self.log(f"Pedido persistido: {inserted} líneas ({order_filename})")
             self.response_text.delete("1.0", "end")
             self.response_text.insert("1.0", f"Resumen rápido:\n\n{current_summary}\n")
