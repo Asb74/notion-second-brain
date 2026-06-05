@@ -654,6 +654,8 @@ class EmailManagerWindow(tk.Toplevel):
         self.detected_cliente_var = tk.StringVar(value="")
         self.detected_persona_var = tk.StringVar(value="")
         self.detected_accion_var = tk.StringVar(value="")
+        self.order_fields_tree: ttk.Treeview | None = None
+        self.order_lines_tree: ttk.Treeview | None = None
         self._datos_campos_tree: ttk.Treeview | None = None
         self._datos_lineas_tree: ttk.Treeview | None = None
         self._pending_note_id_by_gmail_id: dict[str, int] = {}
@@ -1075,34 +1077,36 @@ class EmailManagerWindow(tk.Toplevel):
         fields_frame.grid(row=0, column=0, sticky="ew", padx=4, pady=(2, 6))
         fields_frame.rowconfigure(0, weight=1)
         fields_frame.columnconfigure(0, weight=1)
-        self._datos_campos_tree = ttk.Treeview(fields_frame, columns=("campo", "valor"), show="headings", height=7)
-        self._datos_campos_tree.heading("campo", text="Campo")
-        self._datos_campos_tree.heading("valor", text="Valor")
-        self._datos_campos_tree.column("campo", width=180, anchor="w")
-        self._datos_campos_tree.column("valor", width=520, anchor="w")
-        self._datos_campos_tree.grid(row=0, column=0, sticky="nsew")
-        fields_scroll = ttk.Scrollbar(fields_frame, orient="vertical", command=self._datos_campos_tree.yview)
-        self._datos_campos_tree.configure(yscrollcommand=fields_scroll.set)
+        self.order_fields_tree = ttk.Treeview(fields_frame, columns=("campo", "valor"), show="headings", height=7)
+        self._datos_campos_tree = self.order_fields_tree
+        self.order_fields_tree.heading("campo", text="Campo")
+        self.order_fields_tree.heading("valor", text="Valor")
+        self.order_fields_tree.column("campo", width=180, anchor="w")
+        self.order_fields_tree.column("valor", width=520, anchor="w")
+        self.order_fields_tree.grid(row=0, column=0, sticky="nsew")
+        fields_scroll = ttk.Scrollbar(fields_frame, orient="vertical", command=self.order_fields_tree.yview)
+        self.order_fields_tree.configure(yscrollcommand=fields_scroll.set)
         fields_scroll.grid(row=0, column=1, sticky="ns")
 
         lineas_frame = ttk.LabelFrame(entities_tab, text="Líneas del pedido")
         lineas_frame.grid(row=1, column=0, sticky="nsew", padx=4, pady=(0, 2))
         lineas_frame.rowconfigure(0, weight=1)
         lineas_frame.columnconfigure(0, weight=1)
-        self._datos_lineas_tree = ttk.Treeview(
+        self.order_lines_tree = ttk.Treeview(
             lineas_frame,
             columns=tuple(CANONICAL_LINE_FIELDS),
             show="headings",
             height=8,
         )
+        self._datos_lineas_tree = self.order_lines_tree
         for field in CANONICAL_LINE_FIELDS:
-            self._datos_lineas_tree.heading(field, text=field)
+            self.order_lines_tree.heading(field, text=field)
             width = 90 if field in {"Linea", "Cantidad", "CP"} else 130
-            self._datos_lineas_tree.column(field, width=width, anchor="w")
-        self._datos_lineas_tree.grid(row=0, column=0, sticky="nsew")
-        lineas_y_scroll = ttk.Scrollbar(lineas_frame, orient="vertical", command=self._datos_lineas_tree.yview)
-        lineas_x_scroll = ttk.Scrollbar(lineas_frame, orient="horizontal", command=self._datos_lineas_tree.xview)
-        self._datos_lineas_tree.configure(yscrollcommand=lineas_y_scroll.set, xscrollcommand=lineas_x_scroll.set)
+            self.order_lines_tree.column(field, width=width, anchor="w")
+        self.order_lines_tree.grid(row=0, column=0, sticky="nsew")
+        lineas_y_scroll = ttk.Scrollbar(lineas_frame, orient="vertical", command=self.order_lines_tree.yview)
+        lineas_x_scroll = ttk.Scrollbar(lineas_frame, orient="horizontal", command=self.order_lines_tree.xview)
+        self.order_lines_tree.configure(yscrollcommand=lineas_y_scroll.set, xscrollcommand=lineas_x_scroll.set)
         lineas_y_scroll.grid(row=0, column=1, sticky="ns")
         lineas_x_scroll.grid(row=1, column=0, sticky="ew")
 
@@ -2288,18 +2292,19 @@ class EmailManagerWindow(tk.Toplevel):
         if not lineas:
             return {}
 
-        primera = lineas[0]
-        return {
-            "NumeroPedido": numero_pedido,
-            "Cliente": str(primera.get("Cliente", "") or ""),
-            "Comercial": str(primera.get("Comercial", "") or ""),
-            "FechaSalida": str(primera.get("FechaSalida", "") or ""),
-            "Plataforma": str(primera.get("Plataforma", "") or ""),
-            "Pais": str(primera.get("Pais", "") or ""),
-            "PuntoCarga": str(primera.get("PuntoCarga", "") or ""),
-            "Estado": str(primera.get("Estado", "") or ""),
-            "Lineas": lineas,
-        }
+        primera = lineas[0] if isinstance(lineas[0], dict) else {}
+        pedido_header = pedido if isinstance(pedido, dict) else {}
+
+        datos: dict[str, Any] = {"NumeroPedido": numero_pedido}
+        for field in CANONICAL_ORDER_FIELDS:
+            if field == "NumeroPedido":
+                continue
+            value = pedido_header.get(field)
+            if value in (None, ""):
+                value = primera.get(field, "")
+            datos[field] = str(value or "")
+        datos["Lineas"] = lineas
+        return datos
 
     def _get_pedido_header_by_numero(self, numero_pedido: str) -> dict[str, Any] | None:
         try:
@@ -2462,28 +2467,43 @@ class EmailManagerWindow(tk.Toplevel):
         except Exception:  # noqa: BLE001
             logger.exception("No se pudo persistir pedido_json para email %s", gmail_id)
 
+    @staticmethod
+    def _format_order_display_value(value: Any) -> str:
+        if value in (None, ""):
+            return ""
+        if isinstance(value, float) and value.is_integer():
+            return str(int(value))
+        return str(value)
+
     def _render_tab_datos(self, datos: dict[str, Any]) -> None:
-        if self._datos_campos_tree is None or self._datos_lineas_tree is None:
+        if self.order_fields_tree is None or self.order_lines_tree is None:
             return
 
-        self._datos_campos_tree.delete(*self._datos_campos_tree.get_children())
-        self._datos_lineas_tree.delete(*self._datos_lineas_tree.get_children())
+        self.order_fields_tree.delete(*self.order_fields_tree.get_children())
+        self.order_lines_tree.delete(*self.order_lines_tree.get_children())
 
         if not datos:
+            self.log(f"ORDER_UI_DEBUG: total filas tree campos={len(self.order_fields_tree.get_children())}")
+            self.log(f"ORDER_UI_DEBUG: total filas tree lineas={len(self.order_lines_tree.get_children())}")
             return
 
-        for field in CANONICAL_ORDER_FIELDS:
-            value = str(datos.get(field, "") or "")
-            self._datos_campos_tree.insert("", "end", values=(field, value))
+        campos = [(field, self._format_order_display_value(datos.get(field, ""))) for field in CANONICAL_ORDER_FIELDS]
+        self.log(f"ORDER_UI_DEBUG: insertando campos principales={campos}")
+        for field, value in campos:
+            self.order_fields_tree.insert("", "end", values=(field, value))
 
         lineas = datos.get("Lineas", [])
-        if not isinstance(lineas, list):
-            return
-        for linea in lineas:
-            if not isinstance(linea, dict):
-                continue
-            values = [str(linea.get(field, "") or "") for field in CANONICAL_LINE_FIELDS]
-            self._datos_lineas_tree.insert("", "end", values=values)
+        if isinstance(lineas, list):
+            line_columns = list(self.order_lines_tree["columns"])
+            for linea in lineas:
+                if not isinstance(linea, dict):
+                    continue
+                values = tuple(self._format_order_display_value(linea.get(field, "")) for field in line_columns)
+                self.log(f"ORDER_UI_DEBUG: insertando linea={values}")
+                self.order_lines_tree.insert("", "end", values=values)
+
+        self.log(f"ORDER_UI_DEBUG: total filas tree campos={len(self.order_fields_tree.get_children())}")
+        self.log(f"ORDER_UI_DEBUG: total filas tree lineas={len(self.order_lines_tree.get_children())}")
 
     def _set_html_preview(self, body_html: str, body_text: str = "") -> None:
         html_body = strip_outlook_word_html((body_html or "").strip())
