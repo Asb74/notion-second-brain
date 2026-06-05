@@ -206,8 +206,6 @@ class MainWindow(ttk.Frame):
         # Shortcuts básicos del menú de escritorio.
         self.master.bind_all("<Control-n>", self._new_note_event)
         self.master.bind_all("<Control-s>", self._save_note_event)
-        self.master.bind_all("<Control-c>", self._copy_selected_text_event)
-        self.master.bind_all("<Control-v>", self._paste_text_event)
 
     def _new_note_event(self, _event: tk.Event | None = None) -> str:
         self._new_note()
@@ -215,14 +213,6 @@ class MainWindow(ttk.Frame):
 
     def _save_note_event(self, _event: tk.Event | None = None) -> str:
         self._save_note()
-        return "break"
-
-    def _copy_selected_text_event(self, _event: tk.Event | None = None) -> str:
-        self._copy_selected_text()
-        return "break"
-
-    def _paste_text_event(self, _event: tk.Event | None = None) -> str:
-        self._paste_text()
         return "break"
 
     def _new_note(self) -> None:
@@ -236,24 +226,6 @@ class MainWindow(ttk.Frame):
         self.hora_inicio_var.set("")
         self.duracion_var.set("60 min")
         self.hora_fin_var.set("")
-
-    def _copy_selected_text(self) -> None:
-        widget = self.master.focus_get()
-        if widget is None:
-            return
-        try:
-            widget.event_generate("<<Copy>>")
-        except tk.TclError:
-            return
-
-    def _paste_text(self) -> None:
-        widget = self.master.focus_get()
-        if widget is None:
-            return
-        try:
-            widget.event_generate("<<Paste>>")
-        except tk.TclError:
-            return
 
     def _open_masters_dialog(self, category: str) -> None:
         MastersDialog(self.master, self.service, category, self._load_master_values)
