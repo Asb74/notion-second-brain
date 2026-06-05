@@ -84,6 +84,38 @@ def migracion_2(conn: sqlite3.Connection) -> None:
         conn.commit()
 
 
+def migracion_3(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS order_training_examples (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            gmail_id TEXT,
+            numero_pedido TEXT,
+            source_file TEXT,
+            pdf_text TEXT,
+            extracted_json TEXT,
+            corrected_json TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            notes TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT
+        )
+        """
+    )
+    try:
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_order_training_unique
+            ON order_training_examples(gmail_id, numero_pedido, source_file)
+            """
+        )
+    except sqlite3.IntegrityError:
+        # Legacy datasets may already contain duplicates; keep the table usable and
+        # let repository-level conflict handling work when the unique index exists.
+        pass
+    conn.commit()
+
+
 def run_migrations(conn: sqlite3.Connection) -> None:
     current_version = obtener_version(conn)
 
@@ -94,6 +126,10 @@ def run_migrations(conn: sqlite3.Connection) -> None:
     if current_version < 2:
         migracion_2(conn)
         guardar_version(conn, 2)
+
+    if current_version < 3:
+        migracion_3(conn)
+        guardar_version(conn, 3)
 
     cursor = conn.cursor()
     table_exists = cursor.execute(
@@ -248,6 +284,7 @@ class Database:
                 )
                 """
             )
+            migracion_3(conn)
             # Legacy databases might have been created without this column.
             self._ensure_column(conn, "pedidos", "fecha", "TEXT")
             conn.execute(

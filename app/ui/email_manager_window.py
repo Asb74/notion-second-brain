@@ -44,6 +44,7 @@ from app.persistence.email_repository import EmailRepository
 from app.persistence.calendar_repository import CalendarRepository
 from app.persistence.training_repository import TrainingRepository
 from app.persistence.pedidos_repository import PedidosRepository
+from app.persistence.order_training_repository import OrderTrainingRepository
 from app.ml.continuous_learning_service import ContinuousLearningService
 from app.ml.global_learning_store import GlobalLearningStore
 from app.ml.ml_training_manager import MLTrainingManager
@@ -589,6 +590,7 @@ class EmailManagerWindow(tk.Toplevel):
         self.calendar_repo = CalendarRepository(db_connection)
         self.training_repo = TrainingRepository(db_connection)
         self.pedidos_repo = PedidosRepository(db_connection)
+        self.order_training_repo = OrderTrainingRepository(db_connection)
         self.user_profile_repo = UserProfileRepository(db_connection)
         self.config_manager = ConfigManager()
         self.category_manager = CategoryManager(self.email_repo)
@@ -1137,6 +1139,11 @@ class EmailManagerWindow(tk.Toplevel):
         emails_menu.add_command(label="Reclasificar", command=self._reclassify_current_emails)
         emails_menu.add_command(label="Marcar ignoradas", command=self._mark_selected_as_ignored)
         emails_menu.add_command(label="Refrescar", command=self.refresh_emails)
+        emails_menu.add_separator()
+        emails_menu.add_command(
+            label="Revisión extracción pedidos",
+            command=self._open_order_training_manager,
+        )
         menubar.add_cascade(label="Emails", menu=emails_menu)
 
         acciones_menu = tk.Menu(menubar, tearoff=0)
@@ -1152,6 +1159,11 @@ class EmailManagerWindow(tk.Toplevel):
         menubar.add_cascade(label="Configuración", menu=configuracion_menu)
 
         self.config(menu=menubar)
+
+    def _open_order_training_manager(self) -> None:
+        from app.ui.order_training_manager_window import OrderTrainingManagerWindow
+
+        OrderTrainingManagerWindow(self, self.db_connection)
 
     def _build_quick_toolbar(self, parent: ttk.Frame) -> None:
         toolbar = ttk.Frame(parent)
@@ -2366,10 +2378,19 @@ class EmailManagerWindow(tk.Toplevel):
         self.log(f"ORDER_DEBUG: Resultado extraer_pedido_desde_pdf={extracted_specific}")
         if extracted_specific:
             self.log(f"ORDER_DEBUG: Extractor específico devolvió {len(extracted_specific)} líneas")
+            numero_pedido = self._extract_numero_pedido_from_specific_order(extracted_specific)
+            source_file = self._resolve_primary_attachment_filename(prepared_attachments)
+            self._save_order_training_example(
+                gmail_id=gmail_id,
+                numero_pedido=numero_pedido,
+                source_file=source_file,
+                pdf_text=extracted_text,
+                extracted_json=extracted_specific,
+            )
             payload = {
                 "Pedidos": [
                     {
-                        "NumeroPedido": extracted_specific[0].get("NumeroPedido", ""),
+                        "NumeroPedido": numero_pedido,
                         "Lineas": extracted_specific,
                     }
                 ]
@@ -2394,6 +2415,37 @@ class EmailManagerWindow(tk.Toplevel):
         payload = self._parse_order_json(summary)
         self.log(f"ORDER_DEBUG: Payload pedido devuelto={payload}")
         return payload
+
+    def _save_order_training_example(
+        self,
+        *,
+        gmail_id: str,
+        numero_pedido: str,
+        source_file: str,
+        pdf_text: str,
+        extracted_json: dict[str, Any] | list[Any],
+    ) -> None:
+        try:
+            example_id = self.order_training_repo.create_example(
+                gmail_id=gmail_id,
+                numero_pedido=numero_pedido,
+                source_file=source_file,
+                pdf_text=pdf_text,
+                extracted_json=extracted_json,
+            )
+            self.log(f"ORDER_TRAINING: ejemplo creado id={example_id}")
+        except sqlite3.IntegrityError:
+            self.log("ORDER_TRAINING: ejemplo ya existente, omitido")
+        except Exception as exc:  # noqa: BLE001
+            # Training examples are auxiliary data: order processing must continue.
+            self.log(f"ORDER_TRAINING: no se pudo guardar ejemplo: {exc}", level="WARNING")
+
+    @staticmethod
+    def _extract_numero_pedido_from_specific_order(extracted_specific: list[dict[str, Any]]) -> str:
+        if not extracted_specific:
+            return ""
+        first_line = extracted_specific[0] if isinstance(extracted_specific[0], dict) else {}
+        return str(first_line.get("NumeroPedido") or first_line.get("PedidoID") or "").strip()
 
     def _asociar_email_con_pedido(self, gmail_id: str, numero_pedido: str) -> None:
         try:
