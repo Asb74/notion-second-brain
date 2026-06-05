@@ -2,7 +2,8 @@
 
 El parser evita catálogos cerrados: no valida clientes, productos, marcas,
 confecciones ni tipos de palet contra listas fijas. Extrae por etiquetas,
-posición en el bloque y patrones generales de formato.
+posición en el bloque y patrones generales de formato y devuelve las líneas en
+el formato interno usado por Notion Second Brain.
 """
 
 from __future__ import annotations
@@ -11,326 +12,543 @@ import logging
 import re
 from typing import Any
 
+from app.utils.normalizacion_pedido import normalizar_campos_linea
+
 logger = logging.getLogger(__name__)
 
-_LINE_STOP_RE = re.compile(r"(?i)^(?:total\b|observa\w*\b)$")
-_LABEL_RE = re.compile(
-    r"(?i)^(?:calibre|cal\.?|cat\.?|ct\.?|categor[ií]a|marca|lote|po|observa\w*|total\s+(?:cajas|ud\.?\s*venta))\s*:"
+ORDER_ID_RE = r"\d{2}/\d{5,6}/\d{1,3}|[A-Z0-9][\w.-]*/[\w./-]+"
+HEADER_STOP = (
+    r"CLIENTE|Cliente|Pos\.?\s*Cliente|N[º°o]\s*Pedido|Num\.?\s*Pedido|F\.?\s*Carga|"
+    r"P\.?\s*Carga|Punto\s+de\s+Carga|Plataforma|F\.?\s*Llegada|De:|Comercial|Página|Pagina|Lin\."
 )
-_PACKAGING_RE = re.compile(
-    r"(?ix)"
-    r"("
-    r"\b\d+(?:[,.]\d+)?\s*(?:kg|kgs|g|gr|ud|uds|u|pz|pzs)\b"
-    r"|\b\d+\s*[x×]\s*\d+(?:\s*[x×]\s*\d+)?\b"
-    r"|\b(?:caja|cajas|palet|pallet|palets|pallets|envase|bandeja|bolsa|saco|malla|granel|encajad\w*|girsac|flowpack|pack|paquete)\b"
+LABEL_LINE_RE = re.compile(
+    r"(?i)^\s*(?:calibre|cal\.?|cat\.?|ct\.?|categor[ií]a|marca|lote|po|observa\w*|"
+    r"caja|etiq\.?\s*caja|pz/uv|total\s+(?:cajas|ud\.?\s*venta))\s*:"
+)
+TOTAL_RE = re.compile(r"(?i)Total\s+(?:Cajas|Ud\.?\s*Venta)\s*:\s*(\d+(?:[,.]\d+)?)")
+PALLET_STRUCT_RE = re.compile(
+    r"(?i)^\s*(\d+(?:[,.]\d+)?)\s*(?:P\.?\s*x\s*(\d+))\s*(?:(\d+(?:[,.]\d+)?))?\s*$"
+)
+PALLET_TEXT_RE = re.compile(r"(?i)^\s*(\d+(?:[,.]\d+)?)\s+(.+?)(?:\s*[x×]\s*(\d+))\s*$")
+CALIBRE_RE = re.compile(
+    r"(?ix)(?:"
+    r"Del\s+\d+(?:[/-]\d+)?(?:[A-Za-z]*)\s+al\s+\d+(?:[/-]\d+)?(?:[A-Za-z]*)"
+    r"|\d+\s*/\s*\d+(?:\s*\([^)]+\))?"
+    r"|\d+\s*-\s*\d+\s*Pz?s?\.?(?:\s+al\s+\d+\s*-\s*\d+\s*Pz?s?\.?)?"
+    r"|\d+\s*[x×]\s*\([^)]+\)\s*Pz?s?\.?(?:\s+al\s+\d+\s*[x×]\s*\([^)]+\)\s*Pz?s?\.?)?"
     r")"
 )
-_CALIBRE_VALUE_RE = re.compile(
-    r"(?ix)^(?:"
-    r"\d+(?:[/-]\d+[A-Z]*)+(?:\s*(?:pz|pzs|mm|cal)\b)?"
-    r"|\d+\s*-\s*\d+\s*(?:pz|pzs|mm|cal)?\b"
-    r"|del\s+\d+(?:[,.]\d+)?\s+al\s+\d+(?:[,.]\d+)?"
-    r")$"
+CATEGORY_TOKEN_RE = re.compile(r"(?i)^(I{1,2}|EXTRA|ESTANDAR)$")
+CATEGORY_LABEL_RE = re.compile(
+    r"(?i)\b(?:Cat\.?|Ct\.?|Categor[ií]a)\s*[:.-]?\s*(I{1,2}|EXTRA|ESTANDAR)\b"
 )
-_CATEGORY_RE = re.compile(
-    r"(?i)\b(?:cat\.?|categor[ií]a|ct\.?)\s*[:\-]?\s*(extra|i{1,3}|iv|v|[0-9]+)\b"
+PACKAGING_RE = re.compile(
+    r"(?ix)("
+    r"\b\d+\s*[x×]\s*\w+|\b\d+(?:[,.]\d+)?\s*(?:kg|kgs|g|gr|pz|pzs|ud|uds)\b|"
+    r"\b(?:malla|girsac|encajad\w*|granel|alveolos|cart[oó]n?|plastico|pl[aá]stico|ifco|bll|boca|caja|bolsa|saco|pack)\b|"
+    r"\b\d+\s*[x×]\s*\d+(?:\s*[x×]\s*\d+(?:[,.]\d+)?)?\b"
+    r")"
 )
+OBS_RE = re.compile(
+    r"(?i)\b(?:GLOBALG\.A\.P\.|Idioma|IAN\b|Ean\s+UV|Malla|Caja\s+(?:verde|roja|azul|negra|blanca)|BRIX|ZUMO|"
+    r"Precio\s+Mercado|EUR\s+x|L\s*I\s*N\s*E\s*A\s*--\s*C\s*A\s*N\s*C\s*E\s*L\s*A\s*D\s*A)\b"
+)
+
+CONTRACT_TO_INTERNAL = {
+    "PedidoID": "NumeroPedido",
+    "Palets": "Cantidad",
+    "NombrePalet": "TipoPalet",
+    "TCajas": "CajasTotales",
+    "FCarga": "FechaSalida",
+    "PCarga": "PuntoCarga",
+}
 
 
 def _limpiar_texto(texto: str) -> str:
-    limpio = str(texto or "")
-    limpio = limpio.replace("\r\n", "\n").replace("\r", "\n")
+    limpio = str(texto or "").replace("\r\n", "\n").replace("\r", "\n")
     limpio = re.sub(r"[ \t]+", " ", limpio)
     limpio = re.sub(r"\n{3,}", "\n\n", limpio)
     return limpio.strip()
 
 
-def _match_group(pattern: str, texto: str, flags: int = re.IGNORECASE) -> str:
-    match = re.search(pattern, texto, flags)
-    if not match:
-        return ""
-    return str(match.group(1) or "").strip()
+def _clean(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip(" -:\t\n")
 
 
-def _normalizar_numero(value: str) -> str:
-    return str(value or "").strip().replace(",", ".")
+def _match(pattern: str, texto: str, flags: int = re.IGNORECASE) -> str:
+    found = re.search(pattern, texto, flags)
+    return _clean(found.group(1)) if found else ""
 
 
-def _append_unique(values: list[str], value: str) -> None:
-    value = str(value or "").strip()
-    if value and value not in values:
-        values.append(value)
+def _num(value: str) -> str:
+    value = _clean(value).replace(",", ".")
+    if re.fullmatch(r"\d+\.0+", value):
+        return value.split(".", 1)[0]
+    return value
+
+
+def _as_int_text(value: str) -> str:
+    number = _num(value)
+    try:
+        return str(int(float(number)))
+    except ValueError:
+        return number
+
+
+def _split_plataforma_pais(value: str) -> tuple[str, str]:
+    value = _clean(value)
+    if not value:
+        return "", ""
+    match = re.match(r"(.+?)\s*\(([^()]+)\)\s*$", value)
+    if match:
+        return _clean(match.group(1)), _clean(match.group(2)).upper()
+    return value, ""
+
+
+def _estado_documento(texto: str) -> str:
+    if re.search(r"(?i)\b(?:Rectificaci[oó]n|RECTIFICADO|MODIFICADO)\b", texto):
+        return "RECTIFICADO"
+    if re.search(r"(?i)\b(?:pedido\s+)?cancelad[oa]\b", texto) and not re.search(
+        r"(?i)L\s*I\s*N\s*E\s*A\s*--\s*C\s*A\s*N\s*C\s*E\s*L\s*A\s*D\s*A", texto
+    ):
+        return "CANCELADO"
+    return "Nuevo"
 
 
 def extraer_cabecera(texto: str) -> dict[str, str]:
+    numero = _match(
+        rf"(?:N[º°o]\s*Pedido|Num\.?\s*Pedido)\s*:?\s*({ORDER_ID_RE})", texto
+    )
+    cliente = _match(
+        rf"CLIENTE\s*:\s*(.+?)(?=\n|\s+(?:{HEADER_STOP})\b|$)",
+        texto,
+        re.IGNORECASE,
+    )
+    if not cliente:
+        cliente = _cliente_por_posicion(texto)
+
+    fcarga = _match(
+        rf"F\.?\s*Carga\s*:?\s*(.+?)(?=\n|\s+(?:{HEADER_STOP})\b|$)",
+        texto,
+        re.IGNORECASE,
+    )
+    plataforma_raw = _match(
+        rf"Plataforma\s*:\s*(.+?)(?=\n|\s+(?:{HEADER_STOP})\b|$)",
+        texto,
+        re.IGNORECASE,
+    )
+    plataforma, pais = _split_plataforma_pais(plataforma_raw)
+    pcarga = _match(
+        rf"(?:P\.?\s*Carga|Punto\s+de\s+Carga)\s*:\s*(.+?)(?=\n|\s+(?:{HEADER_STOP})\b|$)",
+        texto,
+        re.IGNORECASE,
+    )
+    comercial = _match(
+        r"(?:De:|Comercial\s*:)\s*(.+?)(?=\s+(?:A[Ee]-?mail|E-?mail|Email|Mail|CLIENTE|N[º°o]\s*Pedido)\b|$)",
+        texto,
+        re.IGNORECASE,
+    )
     cabecera = {
-        "NumeroPedido": _match_group(r"N[ºo]\s*Pedido[:\s]*([\w/.-]+)", texto),
-        "Cliente": _match_group(
-            r"CLIENTE[:\s]*(.+?)(?=\s+(?:Pos\.?\s+Cliente|F\.\s*Carga|Plataforma|N[ºo]\s*Pedido|P\.?\s*Carga|De:)|$)",
-            texto,
-            flags=re.IGNORECASE | re.DOTALL,
-        ),
-        "Comercial": _match_group(
-            r"De:\s*(.+?)\s+(?:A[Ee]-?mail|E-?mail|Email|Mail)\b", texto
-        ),
-        "FechaSalida": _match_group(
-            r"F\.\s*Carga[:\s]*(?:[A-Za-záéíóúñÁÉÍÓÚÑ]+\s+)?(\d{1,2}/\d{1,2}/\d{2,4})",
-            texto,
-        ),
-        "PuntoCarga": _match_group(
-            r"P\.?\s*Carga[:\s]*(.+?)(?=\s+(?:Plataforma|N[ºo]\s*Pedido|CLIENTE|De:)|$)",
-            texto,
-            flags=re.IGNORECASE | re.DOTALL,
-        ),
-        "Plataforma": _match_group(
-            r"Plataforma[:\s]*(.+?)(?=\s+(?:N[ºo]\s*Pedido|P\.?\s*Carga|CLIENTE|De:)|$)",
-            texto,
-            flags=re.IGNORECASE | re.DOTALL,
-        ),
+        "PedidoID": numero,
+        "Cliente": cliente,
+        "Comercial": comercial,
+        "FCarga": fcarga,
+        "Plataforma": plataforma,
+        "Pais": pais,
+        "PCarga": pcarga,
+        "Estado": _estado_documento(texto),
     }
-    return {
-        key: re.sub(r"\s+", " ", str(value or "")).strip()
-        for key, value in cabecera.items()
-    }
+    logger.info("CABECERA EXTRAIDA %s", cabecera)
+    return cabecera
 
 
-def _extraer_bloque_lineas(texto: str) -> str:
-    inicio_match = re.search(r"(?im)^\s*L[ií]n\.?\b.*$", texto)
-    if not inicio_match:
-        inicio_match = re.search(r"\bL[ií]n\.?\b", texto, re.IGNORECASE)
-    if not inicio_match:
-        return ""
-    return str(texto[inicio_match.end() :] or "").strip()
+def _cliente_por_posicion(texto: str) -> str:
+    candidatas = []
+    for fila in texto.splitlines()[:12]:
+        actual = _clean(fila)
+        if not actual or re.search(
+            rf"(?i)({HEADER_STOP}|Anecoop|ORDEN\s+DE\s+PEDIDO)", actual
+        ):
+            continue
+        if re.search(r"(?i)^(?:C/|Calle|Avda?\.?|Pol\.?|CP\b|Tel\b)", actual):
+            break
+        if "C/ Monforte" in actual:
+            break
+        candidatas.append(actual)
+    return _clean(" ".join(candidatas[:2]))
 
 
-def _es_inicio_linea_pedido(linea: str) -> bool:
-    actual = str(linea or "").strip()
-    if not actual or _LABEL_RE.match(actual):
+def _lineas_utiles(texto: str) -> list[str]:
+    return [_clean(linea) for linea in texto.splitlines() if _clean(linea)]
+
+
+def _extraer_bloque_lineas(texto: str) -> list[str]:
+    lineas = _lineas_utiles(texto)
+    for index, fila in enumerate(lineas):
+        if re.match(r"(?i)^L[ií]n\.?(?:\b|$)", fila):
+            return lineas[index + 1 :]
+    for index, fila in enumerate(lineas):
+        if _es_inicio_linea_real(lineas, index):
+            return lineas[index:]
+    return []
+
+
+def _es_calibre(texto: str) -> bool:
+    texto = _clean(texto)
+    if not texto:
         return False
-    if re.match(r"^\d{1,4}\s*$", actual):
-        return True
+    resto = CALIBRE_RE.search(texto)
+    return bool(resto and resto.start() == 0)
+
+
+def _tiene_senales_linea(filas: list[str]) -> bool:
+    ventana = "\n".join(filas[:12])
     return bool(
-        re.match(r"^\d{1,4}\s+\S.{1,}$", actual) and not _CALIBRE_VALUE_RE.match(actual)
+        TOTAL_RE.search(ventana)
+        or PALLET_STRUCT_RE.search(ventana)
+        or any(PALLET_TEXT_RE.match(fila) for fila in filas[:4])
+        or re.search(r"(?i)(Caja\s*:|Etiq\.?\s*Caja\s*:|Pz/UV\s*:|Marca\s*:)", ventana)
+        or any(PACKAGING_RE.search(fila) for fila in filas[:8])
     )
 
 
-def _segmentar_lineas(bloque: str) -> list[str]:
-    lineas = [linea.strip() for linea in bloque.splitlines() if linea.strip()]
+def _es_inicio_linea_real(lineas: list[str], index: int) -> bool:
+    fila = lineas[index]
+    if LABEL_LINE_RE.match(fila) or _es_calibre(fila):
+        return False
+    if re.fullmatch(r"\d{1,3}", fila):
+        return _tiene_senales_linea(lineas[index + 1 :])
+    prefijo = re.match(r"^\s*(\d{1,3})\s+(.+)$", fila)
+    if prefijo and not _es_calibre(prefijo.group(2)):
+        return _tiene_senales_linea([prefijo.group(2), *lineas[index + 1 :]])
+    return False
+
+
+def _segmentar_lineas(texto: str) -> list[str]:
+    lineas = _extraer_bloque_lineas(texto)
     segmentos: list[list[str]] = []
     actual: list[str] = []
-
-    for linea in lineas:
-        if _LINE_STOP_RE.match(linea):
+    for index, fila in enumerate(lineas):
+        if re.match(r"(?i)^Observaciones\s*$", fila) and not actual:
             break
-        if _es_inicio_linea_pedido(linea) and actual:
-            segmentos.append(actual)
-            actual = [linea]
-            continue
-        actual.append(linea)
-
+        if _es_inicio_linea_real(lineas, index):
+            if actual and not (
+                len(actual) == 1 and re.fullmatch(r"\d{1,3}", actual[0])
+            ):
+                segmentos.append(actual)
+                actual = [fila]
+                continue
+            if not actual:
+                actual = [fila]
+                continue
+        if actual:
+            actual.append(fila)
     if actual:
         segmentos.append(actual)
-    return ["\n".join(segmento).strip() for segmento in segmentos if segmento]
+    bloques = [
+        "\n".join(segmento).strip()
+        for segmento in segmentos
+        if _tiene_senales_linea(segmento)
+    ]
+    logger.info("BLOQUES LINEA DETECTADOS %s", len(bloques))
+    return bloques
 
 
-def _extraer_linea_y_consumir(filas: list[str]) -> tuple[str, list[str]]:
-    if not filas:
-        return "", []
-    primera = filas[0].strip()
-    match_sola = re.match(r"^(\d{1,4})\s*$", primera)
-    if match_sola:
-        return match_sola.group(1), filas[1:]
-    match_prefijo = re.match(r"^(\d{1,4})\s+(.+)$", primera)
-    if match_prefijo:
-        return match_prefijo.group(1), [primera, *filas[1:]]
-    return "", filas
+def _extraer_palets(filas: list[str]) -> tuple[str, str, str, str, int | None]:
+    for index, fila in enumerate(filas):
+        match_struct = PALLET_STRUCT_RE.match(fila)
+        if match_struct:
+            return (
+                _as_int_text(match_struct.group(1)),
+                "",
+                _as_int_text(match_struct.group(2)),
+                _as_int_text(match_struct.group(3) or ""),
+                index,
+            )
+        match_text = PALLET_TEXT_RE.match(fila)
+        if match_text and re.search(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]", match_text.group(2)):
+            return (
+                _as_int_text(match_text.group(1)),
+                _clean(match_text.group(2)),
+                _as_int_text(match_text.group(3)),
+                "",
+                index,
+            )
+        match_generic = re.match(r"^\s*(\d+(?:[,.]\d+)?)\s+(.+)$", fila)
+        if match_generic and re.search(
+            r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]", match_generic.group(2)
+        ):
+            return (
+                _as_int_text(match_generic.group(1)),
+                _clean(match_generic.group(2)),
+                "",
+                "",
+                index,
+            )
+    return "", "", "", "", None
 
 
-def _extraer_cantidad_palet(filas: list[str]) -> tuple[str, str]:
-    for fila in filas:
-        if _LABEL_RE.match(fila):
-            continue
-        match = re.match(r"^(\d+(?:[,.]\d+)?)\s+(.+)$", fila.strip())
-        if not match:
-            continue
-        formato = match.group(2).strip()
-        if re.search(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]", formato):
-            return _normalizar_numero(match.group(1)), formato
-    return "", ""
-
-
-def _extraer_cajas(chunk: str) -> str:
-    etiquetada = _match_group(
-        r"Total\s+(?:Cajas|Ud\.?\s*Venta)\s*:\s*(\d+(?:[,.]\d+)?)", chunk
-    )
+def _extraer_total_cajas(chunk: str, total_struct: str) -> str:
+    etiquetada = TOTAL_RE.search(chunk)
     if etiquetada:
-        return _normalizar_numero(etiquetada)
-    return _normalizar_numero(
-        _match_group(r"(?im)^\s*Cajas\s*:?\s*(\d+(?:[,.]\d+)?)\s*$", chunk, flags=0)
-    )
+        return _as_int_text(etiquetada.group(1))
+    return _as_int_text(total_struct)
 
 
-def _extraer_calibre(chunk: str) -> str:
-    etiquetado = _match_group(
-        r"(?im)^\s*(?:Calibre|Cal\.?)\s*:\s*([^\n]+)", chunk, flags=0
-    )
-    if etiquetado:
-        return etiquetado
-    for fila in chunk.splitlines():
-        actual = fila.strip()
-        if _CALIBRE_VALUE_RE.match(actual):
-            return actual
-    return ""
-
-
-def _extraer_categoria(chunk: str) -> str:
-    match = _CATEGORY_RE.search(chunk)
-    if not match:
+def _calcular_cp(palets: str, tcajas: str, cp: str) -> str:
+    if cp:
+        return _as_int_text(cp)
+    if not palets or not tcajas:
         return ""
-    valor = match.group(1).upper()
-    return f"CAT.{valor}" if valor in {"I", "II", "III", "IV", "V", "EXTRA"} else valor
+    try:
+        palets_int = int(float(palets))
+        tcajas_int = int(float(tcajas))
+    except ValueError:
+        return ""
+    if palets_int <= 0 or tcajas_int % palets_int:
+        return ""
+    return str(tcajas_int // palets_int)
 
 
-def _extraer_etiqueta(chunk: str, etiqueta: str) -> str:
-    return _match_group(rf"(?im)^\s*{etiqueta}\s*:\s*([^\n]+)", chunk, flags=0)
+def _extraer_nombre_palet(nombre: str, filas: list[str], index: int | None) -> str:
+    nombre = re.sub(r"(?i)\s*[x×]\s*\d+\s*$", "", _clean(nombre)).strip()
+    if index is not None and index + 1 < len(filas):
+        siguiente = filas[index + 1]
+        if (
+            siguiente
+            and not LABEL_LINE_RE.match(siguiente)
+            and not PACKAGING_RE.search(siguiente)
+            and not _es_calibre(siguiente)
+            and len(siguiente.split()) <= 4
+        ):
+            nombre = _clean(f"{nombre} {siguiente}")
+    return nombre
 
 
-def _es_linea_auxiliar(fila: str) -> bool:
-    actual = fila.strip()
+def _label(chunk: str, etiqueta: str) -> str:
+    return _match(rf"(?im)^\s*{etiqueta}\s*:\s*([^\n]+)", chunk, 0)
+
+
+def _extraer_nombre_caja(chunk: str) -> str:
+    return _label(chunk, r"(?:Etiq\.?\s*)?Caja")
+
+
+def _extraer_marca(chunk: str, nombre_caja: str) -> str:
+    return _label(chunk, "Marca") or _label(chunk, r"Pz/UV") or nombre_caja
+
+
+def _extraer_lote(chunk: str) -> str:
+    return _label(chunk, "Lote") or _match(r"\b(L-[A-Z0-9-]+)\b", chunk, re.IGNORECASE)
+
+
+def _extraer_po(chunk: str) -> str:
+    return _label(chunk, "PO")
+
+
+def _separar_categoria(texto: str) -> tuple[str, str]:
+    actual = _clean(texto)
+    if not actual:
+        return "", ""
+    labeled = CATEGORY_LABEL_RE.search(actual)
+    if labeled:
+        return _clean(CATEGORY_LABEL_RE.sub("", actual)), labeled.group(1).upper()
+    match = re.search(r"(?i)\s+(I{1,2}|EXTRA|ESTANDAR)\s*$", actual)
+    if match:
+        return _clean(actual[: match.start()]), match.group(1).upper()
+    # Categoría pegada a la confección: ... CARTONI / CARTONII
+    match = re.search(
+        r"(?i)(.+(?:CARTON|CART|PLASTICO|PLÁSTICO|IFCO|BLL|BOCA|MALLA|GIRSAC))(I{1,2})$",
+        actual,
+    )
+    if match:
+        return _clean(match.group(1)), match.group(2).upper()
+    if CATEGORY_TOKEN_RE.fullmatch(actual):
+        return "", actual.upper()
+    return actual, ""
+
+
+def _extraer_calibre_categoria(chunk: str) -> tuple[str, str]:
+    categoria = ""
+    labeled = CATEGORY_LABEL_RE.search(chunk)
+    if labeled:
+        categoria = labeled.group(1).upper()
+    for fila in chunk.splitlines():
+        actual = _clean(fila)
+        if re.match(r"(?i)^Cal(?:ibre|\.?)\s*:", actual):
+            valor = re.sub(r"(?i)^Cal(?:ibre|\.?)\s*:\s*", "", actual)
+            valor, cat = _separar_categoria(valor)
+            return valor, categoria or cat
+        match = CALIBRE_RE.search(actual)
+        if match and match.start() == 0:
+            resto = _clean(actual[match.end() :])
+            _, cat = _separar_categoria(resto)
+            return _clean(match.group(0)), categoria or cat
+    return "", categoria
+
+
+def _es_fila_no_producto(fila: str) -> bool:
     return bool(
-        not actual
-        or _LABEL_RE.match(actual)
-        or re.match(r"(?i)^(?:cat\.?|ct\.?|categor[ií]a)\s*[:\-]?\s*\S+", actual)
-        or re.match(r"(?i)^\(\*\)\s*$", actual)
-        or re.match(r"(?i)^\d+(?:[,.]\d+)?\s+.+$", actual)
-        or _CALIBRE_VALUE_RE.match(actual)
+        LABEL_LINE_RE.match(fila)
+        or TOTAL_RE.search(fila)
+        or PALLET_STRUCT_RE.match(fila)
+        or PALLET_TEXT_RE.match(fila)
+        or _es_calibre(fila)
+        or CATEGORY_LABEL_RE.search(fila)
+        or OBS_RE.search(fila)
+        or re.match(r"(?i)^(?:Simple|Doble|Triple|Observaciones?)$", fila)
     )
 
 
-def _extraer_mercancia_confeccion(filas: list[str], chunk: str) -> tuple[str, str]:
-    mercancia: list[str] = []
-    confeccion: list[str] = []
-    tras_marcador = False
-
-    for fila in filas:
-        actual = re.sub(r"^\(\*\)\s*", "", fila.strip())
-        if actual != fila.strip():
-            tras_marcador = True
-        if _es_linea_auxiliar(actual):
+def _extraer_mercancia_confeccion(
+    filas: list[str], pallet_index: int | None
+) -> tuple[str, str, str]:
+    candidatas: list[str] = []
+    for index, fila in enumerate(filas):
+        actual = re.sub(r"^\(\*\)\s*", "", fila).strip()
+        if index == pallet_index or (
+            pallet_index is not None
+            and index == pallet_index + 1
+            and re.match(r"(?i)^(Simple|Doble|Triple)$", fila)
+        ):
             continue
-        if _PACKAGING_RE.search(actual) or (not tras_marcador and not mercancia):
-            _append_unique(confeccion, actual)
+        if _es_fila_no_producto(actual):
             continue
-        _append_unique(mercancia, actual)
+        candidatas.append(actual)
 
-    if not mercancia:
-        marcador = re.search(
-            r"\(\*\)\s*(.+?)(?=\n\s*(?:Calibre|Cal\.?|Cat\.?|Ct\.?|Categor[ií]a|Marca|Lote|PO|Observa\w*|Total\s+)|$)",
-            chunk,
-            re.IGNORECASE | re.DOTALL,
-        )
-        if marcador:
-            mercancia = [re.sub(r"\s+", " ", marcador.group(1)).strip()]
+    confeccion = ""
+    categoria = ""
+    mercancia_partes: list[str] = []
+    for candidata in candidatas:
+        texto_sin_cat, cat = _separar_categoria(candidata)
+        if cat and not categoria:
+            categoria = cat
+        if PACKAGING_RE.search(texto_sin_cat) and not confeccion:
+            confeccion = texto_sin_cat
+            continue
+        if not confeccion and PACKAGING_RE.search(candidata):
+            confeccion = candidata
+            continue
+        if not PACKAGING_RE.search(candidata):
+            mercancia_partes.append(candidata)
+    return _clean(" ".join(mercancia_partes)), _clean(confeccion), categoria
 
-    return " ".join(mercancia).strip(), " ".join(confeccion).strip()
+
+def _extraer_observaciones(chunk: str) -> str:
+    observaciones: list[str] = []
+    for fila in chunk.splitlines():
+        actual = _clean(fila)
+        if re.match(r"(?i)^Observa\w*\s*:", actual):
+            observaciones.append(re.sub(r"(?i)^Observa\w*\s*:\s*", "", actual))
+        elif OBS_RE.search(actual):
+            observaciones.append(actual)
+    return " // ".join(dict.fromkeys(filter(None, observaciones)))
+
+
+def _estado_linea(estado_pedido: str, chunk: str, linea: str) -> str:
+    if re.search(
+        r"(?i)L\s*I\s*N\s*E\s*A\s*--\s*C\s*A\s*N\s*C\s*E\s*L\s*A\s*D\s*A", chunk
+    ):
+        return f"CANCELADA LINEA {linea}" if linea else "CANCELADA LINEA"
+    return estado_pedido
 
 
 def _linea_minimamente_identificable(linea: dict[str, str]) -> bool:
-    if linea.get("Linea") and any(
-        linea.get(campo)
-        for campo in ("Cantidad", "CajasTotales", "Mercancia", "TipoPalet")
-    ):
-        return True
     return bool(
-        linea.get("Cantidad")
-        and (
-            linea.get("CajasTotales")
-            or linea.get("Mercancia")
-            or linea.get("TipoPalet")
-        )
+        linea.get("Linea")
+        or linea.get("Palets")
+        or linea.get("TCajas")
+        or linea.get("Mercancia")
     )
 
 
-def extraer_lineas(texto: str) -> list[dict[str, str]]:
-    bloque = _extraer_bloque_lineas(texto)
-    if not bloque:
-        return []
+def _normalizar_linea_contrato(linea: dict[str, str]) -> dict[str, Any]:
+    premap = {CONTRACT_TO_INTERNAL.get(key, key): value for key, value in linea.items()}
+    return normalizar_campos_linea(premap)
 
-    lineas: list[dict[str, str]] = []
-    for chunk in _segmentar_lineas(bloque):
-        filas_originales = [fila.strip() for fila in chunk.splitlines() if fila.strip()]
-        linea_num, filas = _extraer_linea_y_consumir(filas_originales)
-        cantidad, tipo_palet = _extraer_cantidad_palet(filas)
-        cajas = _extraer_cajas(chunk)
-        mercancia, confeccion = _extraer_mercancia_confeccion(filas, chunk)
-        calibre = _extraer_calibre(chunk)
-        categoria = _extraer_categoria(chunk)
-        marca = _extraer_etiqueta(chunk, "Marca")
-        lote = _extraer_etiqueta(chunk, "Lote")
-        po = _extraer_etiqueta(chunk, "PO")
-        observaciones = _extraer_etiqueta(chunk, r"Observa\w*")
 
-        cp = ""
-        if cantidad and cajas:
-            try:
-                cp = str(int(float(cajas)) // int(float(cantidad)))
-            except Exception:  # noqa: BLE001
-                logger.warning("No se pudo calcular CP para línea %s", linea_num or "?")
-
+def extraer_lineas(texto: str, estado_pedido: str = "Nuevo") -> list[dict[str, Any]]:
+    lineas: list[dict[str, Any]] = []
+    for chunk in _segmentar_lineas(texto):
+        filas = _lineas_utiles(chunk)
+        if not filas:
+            continue
+        linea_num = ""
+        filas_datos = filas
+        if re.fullmatch(r"\d{1,3}", filas[0]):
+            linea_num = filas[0]
+            filas_datos = filas[1:]
+        else:
+            prefijo = re.match(r"^\s*(\d{1,3})\s+(.+)$", filas[0])
+            if prefijo and not _es_calibre(prefijo.group(2)):
+                linea_num = prefijo.group(1)
+                filas_datos = [filas[0], *filas[1:]]
+        palets, palet_raw, cp_raw, tcajas_raw, pallet_index = _extraer_palets(
+            filas_datos
+        )
+        tcajas = _extraer_total_cajas(chunk, tcajas_raw)
+        cp = _calcular_cp(palets, tcajas, cp_raw)
+        nombre_palet = _extraer_nombre_palet(palet_raw, filas_datos, pallet_index)
+        calibre, categoria_calibre = _extraer_calibre_categoria(chunk)
+        mercancia, confeccion, categoria_conf = _extraer_mercancia_confeccion(
+            filas_datos, pallet_index
+        )
+        nombre_caja = _extraer_nombre_caja(chunk)
         linea = {
             "Linea": linea_num,
-            "Cantidad": cantidad,
-            "TipoPalet": tipo_palet,
-            "CajasTotales": cajas,
+            "Palets": palets,
+            "NombrePalet": nombre_palet,
+            "TCajas": tcajas,
             "CP": cp,
-            "Mercancia": _normalizar_numero(mercancia),
-            "Confeccion": _normalizar_numero(confeccion),
-            "Calibre": _normalizar_numero(calibre),
-            "Categoria": categoria,
-            "Marca": marca,
-            "PO": po,
-            "Lote": lote,
-            "Observaciones": observaciones,
+            "NombreCaja": nombre_caja,
+            "Mercancia": mercancia,
+            "Confeccion": confeccion,
+            "Calibre": calibre,
+            "Categoria": categoria_calibre or categoria_conf,
+            "Marca": _extraer_marca(chunk, nombre_caja),
+            "PO": _extraer_po(chunk),
+            "Lote": _extraer_lote(chunk),
+            "Observaciones": _extraer_observaciones(chunk),
+            "Estado": _estado_linea(estado_pedido, chunk, linea_num),
         }
+        if not _linea_minimamente_identificable(linea):
+            continue
         warnings = [
             campo
-            for campo in ("Linea", "Cantidad", "CajasTotales", "Mercancia")
+            for campo in ("Linea", "Palets", "TCajas", "Mercancia")
             if not linea.get(campo)
         ]
+        normalizada = _normalizar_linea_contrato(linea)
         if warnings:
             logger.warning(
                 "Línea de pedido parcial; campos no detectados: %s", ", ".join(warnings)
             )
-            linea["Warnings"] = f"Campos no detectados: {', '.join(warnings)}"
-        if _linea_minimamente_identificable(linea):
-            lineas.append(linea)
+            normalizada["Warnings"] = f"Campos no detectados: {', '.join(warnings)}"
+        logger.info("LINEA NORMALIZADA %s", normalizada)
+        lineas.append(normalizada)
     return lineas
 
 
 def extraer_pedido_desde_pdf(texto: str) -> list[dict[str, Any]]:
-    """Extrae pedido y líneas disponibles sin depender de catálogos cerrados.
-
-    Solo descarta el documento cuando no hay número de pedido ni ninguna línea
-    mínimamente identificable. Si una línea es parcial, la conserva con los
-    campos disponibles y registra un warning.
-    """
+    """Extrae líneas de pedido Anecoop ya normalizadas para persistencia."""
     texto_limpio = _limpiar_texto(texto)
-    cabecera = extraer_cabecera(texto_limpio)
-    lineas = extraer_lineas(texto_limpio)
-
-    numero_pedido = str(cabecera.get("NumeroPedido", "")).strip()
-    if not numero_pedido and not lineas:
-        return []
+    cabecera_contrato = extraer_cabecera(texto_limpio)
+    cabecera = _normalizar_linea_contrato(cabecera_contrato)
+    numero_pedido = _clean(cabecera.get("NumeroPedido", ""))
     if not numero_pedido:
-        logger.warning("Pedido sin NumeroPedido; se conservan líneas identificables")
-    if numero_pedido and not lineas:
+        logger.warning("Pedido Anecoop descartado: no se detectó NumeroPedido/PedidoID")
+        logger.info("RESULTADO FINAL []")
+        return []
+
+    lineas = extraer_lineas(texto_limpio, cabecera.get("Estado", "Nuevo"))
+    if not lineas:
         logger.warning("Pedido %s sin líneas mínimamente identificables", numero_pedido)
+        logger.info("RESULTADO FINAL []")
         return []
 
     resultado: list[dict[str, Any]] = []
     for linea in lineas:
         linea_final = {**cabecera, **linea}
-        for key in ["Cliente", "Comercial", "FechaSalida", "PuntoCarga", "Plataforma"]:
-            linea_final[key] = linea_final.get(key) or cabecera.get(key, "")
+        linea_final["NumeroPedido"] = numero_pedido
         resultado.append(linea_final)
+    logger.info("RESULTADO FINAL %s", resultado)
     return resultado

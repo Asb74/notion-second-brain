@@ -4,30 +4,49 @@ import unicodedata
 
 MAPEO_CAMPOS_PEDIDO = {
     # 📦 Pedido
-    "NumeroPedido": ["pedido", "pedidoid", "numeropedido", "num pedido", "nº pedido"],
+    "NumeroPedido": [
+        "pedido",
+        "pedidoid",
+        "numeropedido",
+        "num pedido",
+        "nº pedido",
+        "n° pedido",
+    ],
     "Cliente": ["cliente", "customer", "client"],
     "Comercial": ["comercial", "comer.", "vendedor"],
-    "FechaSalida": ["fecha", "fecha salida", "fecha_salida", "fcarga", "fecha de carga"],
+    "FechaSalida": [
+        "fecha",
+        "fecha salida",
+        "fecha_salida",
+        "fcarga",
+        "f carga",
+        "fecha de carga",
+    ],
     "Plataforma": ["plataforma", "destino"],
     "Pais": ["pais", "país", "country"],
-    "PuntoCarga": ["pcarga", "punto carga", "punto de carga", "origen"],
+    "PuntoCarga": ["pcarga", "p carga", "punto carga", "punto de carga", "origen"],
     "Estado": ["estado", "status"],
-
     # 📦 Línea
     "Linea": ["linea", "línea"],
     "Cantidad": ["cantidad", "palets", "pallets"],
-    "TipoPalet": ["tipopalet", "tipo palet", "pallet tipo"],
+    "TipoPalet": [
+        "tipopalet",
+        "tipo palet",
+        "pallet tipo",
+        "nombrepalet",
+        "nombre palet",
+    ],
     "CajasTotales": ["cajastotales", "tcajas", "cajas"],
     "CP": ["cp", "cajas por pallet"],
     "NombreCaja": ["nombrecaja", "caja", "tipo caja"],
-    "Mercancia": ["mercancia", "producto", "articulo", "variedad"],
+    "Mercancia": ["mercancia", "mercancía", "producto", "articulo", "variedad"],
     "Confeccion": ["confeccion", "confección", "formato"],
     "Calibre": ["calibre", "cal", "cal."],
     "Categoria": ["categoria", "cat", "cat.", "ct"],
     "Marca": ["marca", "brand"],
     "PO": ["po", "pedido compra"],
     "Lote": ["lote", "batch"],
-    "Observaciones": ["observaciones", "notas", "comentarios"]
+    "Observaciones": ["observaciones", "notas", "comentarios"],
 }
 
 
