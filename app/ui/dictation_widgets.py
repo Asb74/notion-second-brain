@@ -74,7 +74,7 @@ def attach_dictation(widget: tk.Widget, parent_frame: tk.Misc) -> ttk.Frame:
         background=_sanitize_tk_color("#dc2626"),
     )
 
-    mic_button = ttk.Button(controls, text="🎙", width=3)
+    mic_button = ttk.Button(controls, text="🎙", width=3, takefocus=False)
     mic_button.pack(side="left")
     indicator = ttk.Label(controls, text="", foreground=_sanitize_tk_color("#B91C1C"))
     indicator.pack(side="left", padx=(6, 0))
@@ -109,6 +109,10 @@ def attach_dictation(widget: tk.Widget, parent_frame: tk.Misc) -> ttk.Frame:
 
     def _on_mic_click() -> None:
         try:
+            logger.info(
+                "VOICE_DEBUG: widget destino=%s",
+                type(_last_focused_widget).__name__ if _last_focused_widget else "None",
+            )
             voice_service.toggle_recording()
         except VoiceDictationError as exc:
             logger.exception("Error en dictado")
