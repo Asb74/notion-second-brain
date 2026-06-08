@@ -291,13 +291,15 @@ class RefinamientoPanel(ttk.LabelFrame):
             self.dictation_service = VoiceDictationService(
                 self,
                 status_callback=self._set_dictation_status,
+                button_state_callback=self._set_dictation_button_state,
                 error_callback=self._show_dictation_error,
+                transcribed_text_callback=self._handle_dictation_transcribed,
             )
         except Exception as e:  # noqa: BLE001
             print("⚠️ Error inicializando dictado:", e)
             self.dictation_service = None
 
-        self.dictation_button = ttk.Button(self.dictation_controls, text="🎤 Dictar", command=self.toggle_refinement_dictation)
+        self.dictation_button = ttk.Button(self.dictation_controls, text="🎙", width=3, command=self.toggle_refinement_dictation)
         self.dictation_button.pack(side="left")
         if self.dictation_service is None:
             self.dictation_button.configure(state="disabled")
@@ -310,6 +312,19 @@ class RefinamientoPanel(ttk.LabelFrame):
             safe_configure(self.mic_state, text=text)
         except Exception:  # noqa: BLE001
             logger.debug("No se pudo actualizar estado de dictado de refinamiento", exc_info=True)
+
+    def _set_dictation_button_state(self, recording: bool) -> None:
+        try:
+            safe_configure(self.dictation_button, text="⏹" if recording else "🎙")
+        except Exception:  # noqa: BLE001
+            logger.debug("No se pudo actualizar botón de dictado de refinamiento", exc_info=True)
+
+    def _handle_dictation_transcribed(self, _text: str) -> None:
+        if not self.refine_text.winfo_exists():
+            return
+        dictated_text = obtener_texto_dictado(self.refine_text, self._dictation_snapshot)
+        if dictated_text:
+            self.add_refinement_lines(dictated_text)
 
     def _show_dictation_error(self, msg: str) -> None:
         if not msg or not self.winfo_exists():
@@ -452,19 +467,13 @@ class RefinamientoPanel(ttk.LabelFrame):
                     self._dictation_snapshot = self.refine_text.get("1.0", "end").strip()
                     self.refine_text.focus_set()
                 self.dictation_service.toggle_recording()
-                safe_configure(self.dictation_button, text="⏹ Detener dictado")
                 return
             self.dictation_service.toggle_recording()
-            safe_configure(self.dictation_button, text="🎤 Dictar")
         except VoiceDictationError as exc:
             logger.exception("Error en dictado de refinamiento")
             self._show_dictation_error(str(exc))
-            safe_configure(self.dictation_button, text="🎤 Dictar")
+            self._set_dictation_button_state(False)
             return
-
-        dictated_text = obtener_texto_dictado(self.refine_text, self._dictation_snapshot)
-        if dictated_text:
-            self.add_refinement_lines(dictated_text)
 
     def clear_refinements(self) -> None:
         self.refinamientos.clear()
