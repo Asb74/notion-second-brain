@@ -374,7 +374,11 @@ class MainWindow(ttk.Frame):
         if email_window is None:
             return
 
-        found = email_window.select_email_by_gmail_id(gmail_id)
+        open_by_id = getattr(email_window, "open_email_by_id", None)
+        if callable(open_by_id):
+            found = bool(open_by_id(gmail_id, open_reply=True))
+        else:
+            found = bool(email_window.select_email_by_gmail_id(gmail_id))
         if not found:
             return
 
