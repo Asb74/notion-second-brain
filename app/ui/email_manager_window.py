@@ -1038,7 +1038,8 @@ class EmailManagerWindow(tk.Toplevel):
         preview_actions.pack(fill="x")
         ttk.Button(preview_actions, text="Expandir vista", command=self._expand_html_view).pack(side="left")
 
-        response_tab = ttk.Frame(self.detail_notebook)
+        self.reply_tab = ttk.Frame(self.detail_notebook)
+        response_tab = self.reply_tab
         response_editor_container = ttk.Frame(response_tab)
         response_editor_container.pack(fill="both", expand=True)
         self.response_text = tk.Text(response_editor_container, wrap="word")
@@ -1261,6 +1262,38 @@ class EmailManagerWindow(tk.Toplevel):
     def _current_category(self) -> dict[str, object] | None:
         selected = self._current_tab
         return next((item for item in self._categories if item["display_name"] == selected), None)
+
+    def _set_tab_by_label(self, tab_label: str) -> bool:
+        target_label = str(tab_label or "").strip()
+        if not target_label:
+            return False
+        for tab_index, category in enumerate(self._categories):
+            display_name = str(category["display_name"])
+            if display_name != target_label:
+                continue
+            self._current_tab = display_name
+            try:
+                self.notebook.select(tab_index)
+            except tk.TclError:
+                return False
+            return True
+        return False
+
+    def _select_type_tab(self, email_type: str) -> bool:
+        normalized_type = str(email_type or "other").strip() or "other"
+        tab_label = next(
+            (label for label, types in self._tab_to_types.items() if normalized_type in types),
+            "",
+        )
+        if not tab_label:
+            tab_label = next(
+                (str(category["display_name"]) for category in self._categories if str(category["name"]) == "other"),
+                self._current_tab,
+            )
+        self.log(f"EMAIL_NAV_DEBUG: cambiando a pestaña type={normalized_type} tab={tab_label}")
+        if tab_label == self._current_tab:
+            return True
+        return self._set_tab_by_label(tab_label)
 
     def _open_tab_context_menu(self, event: tk.Event) -> None:
         try:
@@ -1640,33 +1673,62 @@ class EmailManagerWindow(tk.Toplevel):
             if iid in selected_ids:
                 self.tree.selection_add(iid)
 
-    def select_email_by_gmail_id(self, gmail_id: str) -> bool:
+    def open_email_by_id(self, gmail_id: str, open_reply: bool = False) -> bool:
         target_id = str(gmail_id or "").strip()
+        self.log(f"EMAIL_NAV_DEBUG: solicitado abrir gmail_id={target_id}")
         if not target_id:
+            self.log("EMAIL_NAV_DEBUG: email no encontrado gmail_id=", level="WARNING")
             messagebox.showwarning("Email no encontrado", "No se encontró el correo original asociado.")
             return False
 
         row = self.email_repo.get_email_content(target_id)
         if row is None:
+            self.log(f"EMAIL_NAV_DEBUG: email no encontrado gmail_id={target_id}", level="WARNING")
             messagebox.showwarning("Email no encontrado", "No se encontró el correo original asociado.")
             return False
 
-        if target_id not in self._rows_by_id:
-            email_type = row["type"] or "other"
-            tab_label = next((label for label, types in self._tab_to_types.items() if email_type in types), self._current_tab)
-            if tab_label != self._current_tab:
-                self._set_tab_by_label(tab_label)
-            self.refresh_emails()
+        email_type = str(row["type"] or "other").strip() or "other"
+        self.log(f"EMAIL_NAV_DEBUG: email encontrado type={email_type} gmail_id={target_id}")
+        if not self._select_type_tab(email_type):
+            self.log(f"EMAIL_NAV_DEBUG: no se pudo cambiar a pestaña type={email_type}", level="WARNING")
 
-        if target_id not in self._rows_by_id:
+        self.refresh_emails()
+
+        if target_id not in self.tree.get_children() and target_id in self._rows_by_id:
+            active_filters = any(state.is_active() for state in self.excel_filter.filters.values())
+            if active_filters:
+                self.log(f"EMAIL_NAV_DEBUG: limpiando filtros para mostrar gmail_id={target_id}")
+                self.excel_filter.clear_all_filters()
+
+        target_item = ""
+        for item in self.tree.get_children():
+            values = self.tree.item(item, "values")
+            if values and str(values[0]).strip() == target_id:
+                target_item = str(item)
+                break
+
+        if not target_item:
+            self.log(f"EMAIL_NAV_DEBUG: email no encontrado en Treeview gmail_id={target_id}", level="WARNING")
             messagebox.showwarning("Email no encontrado", "No se encontró el correo original asociado.")
             return False
 
-        self.tree.selection_set((target_id,))
-        self.tree.focus(target_id)
-        self.tree.see(target_id)
+        self.tree.selection_set((target_item,))
+        self.tree.focus(target_item)
+        self.tree.see(target_item)
         self._refresh_preview()
+        self.log("EMAIL_NAV_DEBUG: email seleccionado en Treeview")
+
+        if open_reply:
+            try:
+                self.detail_notebook.select(self.reply_tab)
+                self.response_text.focus_set()
+                self.log("EMAIL_NAV_DEBUG: abriendo pestaña Respuesta")
+            except tk.TclError:
+                self.log("EMAIL_NAV_DEBUG: no se pudo abrir pestaña Respuesta", level="WARNING")
         return True
+
+    def select_email_by_gmail_id(self, gmail_id: str) -> bool:
+        return self.open_email_by_id(gmail_id, open_reply=False)
 
     def set_reply_body(self, body: str, note_id: int | None = None) -> None:
         self.set_response_draft(body, note_id)

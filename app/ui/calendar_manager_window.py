@@ -189,6 +189,14 @@ class CalendarManagerWindow(ttk.Frame):
             record["asunto"] = str(metadata.get("subject") or note.title or "")
             record["adjuntos"] = getattr(email_window, "get_email_attachments", lambda _gmail_id: [])(gmail_id)
 
+    def _enrich_action_with_email_fields(self, record: dict[str, str | int], note_id: int) -> None:
+        if note_id <= 0:
+            return
+        note = self.note_service.get_note_by_id(note_id)
+        if not note:
+            return
+        self._enrich_with_email_fields(record, note)
+
     def _build_toolbar(self) -> None:
         toolbar = ttk.Frame(self)
         toolbar.pack(fill="x", pady=(0, 8))
@@ -268,11 +276,7 @@ class CalendarManagerWindow(ttk.Frame):
             messagebox.showwarning("Agenda", "Selecciona un elemento para completar.")
             return
 
-        kind = str(self._selected_record.get("kind") or "").upper()
-        if kind == "ACTION":
-            self._complete_current_action()
-            return
-        self._complete_current_note()
+        self.completar_registro()
 
     def _build_filter_bar(self) -> None:
         self.filters_frame = ttk.LabelFrame(self, text="Filtros")
@@ -703,6 +707,7 @@ class CalendarManagerWindow(ttk.Frame):
                 "content": action.description or "",
                 "note_id": action.note_id,
             }
+            self._enrich_action_with_email_fields(record, action.note_id)
             self._append_overview_record(record)
 
         for event in self.calendar_events:
@@ -1094,7 +1099,7 @@ class CalendarManagerWindow(ttk.Frame):
         self.refresh_calendar()
         return "break"
 
-    def _select_email_in_manager(self, item: dict[str, str | int], *, action_name: str) -> Any | None:
+    def _select_email_in_manager(self, item: dict[str, str | int], *, action_name: str, open_reply: bool = False) -> Any | None:
         """Open EmailManagerWindow and select the target email.
 
         Centralizes the integration flow Calendar -> EmailManager -> select gmail_id.
@@ -1108,7 +1113,12 @@ class CalendarManagerWindow(ttk.Frame):
             messagebox.showwarning("Email", "No se encontró el Gmail ID del correo.")
             return None
 
-        if not email_window.select_email_by_gmail_id(gmail_id):
+        open_by_id = getattr(email_window, "open_email_by_id", None)
+        if callable(open_by_id):
+            found = bool(open_by_id(gmail_id, open_reply=open_reply))
+        else:
+            found = bool(email_window.select_email_by_gmail_id(gmail_id))
+        if not found:
             # FIX: comportamiento seguro cuando el correo no está disponible.
             messagebox.showwarning("Email", f"No se encontró el correo para {action_name}.")
             return None
@@ -1285,6 +1295,8 @@ class CalendarManagerWindow(ttk.Frame):
                 self._prompt_email_response(item)
         elif kind == "ACTION":
             self._complete_current_action()
+            if self._is_email_backed_record(item):
+                self._prompt_email_response(item)
         else:
             self.actualizar_ui()
 
@@ -1393,7 +1405,7 @@ class CalendarManagerWindow(ttk.Frame):
         item = self.selected_item
         if not item or not self._is_email_backed_record(item):
             return
-        email_window = self._select_email_in_manager(item, action_name="responder")
+        email_window = self._select_email_in_manager(item, action_name="responder", open_reply=True)
         if email_window is None:
             return
 
@@ -2124,20 +2136,20 @@ class CalendarManagerWindow(ttk.Frame):
             action_date = self._safe_parse_date(action.completed_at or action.created_at)
             if action_date != day_value:
                 continue
-            day_actions.append(
-                {
-                    "origin": "ACTION",
-                    "kind": "ACTION",
-                    "title": action.description or "(Acción sin descripción)",
-                    "id": action.id,
-                    "note_id": action.note_id,
-                    "status": action.status or "pendiente",
-                    "date": (action.completed_at or action.created_at or "").split("T", maxsplit=1)[0],
-                    "time": "",
-                    "content": action.description or "",
-                    "created_at": action.created_at,
-                }
-            )
+            record = {
+                "origin": "ACTION",
+                "kind": "ACTION",
+                "title": action.description or "(Acción sin descripción)",
+                "id": action.id,
+                "note_id": action.note_id,
+                "status": action.status or "pendiente",
+                "date": (action.completed_at or action.created_at or "").split("T", maxsplit=1)[0],
+                "time": "",
+                "content": action.description or "",
+                "created_at": action.created_at,
+            }
+            self._enrich_action_with_email_fields(record, action.note_id)
+            day_actions.append(record)
         return day_actions
 
     def _nearest_slot(self, entry_time: str, slots: list[str]) -> str | None:
