@@ -2196,21 +2196,31 @@ class EmailManagerWindow(tk.Toplevel):
         self.email_repo.bulk_update_status(selected_ids, "ignored")
         self.refresh_emails()
 
-    def _show_tree_context_menu(self, event: tk.Event) -> None:
+    def _show_tree_context_menu(self, event: tk.Event) -> str:
+        region = self.tree.identify_region(event.x, event.y)
+        column = self.tree.identify_column(event.x)
         row_id = self.tree.identify_row(event.y)
-        if row_id:
+
+        if region == "heading":
+            if column:
+                self.excel_filter.open_filter_popup_from_event(event)
+            return "break"
+
+        if region in ("cell", "tree") and row_id:
             selected = self.tree.selection()
             if row_id not in selected:
                 self.tree.selection_set(row_id)
                 self._refresh_preview()
 
-        if self.tree_context_menu is None:
-            return
+            if self.tree_context_menu is not None:
+                try:
+                    self.tree_context_menu.tk_popup(event.x_root, event.y_root)
+                finally:
+                    self.tree_context_menu.grab_release()
 
-        try:
-            self.tree_context_menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            self.tree_context_menu.grab_release()
+            return "break"
+
+        return "break"
 
     def _selected_ids(self) -> list[str]:
         return [str(iid) for iid in self.tree.selection()]

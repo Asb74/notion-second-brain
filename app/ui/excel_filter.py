@@ -467,15 +467,22 @@ class ExcelTreeFilter:
         self.set_sort(col, direction)
         self._close_popup()
 
-    def _on_tree_right_click(self, event: tk.Event) -> None:
-        if self.tree.identify("region", event.x, event.y) != "heading":
-            return
+    def open_filter_popup_from_event(self, event: tk.Event) -> bool:
+        if self.tree.identify_region(event.x, event.y) != "heading":
+            return False
         col_id = self.tree.identify_column(event.x)
         if not col_id or not col_id.startswith("#"):
-            return
+            return False
         idx = int(col_id[1:]) - 1
         if 0 <= idx < len(self.columns):
             self.open_filter_popup(self.columns[idx], event.x_root, event.y_root)
+            return True
+        return False
+
+    def _on_tree_right_click(self, event: tk.Event) -> str | None:
+        if self.open_filter_popup_from_event(event):
+            return "break"
+        return None
 
     def _close_popup(self) -> None:
         if self._popup and self._popup.winfo_exists():
