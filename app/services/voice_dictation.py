@@ -39,6 +39,7 @@ class VoiceDictationService:
     MODEL = "gpt-4o-mini-transcribe"
     DEFAULT_LANGUAGE = "es"
     MAX_AUDIO_FILE_SIZE = 5 * 1024 * 1024
+    CONTINUOUS_TRANSCRIPTION = False
     PHRASE_WINDOW_SECONDS = 3
     _VOICE_COMMAND_DELETE_LAST = "borrar último fragmento"
     _VOICE_COMMAND_PATTERNS: tuple[tuple[str, str], ...] = (
@@ -60,6 +61,7 @@ class VoiceDictationService:
         status_callback: Callable[[str], None] | None = None,
         button_state_callback: Callable[[bool], None] | None = None,
         error_callback: Callable[[str], None] | None = None,
+        transcribed_text_callback: Callable[[str], None] | None = None,
         openai_client: Any | None = None,
     ) -> None:
         self.root = root
@@ -70,10 +72,12 @@ class VoiceDictationService:
         self._status_callback = status_callback
         self._button_state_callback = button_state_callback
         self._error_callback = error_callback
+        self._transcribed_text_callback = transcribed_text_callback
         self._client = openai_client
         self._audio_path: str | None = None
         self._lock = threading.Lock()
         self._recognition_thread: threading.Thread | None = None
+        self._transcription_thread: threading.Thread | None = None
         self._dictation_history: dict[int, list[str]] = {}
         self.active = True
         self._after_ids: set[str] = set()
@@ -167,8 +171,9 @@ class VoiceDictationService:
                 logger.exception("No se pudo iniciar grabación")
                 raise VoiceDictationError("No se pudo acceder al micrófono para iniciar dictado.") from exc
 
-            self._recognition_thread = threading.Thread(target=self._recognition_loop, daemon=True)
-            self._recognition_thread.start()
+            if self.CONTINUOUS_TRANSCRIPTION:
+                self._recognition_thread = threading.Thread(target=self._recognition_loop, daemon=True)
+                self._recognition_thread.start()
 
         logger.info("Dictado iniciado")
         self._set_status("🎙 Grabando...")
@@ -179,11 +184,34 @@ class VoiceDictationService:
         self.stop_recording_and_transcribe()
 
     def stop_recording_and_transcribe(self) -> None:
-        """Detiene la grabación continua."""
+        """Detiene la grabación y transcribe una sola vez el audio completo."""
+        chunks = self._stop_stream_and_collect_chunks(clear_chunks=not self.CONTINUOUS_TRANSCRIPTION)
+        if chunks is None:
+            return
 
+        self._set_button_recording_state(False)
+        logger.info("Dictado detenido")
+
+        if self.CONTINUOUS_TRANSCRIPTION:
+            self._set_status("Listo")
+            return
+
+        if not chunks:
+            self._set_status("Listo")
+            return
+
+        self._set_status("⏳ Transcribiendo...")
+        self._transcription_thread = threading.Thread(
+            target=self._transcribe_complete_recording,
+            args=(chunks,),
+            daemon=True,
+        )
+        self._transcription_thread.start()
+
+    def _stop_stream_and_collect_chunks(self, *, clear_chunks: bool) -> list[Any] | None:
         with self._lock:
             if not self.recording:
-                return
+                return None
 
             try:
                 if self._stream is not None:
@@ -196,9 +224,31 @@ class VoiceDictationService:
                 self._stream = None
                 self.recording = False
 
-        self._set_button_recording_state(False)
-        self._set_status("Listo")
-        logger.info("Dictado detenido")
+            chunks = list(self._audio_chunks)
+            if clear_chunks:
+                self._audio_chunks = []
+            return chunks
+
+    def _transcribe_complete_recording(self, chunks: list[Any]) -> None:
+        try:
+            text = self._transcribe_chunks(chunks)
+            if text:
+                logger.info("Dictado completo transcrito: %s", text)
+                self._schedule_on_ui(lambda value=text: self._apply_complete_transcription(value))
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Error al transcribir dictado completo")
+            message = str(exc) or "No se pudo transcribir el dictado."
+            self._schedule_on_ui(lambda value=message: self._notify_transcription_error(value))
+        finally:
+            self._schedule_on_ui(lambda: self._set_status("Listo"))
+
+    def _notify_transcription_error(self, message: str) -> None:
+        if self._error_callback:
+            self._safe_callback(self._error_callback, message)
+
+    def _apply_complete_transcription(self, text: str) -> None:
+        self._apply_transcribed_fragment(text)
+        self._safe_callback(self._transcribed_text_callback, text)
 
     def _recognition_loop(self) -> None:
         """Transcribe segmentos consecutivos sin bloquear la UI."""
@@ -534,7 +584,7 @@ class VoiceDictationService:
     def destroy(self) -> None:
         self.active = False
         try:
-            self.stop_recording()
+            self._stop_stream_and_collect_chunks(clear_chunks=True)
         except Exception:  # noqa: BLE001
             pass
         self._cancel_pending_callbacks()

@@ -4,12 +4,46 @@ import sys
 import types
 from pathlib import Path
 
+import app.services.voice_dictation as voice_dictation
 from app.services.voice_dictation import VoiceDictationService
 
 
 class _Root:
     def winfo_exists(self) -> bool:
         return True
+
+
+class _RootWithAfter(_Root):
+    def after(self, _delay: int, callback):
+        callback()
+        return "after-1"
+
+    def after_cancel(self, _callback_id: str) -> None:
+        return None
+
+
+class _FakeStream:
+    def __init__(self) -> None:
+        self.stopped = False
+        self.closed = False
+
+    def stop(self) -> None:
+        self.stopped = True
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _ImmediateThread:
+    def __init__(self, *, target, args=(), daemon=None):
+        self.target = target
+        self.args = args
+        self.daemon = daemon
+        self.started = False
+
+    def start(self) -> None:
+        self.started = True
+        self.target(*self.args)
 
 
 class _FakeTextWidget:
@@ -86,3 +120,40 @@ def test_transcribe_audio_forces_default_spanish_language(tmp_path: Path, monkey
     assert text == "hola"
     assert client.audio.transcriptions.kwargs["model"] == service.MODEL
     assert client.audio.transcriptions.kwargs["language"] == service.DEFAULT_LANGUAGE == "es"
+
+
+def test_stop_transcribes_all_recorded_chunks_once_after_user_stops(monkeypatch) -> None:
+    statuses: list[str] = []
+    button_states: list[bool] = []
+    transcribed_chunks: list[list[str]] = []
+    service = VoiceDictationService(
+        _RootWithAfter(),
+        status_callback=statuses.append,
+        button_state_callback=button_states.append,
+    )
+    assert service.CONTINUOUS_TRANSCRIPTION is False
+    stream = _FakeStream()
+    widget = _FakeTextWidget("Hola", cursor=len("Hola"))
+    service.recording = True
+    service._stream = stream
+    service._audio_chunks = ["chunk-1", "chunk-2"]
+    service._target_widget = widget
+
+    def _fake_transcribe(chunks: list[str]) -> str:
+        transcribed_chunks.append(chunks)
+        return "te paso la liquidación de industria"
+
+    monkeypatch.setattr(service, "_transcribe_chunks", _fake_transcribe)
+    monkeypatch.setattr(voice_dictation.threading, "Thread", _ImmediateThread)
+
+    service.stop_recording_and_transcribe()
+
+    assert stream.stopped is True
+    assert stream.closed is True
+    assert service.recording is False
+    assert service._audio_chunks == []
+    assert transcribed_chunks == [["chunk-1", "chunk-2"]]
+    assert widget.insert_calls == [("insert", " te paso la liquidación de industria")]
+    assert widget.content == "Hola te paso la liquidación de industria"
+    assert button_states == [False]
+    assert statuses == ["⏳ Transcribiendo...", "Listo"]
