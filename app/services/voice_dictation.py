@@ -37,6 +37,7 @@ class VoiceDictationService:
     SAMPLE_RATE = 16_000
     CHANNELS = 1
     MODEL = "gpt-4o-mini-transcribe"
+    DEFAULT_LANGUAGE = "es"
     MAX_AUDIO_FILE_SIZE = 5 * 1024 * 1024
     PHRASE_WINDOW_SECONDS = 3
     _VOICE_COMMAND_DELETE_LAST = "borrar último fragmento"
@@ -123,6 +124,10 @@ class VoiceDictationService:
         from app.ui.dictation_widgets import _last_focused_widget
 
         target_widget = _last_focused_widget
+        logger.info(
+            "VOICE_DEBUG: widget destino=%s",
+            type(target_widget).__name__ if target_widget else "None",
+        )
         if (
             target_widget is None
             or not self._is_text_widget(target_widget)
@@ -166,7 +171,6 @@ class VoiceDictationService:
             self._recognition_thread.start()
 
         logger.info("Dictado iniciado")
-        logger.info("Widget destino de dictado: %s", type(target_widget).__name__)
         self._set_status("🎙 Grabando...")
         self._set_button_recording_state(True)
 
@@ -297,10 +301,12 @@ class VoiceDictationService:
             api_connection = getattr(openai_module, "APIConnectionError", tuple())
             api_status = getattr(openai_module, "APIStatusError", tuple())
 
+            logger.info("VOICE_DEBUG: idioma usado=%s", self.DEFAULT_LANGUAGE)
             with open(audio_path, "rb") as audio_file:
                 transcription = client.audio.transcriptions.create(
                     model=self.MODEL,
                     file=audio_file,
+                    language=self.DEFAULT_LANGUAGE,
                 )
             return (getattr(transcription, "text", "") or "").strip()
         except api_timeout as exc:  # type: ignore[misc]
@@ -372,28 +378,52 @@ class VoiceDictationService:
             return
 
         try:
+            prefix = self._get_text_before_cursor(widget)
             if isinstance(widget, (tk.Entry, ttk.Entry)):
-                current_text = widget.get()
                 fragment = text.replace("\n", " ")
-                value = self._merge_text(str(current_text), fragment)
-                widget.insert(tk.END, value)
+                value = self._merge_text(prefix, fragment)
+                logger.info("VOICE_DEBUG: insertando en cursor")
+                widget.insert(tk.INSERT, value)
             elif isinstance(widget, (tk.Text, ScrolledText)):
-                current_text = widget.get("1.0", "end-1c")
-                value = self._merge_text(str(current_text), text)
-                widget.insert("end", value)
+                value = self._merge_text(prefix, text)
+                logger.info("VOICE_DEBUG: insertando en cursor")
+                widget.insert("insert", value)
                 self._append_history(widget, value)
             else:
-                value = text
-                if hasattr(widget, "get"):
-                    try:
-                        current_text = widget.get()
-                        value = self._merge_text(str(current_text), text)
-                    except Exception:  # noqa: BLE001
-                        logger.debug("No se pudo consultar contenido previo en widget personalizado")
-                widget.insert("end", value)
+                value = self._merge_text(prefix, text)
+                logger.info("VOICE_DEBUG: insertando en cursor")
+                widget.insert("insert", value)
+
+            if hasattr(widget, "see"):
+                try:
+                    widget.see("insert")
+                except Exception:  # noqa: BLE001
+                    logger.debug("El widget de dictado no soporta see('insert')", exc_info=True)
+
+            logger.info("VOICE_DEBUG: fragmento insertado chars=%s", len(value))
             logger.info("Fragmento insertado correctamente")
         except Exception:  # noqa: BLE001
             logger.exception("No se pudo insertar texto transcrito")
+
+    def _get_text_before_cursor(self, widget: tk.Widget | object) -> str:
+        try:
+            if isinstance(widget, (tk.Entry, ttk.Entry)):
+                cursor = int(widget.index(tk.INSERT))
+                return str(widget.get())[:cursor]
+
+            if isinstance(widget, (tk.Text, ScrolledText)):
+                return str(widget.get("1.0", "insert"))
+
+            if hasattr(widget, "get"):
+                try:
+                    cursor = widget.index("insert") if hasattr(widget, "index") else None
+                    if cursor is not None:
+                        return str(widget.get("1.0", "insert"))
+                except Exception:  # noqa: BLE001
+                    return str(widget.get())
+        except Exception:  # noqa: BLE001
+            logger.debug("No se pudo consultar texto previo al cursor de dictado", exc_info=True)
+        return ""
 
     def _delete_last_fragment(self) -> None:
         widget = self._target_widget

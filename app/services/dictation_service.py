@@ -1,5 +1,7 @@
 """Reusable push-to-talk dictation service backed by OpenAI STT."""
 
+# Legacy dictation service. New UI dictation should use VoiceDictationService.
+
 from __future__ import annotations
 
 import logging
