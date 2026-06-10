@@ -17,6 +17,7 @@ from tkinter import messagebox, ttk
 
 from tkcalendar import DateEntry
 
+from app.config.app_branding import APP_NAME, APP_SUBTITLE
 from app.core.calendar.google_calendar_client import (
     GoogleCalendarClient,
     crear_evento_google_calendar,
@@ -737,7 +738,8 @@ class MainWindow(ttk.Frame):
     def _show_about_dialog(self) -> None:
         messagebox.showinfo(
             "Acerca de",
-            "Notion Second Brain\n"
+            f"{APP_NAME}\n"
+            f"{APP_SUBTITLE}\n"
             "Arquitectura de menús por dominios: Notas, Emails, Agenda, ML y Configuración.",
         )
 

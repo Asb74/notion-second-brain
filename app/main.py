@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import tkinter as tk
 
+from app.config.app_branding import APP_NAME
 from app.core.service import NoteService
 from app.persistence.db import Database, default_data_dir
 from app.persistence.masters_repository import MastersRepository
@@ -27,11 +28,12 @@ def main() -> None:
     service = NoteService(NoteRepository(conn), SettingsRepository(conn), masters_repo, ActionsRepository(conn))
 
     root = tk.Tk()
-    root.title("Notion Second Brain")
+    root.title(APP_NAME)
     root.geometry("980x720")
     apply_app_icon(root)
     MainWindow(root, service, db_connection=conn)
 
+    logging.getLogger(__name__).info("SANSEBAS_NEXUS: application started")
     logging.getLogger(__name__).info("App iniciada. Log: %s", log_path)
     root.mainloop()
 
