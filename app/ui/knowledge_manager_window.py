@@ -12,6 +12,7 @@ from tkinter.scrolledtext import ScrolledText
 from app.persistence.knowledge_repository import KnowledgeRepository
 from app.persistence.masters_repository import MastersRepository
 from app.ui.app_icons import apply_app_icon
+from app.ui.tooltips import add_tooltip
 
 logger = logging.getLogger(__name__)
 
@@ -49,15 +50,27 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self.status_var = tk.StringVar(value="Listo")
 
         self._build_layout()
+        logger.info("KNOWLEDGE: ayuda contextual cargada")
         self._load_reference_values()
         self.refresh_items()
 
     def _build_layout(self) -> None:
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
+
+        help_text = (
+            "Área = ámbito principal (Personal, Trabajo, Sansebas, Archivo).  "
+            "Tema = materia dentro de un área.  "
+            "Tipo = naturaleza del contenido (Nota, Reunión, Documento, Procedimiento...).  "
+            "Etiquetas = palabras clave libres separadas por coma.  "
+            "Fuente = origen: manual, email, audio, PDF, Evernote..."
+        )
+        ttk.Label(self, text=help_text, wraplength=1120, foreground="#555555").grid(
+            row=0, column=0, sticky="ew", padx=10, pady=(10, 0)
+        )
 
         paned = ttk.PanedWindow(self, orient="horizontal")
-        paned.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        paned.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
 
         left = ttk.Frame(paned)
         right = ttk.Frame(paned)
@@ -127,6 +140,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self.area_combo = ttk.Combobox(right, textvariable=self.area_var, state="readonly")
         self.area_combo.grid(row=1, column=1, sticky="ew", pady=(0, 4))
         self.area_combo.bind("<<ComboboxSelected>>", self._on_area_changed)
+        add_tooltip(self.area_combo, "Ámbito principal al que pertenece la información.")
 
         ttk.Label(right, text="Tema").grid(row=2, column=0, sticky="w", pady=(0, 4))
         topic_row = ttk.Frame(right)
@@ -134,17 +148,23 @@ class KnowledgeManagerWindow(tk.Toplevel):
         topic_row.columnconfigure(0, weight=1)
         self.topic_combo = ttk.Combobox(topic_row, textvariable=self.topic_var, state="readonly")
         self.topic_combo.grid(row=0, column=0, sticky="ew")
+        add_tooltip(self.topic_combo, "Materia o subgrupo dentro del área seleccionada.")
         ttk.Button(topic_row, text="Gestionar temas", command=self.open_topics_dialog).grid(row=0, column=1, padx=(6, 0))
 
         ttk.Label(right, text="Tipo").grid(row=3, column=0, sticky="w", pady=(0, 4))
         self.type_combo = ttk.Combobox(right, textvariable=self.type_var, state="readonly")
         self.type_combo.grid(row=3, column=1, sticky="ew", pady=(0, 4))
+        add_tooltip(self.type_combo, "Naturaleza del contenido: nota, reunión, documento, procedimiento, etc.")
 
         ttk.Label(right, text="Etiquetas (separadas por coma)").grid(row=4, column=0, sticky="w", pady=(0, 4))
-        ttk.Entry(right, textvariable=self.tags_var).grid(row=4, column=1, sticky="ew", pady=(0, 4))
+        tags_entry = ttk.Entry(right, textvariable=self.tags_var)
+        tags_entry.grid(row=4, column=1, sticky="ew", pady=(0, 4))
+        add_tooltip(tags_entry, "Palabras clave libres separadas por coma para facilitar búsquedas.")
 
         ttk.Label(right, text="Fuente").grid(row=5, column=0, sticky="w", pady=(0, 4))
-        ttk.Entry(right, textvariable=self.source_var).grid(row=5, column=1, sticky="ew", pady=(0, 4))
+        source_entry = ttk.Entry(right, textvariable=self.source_var)
+        source_entry.grid(row=5, column=1, sticky="ew", pady=(0, 4))
+        add_tooltip(source_entry, "Origen del contenido: manual, email, audio, PDF, Evernote, etc.")
 
         ttk.Label(right, text="Contenido").grid(row=6, column=0, sticky="nw", pady=(0, 4))
         self.content_text = ScrolledText(right, wrap="word", height=18)
@@ -154,7 +174,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self.summary_text = ScrolledText(right, wrap="word", height=6)
         self.summary_text.grid(row=7, column=1, sticky="nsew")
 
-        ttk.Label(self, textvariable=self.status_var).grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 8))
+        ttk.Label(self, textvariable=self.status_var).grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 8))
 
     def _load_reference_values(self) -> None:
         area_values = self.masters_repo.list_active("Area")
@@ -372,7 +392,7 @@ class TopicManagerDialog(tk.Toplevel):
         self.areas_by_name: dict[str, str] = {}
 
         self.title("Gestionar temas")
-        self.geometry("720x420")
+        self.geometry("760x480")
         self.transient(parent)
         self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
@@ -390,7 +410,14 @@ class TopicManagerDialog(tk.Toplevel):
         body.grid(row=0, column=0, sticky="nsew")
         body.columnconfigure(0, weight=2)
         body.columnconfigure(1, weight=1)
-        body.rowconfigure(0, weight=1)
+        body.rowconfigure(1, weight=1)
+
+        ttk.Label(
+            body,
+            text="Los Temas agrupan contenidos dentro de un Área. Ejemplo: Área Trabajo → Tema Liquidaciones.",
+            wraplength=720,
+            foreground="#555555",
+        ).grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
 
         columns = ("id", "area", "name", "active")
         self.tree = ttk.Treeview(body, columns=columns, show="headings", selectmode="browse")
@@ -402,11 +429,11 @@ class TopicManagerDialog(tk.Toplevel):
         ):
             self.tree.heading(column, text=text)
             self.tree.column(column, width=width, anchor="w")
-        self.tree.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        self.tree.grid(row=1, column=0, sticky="nsew", padx=(0, 10))
         self.tree.bind("<<TreeviewSelect>>", self._on_selected)
 
         form = ttk.Frame(body)
-        form.grid(row=0, column=1, sticky="nsew")
+        form.grid(row=1, column=1, sticky="nsew")
         form.columnconfigure(1, weight=1)
 
         ttk.Label(form, text="Área").grid(row=0, column=0, sticky="w", pady=(0, 4))

@@ -196,8 +196,11 @@ def ensure_knowledge_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE knowledge_items ADD COLUMN area TEXT")
     if "tipo" not in knowledge_item_columns:
         conn.execute("ALTER TABLE knowledge_items ADD COLUMN tipo TEXT")
-    if "area" not in _table_columns(conn, "knowledge_topics"):
+    knowledge_topic_columns = _table_columns(conn, "knowledge_topics")
+    if "area" not in knowledge_topic_columns:
         conn.execute("ALTER TABLE knowledge_topics ADD COLUMN area TEXT")
+    if "description" not in knowledge_topic_columns:
+        conn.execute("ALTER TABLE knowledge_topics ADD COLUMN description TEXT")
 
     conn.execute(
         """
@@ -516,6 +519,7 @@ class Database:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     category TEXT NOT NULL,
                     value TEXT NOT NULL,
+                    description TEXT,
                     active INTEGER NOT NULL DEFAULT 1,
                     system_locked INTEGER NOT NULL DEFAULT 0,
                     UNIQUE(category, value)
@@ -525,7 +529,11 @@ class Database:
             return
 
         columns = _table_columns(conn, "masters")
-        expected = {"id", "category", "value", "active", "system_locked"}
+        if "description" not in columns and {"id", "category", "value", "active", "system_locked"}.issubset(columns):
+            conn.execute("ALTER TABLE masters ADD COLUMN description TEXT")
+            return
+
+        expected = {"id", "category", "value", "description", "active", "system_locked"}
         if expected.issubset(columns):
             return
 
@@ -535,6 +543,7 @@ class Database:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 category TEXT NOT NULL,
                 value TEXT NOT NULL,
+                description TEXT,
                 active INTEGER NOT NULL DEFAULT 1,
                 system_locked INTEGER NOT NULL DEFAULT 0,
                 UNIQUE(category, value)
@@ -545,8 +554,8 @@ class Database:
         if {"field_name", "is_active", "value"}.issubset(columns):
             conn.execute(
                 """
-                INSERT INTO masters_new(category, value, active, system_locked)
-                SELECT field_name, value, is_active, 0
+                INSERT INTO masters_new(category, value, description, active, system_locked)
+                SELECT field_name, value, NULL, is_active, 0
                 FROM masters
                 """
             )
