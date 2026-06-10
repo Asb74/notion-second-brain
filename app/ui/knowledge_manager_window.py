@@ -923,20 +923,28 @@ class KnowledgeManagerWindow(tk.Toplevel):
         return name
 
     def _show_word_attachment_preview(self, path: Path) -> bool:
-        if path.suffix.lower() != ".docx" or not self._module_available("docx"):
-            logger.info("KNOWLEDGE_PREVIEW: word fallback path=%s", path)
+        if path.suffix.lower() != ".docx":
             return False
-        docx = importlib.import_module("docx")
+
+        logger.info("KNOWLEDGE_PREVIEW: word docx preview intentando path=%s", path)
         try:
-            document = docx.Document(str(path))
+            docx_module = importlib.import_module("docx")
+            Document = getattr(docx_module, "Document", None)
+            if Document is None:
+                logger.warning("KNOWLEDGE_PREVIEW: word docx preview error=Document no disponible path=%s", path)
+                return False
+            document = Document(str(path))
             lines = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
-        except Exception:  # noqa: BLE001
-            logger.exception("No se pudo generar la vista previa Word de Knowledge")
-            logger.info("KNOWLEDGE_PREVIEW: word fallback path=%s", path)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("KNOWLEDGE_PREVIEW: word docx preview error=%s path=%s", exc, path)
             return False
+
         if not lines:
-            logger.info("KNOWLEDGE_PREVIEW: word fallback path=%s", path)
-            return False
+            logger.info("KNOWLEDGE_PREVIEW: word docx preview sin texto path=%s", path)
+            message = "El documento DOCX no contiene texto previsualizable. Haz clic para abrir."
+            label = self._reset_attachment_preview_area(message)
+            self._bind_preview_open(label)
+            return True
 
         self._reset_attachment_preview_area()
         parent = self.attachment_preview_content
@@ -946,12 +954,12 @@ class KnowledgeManagerWindow(tk.Toplevel):
         text = ScrolledText(parent, wrap="word", height=12, cursor="hand2")
         text.grid(row=1, column=0, sticky="nsew")
         parent.rowconfigure(1, weight=1)
-        preview_text = "\n".join(lines[:30])
+        preview_text = "\n".join(lines[:30])[:3000]
         text.insert("1.0", preview_text)
         text.configure(state="disabled")
         self._bind_preview_open(text)
         self._bind_preview_open(parent)
-        logger.info("KNOWLEDGE_PREVIEW: word preview disponible path=%s", path)
+        logger.info("KNOWLEDGE_PREVIEW: word docx preview ok lineas=%s path=%s", len(lines), path)
         return True
 
     def _display_pil_preview(self, image: object, image_tk_module: object) -> None:
