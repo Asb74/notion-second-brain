@@ -181,26 +181,37 @@ class SettingsRepository:
         base = AppSettings()
         for field_name in base.__dataclass_fields__.keys():
             if field_name in values:
-                field_type = AppSettings.__dataclass_fields__[field_name].type
                 raw_value = values[field_name]
-                if field_type is int:
-                    casted = int(raw_value)
-                elif field_type is str:
-                    casted = str(raw_value)
-                else:
-                    casted = raw_value
-                setattr(base, field_name, casted)
+                default_value = getattr(base, field_name)
+                setattr(base, field_name, self._cast_value(raw_value, default_value))
         return base
 
     def save(self, settings: AppSettings) -> None:
         for f in fields(settings):
             key = f.name
             value = getattr(settings, key)
+            if isinstance(value, bool):
+                stored_value = "1" if value else "0"
+            else:
+                stored_value = str(value)
             self.conn.execute(
                 "INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (key, str(value)),
+                (key, stored_value),
             )
         self.conn.commit()
+
+    @staticmethod
+    def _cast_value(raw_value: object, default_value: object) -> object:
+        if isinstance(default_value, bool):
+            return str(raw_value).strip().lower() in {"1", "true", "yes", "on", "sí", "si"}
+        if isinstance(default_value, int):
+            try:
+                return int(raw_value)
+            except (TypeError, ValueError):
+                return default_value
+        if isinstance(default_value, str):
+            return str(raw_value)
+        return raw_value
 
 
 class ActionsRepository:

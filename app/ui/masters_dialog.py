@@ -6,7 +6,7 @@ import logging
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from app.core.service import NoteService
+from app.core.service import NOTION_DISABLED_MESSAGE, NoteService
 from app.ui.app_icons import apply_app_icon
 
 logger = logging.getLogger(__name__)
@@ -90,6 +90,11 @@ class MastersDialog(tk.Toplevel):
             messagebox.showerror("Error", "No se pudo desactivar el maestro.")
 
     def _sync_schema(self) -> None:
+        if not self.service.is_notion_enabled():
+            logger.info("NOTION_INTEGRATION: skipped sync because disabled")
+            messagebox.showinfo("Notion desactivado", NOTION_DISABLED_MESSAGE)
+            return
+
         try:
             self.service.sync_schema_with_notion()
             messagebox.showinfo("OK", "Esquema de Notion sincronizado correctamente.")

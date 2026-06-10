@@ -21,6 +21,11 @@ from app.persistence.repositories import ActionsRepository, NoteRepository, Sett
 
 logger = logging.getLogger(__name__)
 
+NOTION_DISABLED_MESSAGE = (
+    "La integración con Notion está desactivada. "
+    "Sansebas Nexus guardará la información localmente."
+)
+
 
 class NoteService:
     """Use-case layer for notes and synchronization flow."""
@@ -52,6 +57,18 @@ class NoteService:
 
     def save_settings(self, settings: AppSettings) -> None:
         self.settings_repo.save(settings)
+        logger.info("NOTION_INTEGRATION: %s", "enabled" if settings.notion_enabled else "disabled")
+
+    def is_notion_enabled(self, settings: AppSettings | None = None) -> bool:
+        current = settings or self.get_settings()
+        enabled = bool(current.notion_enabled)
+        logger.info("NOTION_INTEGRATION: %s", "enabled" if enabled else "disabled")
+        return enabled
+
+    def ensure_notion_enabled(self, settings: AppSettings | None = None) -> None:
+        if not self.is_notion_enabled(settings):
+            logger.info("NOTION_INTEGRATION: skipped sync because disabled")
+            raise NotionError(NOTION_DISABLED_MESSAGE)
 
     def get_setting(self, key: str) -> str | None:
         return self.settings_repo.get_setting(key)
@@ -66,40 +83,19 @@ class NoteService:
         return self.masters_repo.list_all(category)
 
     def add_master(self, category: str, value: str) -> None:
+        logger.info("MASTERS: operación local sin Notion add category=%s value=%s", category, value)
         self.masters_repo.add_master(category, value)
 
     def deactivate_master(self, category: str, value: str) -> None:
         if self.masters_repo.is_locked(category, value):
             raise ValueError(f"'{value}' está bloqueado por el sistema y no puede desactivarse.")
 
-        settings = self.get_settings()
-        if not settings.notion_database_id.strip() or not settings.notion_token.strip():
-            logger.warning("Desactivación sin validación Notion completa por configuración incompleta")
-            self.masters_repo.deactivate_master(category, value)
-            return
-
-        notion_property = self._resolve_notion_property_name(category, settings)
-        if not notion_property:
-            self.masters_repo.deactivate_master(category, value)
-            return
-
-        client = NotionClient(settings.notion_token)
-        open_count = client.count_open_pages_for_master(
-            settings.notion_database_id,
-            notion_property,
-            value,
-            settings.prop_estado,
-            "Finalizado",
-        )
-        if open_count > 0:
-            raise ValueError(
-                f"No se puede desactivar '{value}' porque existe en {open_count} página(s) de Notion con Estado distinto de 'Finalizado'."
-            )
-
+        logger.info("MASTERS: operación local sin Notion deactivate category=%s value=%s", category, value)
         self.masters_repo.deactivate_master(category, value)
 
     def sync_schema_with_notion(self, settings: AppSettings | None = None) -> None:
         current = settings or self.get_settings()
+        self.ensure_notion_enabled(current)
         self._validate_notion_settings(current)
         if not current.notion_database_id.strip():
             raise NotionError("Debe crear la base Notion antes de sincronizar maestros.")
@@ -158,6 +154,9 @@ class NoteService:
         self.note_repo.update_note_content(note_id, new_title, note.raw_text if raw_text is None else raw_text)
 
         settings = self.get_settings()
+        if not settings.notion_enabled:
+            logger.info("NOTION_INTEGRATION: skipped sync because disabled")
+            return
         if not settings.notion_token.strip() or not note.notion_page_id:
             return
 
@@ -381,6 +380,9 @@ Un saludo""",
             return
 
         settings = self.get_settings()
+        if not settings.notion_enabled:
+            logger.info("NOTION_INTEGRATION: skipped sync because disabled")
+            return
         if not settings.notion_token.strip():
             logger.warning(
                 "No se sincronizó acción id=%s con Notion por falta de token",
@@ -427,6 +429,9 @@ Un saludo""",
         self.note_repo.update_estado(note_id, "Finalizado")
 
         settings = self.get_settings()
+        if not settings.notion_enabled:
+            logger.info("NOTION_INTEGRATION: skipped sync because disabled")
+            return
         if not settings.notion_token.strip() or not note.notion_page_id:
             return
 
@@ -547,6 +552,7 @@ Un saludo""",
 
     def sync_pending(self) -> tuple[int, int]:
         settings = self.get_settings()
+        self.ensure_notion_enabled(settings)
 
         if not settings.notion_database_id.strip():
             raise NotionError("Debe crear la base Notion antes de sincronizar.")
@@ -607,6 +613,7 @@ Un saludo""",
         return sent, failed
 
     def create_notion_database_from_config(self) -> str:
+        self.ensure_notion_enabled()
         token, page_id = load_notion_config()
         database_id = create_database(token, page_id)
         validate_database_schema(token, database_id)

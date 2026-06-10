@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
+
+logger = logging.getLogger(__name__)
 
 
 class MastersRepository:
@@ -47,6 +50,7 @@ class MastersRepository:
         if not normalized:
             raise ValueError("El valor del maestro no puede estar vacío")
 
+        logger.info("MASTERS: operación local sin Notion add category=%s value=%s", category, normalized)
         self.conn.execute(
             """
             INSERT INTO masters(category, value, active, system_locked)
@@ -58,6 +62,7 @@ class MastersRepository:
         self.conn.commit()
 
     def deactivate_master(self, category: str, value: str) -> None:
+        logger.info("MASTERS: operación local sin Notion deactivate category=%s value=%s", category, value)
         self.conn.execute(
             """
             UPDATE masters

@@ -28,20 +28,26 @@ class MastersGovernanceTests(unittest.TestCase):
         self.assertEqual({row["value"] for row in rows}, {"Pendiente", "En curso", "Finalizado"})
         self.assertTrue(all(int(row["system_locked"]) == 1 for row in rows))
 
+    def test_notion_enabled_defaults_to_false(self):
+        self.assertFalse(self.service.get_settings().notion_enabled)
+
     @patch("app.core.service.NotionClient")
-    def test_deactivate_master_is_blocked_when_notion_has_open_pages(self, mock_notion_client):
-        self.service.save_settings(AppSettings(notion_token="token", notion_database_id="db"))
+    def test_deactivate_master_is_local_and_does_not_query_notion(self, mock_notion_client):
+        self.service.save_settings(AppSettings(notion_token="token", notion_database_id="db", notion_enabled=True))
         mock_client = MagicMock()
         mock_client.count_open_pages_for_master.return_value = 2
         mock_notion_client.return_value = mock_client
 
-        with self.assertRaises(ValueError):
-            self.service.deactivate_master("Area", "General")
+        self.service.deactivate_master("Area", "General")
+
+        mock_client.count_open_pages_for_master.assert_not_called()
+        active_areas = self.service.get_master_values("Area")
+        self.assertNotIn("General", active_areas)
 
     @patch("app.core.service.NotionClient")
     def test_sync_schema_uses_active_values_and_skips_estado(self, mock_notion_client):
         self.service.add_master("Area", "Ventas")
-        self.service.save_settings(AppSettings(notion_token="token", notion_database_id="db"))
+        self.service.save_settings(AppSettings(notion_token="token", notion_database_id="db", notion_enabled=True))
 
         mock_client = MagicMock()
         mock_client.get_database_schema.return_value = {
