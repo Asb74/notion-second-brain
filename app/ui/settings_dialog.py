@@ -53,6 +53,7 @@ class SettingsDialog(tk.Toplevel):
         self.config_vars: dict[str, tk.Variable] = {
             "notion_token": tk.StringVar(),
             "notion_database_id": tk.StringVar(),
+            "notion_enabled": tk.BooleanVar(value=False),
             "managed_email": tk.StringVar(),
             "nombre": tk.StringVar(),
             "email_principal": tk.StringVar(),
@@ -82,18 +83,21 @@ class SettingsDialog(tk.Toplevel):
         self.notebook.pack(fill="both", expand=True, padx=10, pady=(10, 6))
 
         self.tab_general = ttk.Frame(self.notebook)
+        self.tab_integrations = ttk.Frame(self.notebook)
         self.tab_email = ttk.Frame(self.notebook)
         self.tab_notifications = ttk.Frame(self.notebook)
         self.tab_master_data = ttk.Frame(self.notebook)
         self.tab_order_validation = ttk.Frame(self.notebook)
 
         self.notebook.add(self.tab_general, text="General")
+        self.notebook.add(self.tab_integrations, text="Integraciones")
         self.notebook.add(self.tab_email, text="Email")
         self.notebook.add(self.tab_notifications, text="Notificaciones")
         self.notebook.add(self.tab_master_data, text="Datos maestros")
         self.notebook.add(self.tab_order_validation, text="Validación pedidos")
 
         self._build_general_tab()
+        self._build_integrations_tab()
         self._build_email_tab()
         self._build_notifications_tab()
         self._build_master_data_tab()
@@ -102,10 +106,11 @@ class SettingsDialog(tk.Toplevel):
 
         tab_map = {
             "general": 0,
-            "email": 1,
-            "notificaciones": 2,
-            "datos maestros": 3,
-            "validación pedidos": 4,
+            "integraciones": 1,
+            "email": 2,
+            "notificaciones": 3,
+            "datos maestros": 4,
+            "validación pedidos": 5,
         }
         self.notebook.select(tab_map.get(initial_tab.lower().strip(), 0))
 
@@ -141,16 +146,32 @@ class SettingsDialog(tk.Toplevel):
     def _build_general_tab(self) -> None:
         body = self._create_tab_body(self.tab_general)
 
-        token = self._add_field(body, 0, "Notion Token", self.config_vars["notion_token"], show="*")
-        if isinstance(token, ttk.Entry):
-            attach_dictation(token, body).grid(row=0, column=2, sticky="w", padx=(6, 0), pady=4)
+        self._add_field(body, 0, "Carpeta destino", self.config_vars["default_area"])
+        self._add_field(body, 1, "Nombre", self.config_vars["nombre"])
+        self._add_field(body, 2, "Email principal", self.config_vars["email_principal"])
+        self._add_field(body, 3, "Dominio corporativo", self.config_vars["dominio"])
+        self._add_field(body, 4, "Alias (separados por coma)", self.config_vars["alias"])
 
-        self._add_field(body, 1, "Notion Database ID", self.config_vars["notion_database_id"])
-        self._add_field(body, 2, "Carpeta destino", self.config_vars["default_area"])
-        self._add_field(body, 3, "Nombre", self.config_vars["nombre"])
-        self._add_field(body, 4, "Email principal", self.config_vars["email_principal"])
-        self._add_field(body, 5, "Dominio corporativo", self.config_vars["dominio"])
-        self._add_field(body, 6, "Alias (separados por coma)", self.config_vars["alias"])
+    def _build_integrations_tab(self) -> None:
+        body = self._create_tab_body(self.tab_integrations)
+        body.columnconfigure(1, weight=1)
+
+        ttk.Checkbutton(
+            body,
+            text="Activar integración con Notion (opcional)",
+            variable=self.config_vars["notion_enabled"],
+        ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+        ttk.Label(
+            body,
+            text="Sansebas Nexus guarda la información localmente. Notion puede usarse solo como exportación o copia secundaria.",
+            wraplength=720,
+        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 12))
+
+        token = self._add_field(body, 2, "Notion Token", self.config_vars["notion_token"], show="*")
+        if isinstance(token, ttk.Entry):
+            attach_dictation(token, body).grid(row=2, column=2, sticky="w", padx=(6, 0), pady=4)
+
+        self._add_field(body, 3, "Notion Database ID", self.config_vars["notion_database_id"])
 
     def _build_email_tab(self) -> None:
         body = self._create_tab_body(self.tab_email)
@@ -235,6 +256,7 @@ class SettingsDialog(tk.Toplevel):
         config = {
             "notion_token": self._current.notion_token,
             "notion_database_id": self._current.notion_database_id,
+            "notion_enabled": bool(self._current.notion_enabled),
             "managed_email": str(email_account.get("account_email", "")).strip() or self._current.managed_email,
             "nombre": str(profile.get("nombre", "")).strip(),
             "email_principal": str(profile.get("email_principal", "")).strip(),
@@ -330,10 +352,10 @@ class SettingsDialog(tk.Toplevel):
             messagebox.showerror("Validación", "El intervalo de revisión debe ser mayor que 0.", parent=self)
             return False
 
-        if not str(self.config_vars["notion_token"].get()).strip():
+        if bool(self.config_vars["notion_enabled"].get()) and not str(self.config_vars["notion_token"].get()).strip():
             messagebox.showwarning(
                 "Validación",
-                "El Notion token está vacío. Puedes guardar, pero la integración con Notion fallará.",
+                "La integración con Notion está activada, pero el token está vacío. Puedes guardar; las funciones de Notion avisarán si faltan datos.",
                 parent=self,
             )
 
@@ -356,6 +378,7 @@ class SettingsDialog(tk.Toplevel):
             settings = AppSettings(
                 notion_token=str(config["notion_token"]).strip(),
                 notion_database_id=str(config["notion_database_id"]).strip(),
+                notion_enabled=bool(config["notion_enabled"]),
                 managed_email=str(config["managed_email"]).strip(),
                 default_area=str(config["default_area"]).strip(),
                 default_tipo=str(config["default_tipo"]).strip(),

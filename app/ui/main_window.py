@@ -23,7 +23,7 @@ from app.core.calendar.google_calendar_client import (
     crear_evento_google_calendar,
 )
 from app.core.models import AppSettings, NoteCreateRequest
-from app.core.service import NoteService
+from app.core.service import NOTION_DISABLED_MESSAGE, NoteService
 from app.core.email.gmail_client import GmailClient
 from app.core.email.mail_ingestion_service import MailIngestionService
 from app.persistence.calendar_repository import CalendarRepository
@@ -195,6 +195,7 @@ class MainWindow(ttk.Frame):
 
         configuracion = tk.Menu(menubar, tearoff=0)
         configuracion.add_command(label="General", command=lambda: self._open_settings("General"))
+        configuracion.add_command(label="Integraciones", command=lambda: self._open_settings("Integraciones"))
         configuracion.add_command(label="Email", command=lambda: self._open_settings("Email"))
         configuracion.add_command(label="Notificaciones", command=lambda: self._open_settings("Notificaciones"))
         configuracion.add_command(label="Datos maestros", command=lambda: self._open_settings("Datos maestros"))
@@ -917,6 +918,11 @@ class MainWindow(ttk.Frame):
             self.status_var.set("Conexión con Google restablecida correctamente.")
 
     def _sync(self) -> None:
+        if not self.service.is_notion_enabled():
+            logger.info("NOTION_INTEGRATION: skipped sync because disabled")
+            self.status_var.set(NOTION_DISABLED_MESSAGE)
+            messagebox.showinfo("Notion desactivado", NOTION_DISABLED_MESSAGE)
+            return
         threading.Thread(target=self._sync_worker, daemon=True).start()
 
     def _sync_worker(self) -> None:
@@ -928,6 +934,11 @@ class MainWindow(ttk.Frame):
             self.msg_queue.put(("error", str(exc)))
 
     def _create_notion_database(self) -> None:
+        if not self.service.is_notion_enabled():
+            logger.info("NOTION_INTEGRATION: skipped sync because disabled")
+            self.status_var.set(NOTION_DISABLED_MESSAGE)
+            messagebox.showinfo("Notion desactivado", NOTION_DISABLED_MESSAGE)
+            return
         self.create_db_button.config(state="disabled")
         self.status_var.set("Creando base de datos en Notion...")
         threading.Thread(target=self._create_notion_database_worker, daemon=True).start()
@@ -1081,10 +1092,16 @@ class MainWindow(ttk.Frame):
         self.master.destroy()
 
     def _refresh_database_button_state(self) -> None:
-        database_id = self.service.get_setting("notion_database_id")
+        settings = self.service.get_settings()
+        if not settings.notion_enabled:
+            self.create_db_button.config(state="normal")
+            self.status_var.set("NOTION_INTEGRATION: disabled")
+            return
+
+        database_id = settings.notion_database_id.strip()
         if database_id:
             self.create_db_button.config(state="disabled")
-            self.status_var.set("DATABASE_ID detectado en SQLite. Base lista para usar.")
+            self.status_var.set("DATABASE_ID detectado en SQLite. Base Notion opcional lista para usar.")
         else:
             self.create_db_button.config(state="normal")
 

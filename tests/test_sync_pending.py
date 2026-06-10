@@ -51,6 +51,7 @@ class SyncPendingTaskCreationTests(unittest.TestCase):
             AppSettings(
                 notion_token="token",
                 notion_database_id="db",
+                notion_enabled=True,
             )
         )
 

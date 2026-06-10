@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import requests
-
 
 NOTION_VERSION = "2022-06-28"
 DATABASE_NAME = "Sistema Antonio – Bitácora Automatizada"
@@ -70,6 +68,8 @@ def _raise_http_error(status_code: int, body: str) -> None:
 
 def create_database(token: str, page_id: str) -> str:
     """Create the definitive Notion database and return its ID."""
+    import requests
+
     payload = {
         "parent": {"type": "page_id", "page_id": page_id},
         "title": [{"type": "text", "text": {"content": DATABASE_NAME}}],
@@ -107,6 +107,8 @@ def create_database(token: str, page_id: str) -> str:
 
 def validate_database_schema(token: str, database_id: str) -> None:
     """Validate expected schema for the already-created Notion database."""
+    import requests
+
     try:
         response = requests.get(
             f"https://api.notion.com/v1/databases/{database_id}",

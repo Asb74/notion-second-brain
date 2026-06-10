@@ -76,6 +76,7 @@ class AppSettings:
 
     notion_token: str = ""
     notion_database_id: str = ""
+    notion_enabled: bool = False
     managed_email: str = ""
     default_area: str = ""
     default_tipo: str = ""
