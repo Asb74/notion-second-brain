@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import importlib
+import importlib.util
 import logging
 import mimetypes
 import os
@@ -11,9 +13,9 @@ import sqlite3
 import subprocess
 import sys
 import tkinter as tk
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from collections.abc import Callable
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
@@ -21,9 +23,12 @@ from app.config.config_paths import knowledge_attachments_dir
 from app.persistence.knowledge_repository import KnowledgeRepository
 from app.persistence.masters_repository import MastersRepository
 from app.ui.app_icons import apply_app_icon
+from app.ui.dictation_widgets import attach_dictation
 from app.ui.tooltips import add_tooltip
 
 logger = logging.getLogger(__name__)
+
+AUDIO_ATTACHMENT_EXTENSIONS = {".mp3", ".wav", ".m4a", ".ogg"}
 
 
 class KnowledgeManagerWindow(tk.Toplevel):
@@ -176,9 +181,23 @@ class KnowledgeManagerWindow(tk.Toplevel):
         source_entry.grid(row=5, column=1, sticky="ew", pady=(0, 4))
         add_tooltip(source_entry, "Origen del contenido: manual, email, audio, PDF, Evernote, etc.")
 
-        ttk.Label(right, text="Contenido").grid(row=6, column=0, sticky="nw", pady=(0, 4))
+        content_label_frame = ttk.Frame(right)
+        content_label_frame.grid(row=6, column=0, sticky="nw", pady=(0, 4))
+        ttk.Label(content_label_frame, text="Contenido").pack(anchor="w")
         self.content_text = ScrolledText(right, wrap="word", height=18)
         self.content_text.grid(row=6, column=1, sticky="nsew", pady=(0, 8))
+        self.content_dictation_controls = attach_dictation(self.content_text, content_label_frame)
+        self.content_dictation_controls.pack(anchor="w", pady=(4, 0))
+        for child in self.content_dictation_controls.winfo_children():
+            if isinstance(child, ttk.Button):
+                child.configure(text="🎙 Dictar", width=10)
+                child.bind(
+                    "<Button-1>",
+                    lambda _event: logger.info("KNOWLEDGE_CAPTURE: dictado activado item_id=%s", self.current_item_id),
+                    add="+",
+                )
+                add_tooltip(child, "Dicta texto en la posición actual del cursor del contenido.")
+                break
 
         ttk.Label(right, text="Resumen").grid(row=7, column=0, sticky="nw")
         self.summary_text = ScrolledText(right, wrap="word", height=6)
@@ -207,9 +226,18 @@ class KnowledgeManagerWindow(tk.Toplevel):
         attachment_buttons = ttk.Frame(attachments_frame)
         attachment_buttons.grid(row=1, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 6))
         ttk.Button(attachment_buttons, text="Añadir archivo", command=self.add_attachments).pack(side="left", padx=(0, 6))
+        ttk.Button(attachment_buttons, text="Pegar captura", command=self.paste_clipboard_capture).pack(
+            side="left", padx=(0, 6)
+        )
+        ttk.Button(attachment_buttons, text="Capturar pantalla", command=self.capture_screen).pack(side="left", padx=(0, 6))
         ttk.Button(attachment_buttons, text="Abrir", command=self.open_attachment).pack(side="left", padx=(0, 6))
         ttk.Button(attachment_buttons, text="Quitar", command=self.remove_attachment).pack(side="left", padx=(0, 6))
         ttk.Button(attachment_buttons, text="Abrir carpeta", command=self.open_attachment_folder).pack(side="left")
+        add_tooltip(
+            self.attachments_tree,
+            "Arrastra archivos aquí para adjuntarlos. También acepta audios mp3, wav, m4a y ogg.",
+        )
+        self._setup_drag_and_drop((self, attachments_frame, self.attachments_tree))
 
         ttk.Label(self, textvariable=self.status_var).grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 8))
 
@@ -459,6 +487,214 @@ class KnowledgeManagerWindow(tk.Toplevel):
             return None
         return int(selection[0])
 
+    def _register_attachment_record(
+        self,
+        item_id: int,
+        original_filename: str,
+        destination: Path,
+        *,
+        mime_type: str | None = None,
+        source_type: str = "manual",
+    ) -> None:
+        detected_mime_type = mime_type
+        if detected_mime_type is None:
+            detected_mime_type, _encoding = mimetypes.guess_type(str(destination))
+        file_size = destination.stat().st_size
+        self.repo.add_attachment(
+            item_id=item_id,
+            original_filename=original_filename,
+            stored_filename=destination.name,
+            stored_path=str(destination),
+            mime_type=detected_mime_type or "",
+            file_size=file_size,
+            source_type=source_type,
+        )
+
+    def _add_attachment_paths(self, item_id: int, selected_paths: tuple[str, ...] | list[str]) -> int:
+        target_dir = self._attachment_item_dir(item_id)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        added = 0
+        for selected_path in selected_paths:
+            source_path = Path(selected_path)
+            if not source_path.exists() or not source_path.is_file():
+                logger.warning("KNOWLEDGE_ATTACHMENT: archivo inexistente path=%s", source_path)
+                continue
+            timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
+            safe_name = self._safe_filename(source_path.name)
+            stored_filename = f"{timestamp}_{safe_name}"
+            destination = self._unique_attachment_path(target_dir, stored_filename)
+            try:
+                shutil.copy2(source_path, destination)
+                self._register_attachment_record(item_id, source_path.name, destination, source_type="manual")
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("No se pudo añadir el adjunto de Knowledge")
+                messagebox.showerror(
+                    "Añadir adjunto",
+                    f"No se pudo añadir el archivo:\n{source_path}\n\n{exc}",
+                    parent=self,
+                )
+                continue
+            added += 1
+            if source_path.suffix.lower() in AUDIO_ATTACHMENT_EXTENSIONS:
+                logger.info("KNOWLEDGE_ATTACHMENT: audio adjuntado item_id=%s file=%s", item_id, destination)
+            logger.info("KNOWLEDGE_ATTACHMENT: añadido item_id=%s file=%s", item_id, destination)
+        self.refresh_attachments()
+        if added:
+            self.status_var.set(f"{added} adjunto(s) añadido(s)")
+        return added
+
+    def _setup_drag_and_drop(self, widgets: tuple[tk.Misc, ...]) -> None:
+        if importlib.util.find_spec("tkinterdnd2") is not None:
+            tkinterdnd2 = importlib.import_module("tkinterdnd2")
+            dnd_files = getattr(tkinterdnd2, "DND_FILES", "DND_Files")
+            registered = 0
+            for widget in widgets:
+                if not hasattr(widget, "drop_target_register") or not hasattr(widget, "dnd_bind"):
+                    continue
+                try:
+                    widget.drop_target_register(dnd_files)
+                    widget.dnd_bind("<<Drop>>", self._handle_files_dropped)
+                except Exception:  # noqa: BLE001
+                    logger.debug("No se pudo registrar drag&drop para %s", widget, exc_info=True)
+                    continue
+                registered += 1
+            if registered:
+                logger.info("KNOWLEDGE_CAPTURE: drag&drop activo widgets=%s", registered)
+                return
+
+        tkdnd_version = ""
+        try:
+            tkdnd_version = str(self.tk.call("package", "require", "tkdnd"))
+        except Exception:  # noqa: BLE001
+            logger.info("KNOWLEDGE_CAPTURE: drag&drop no disponible; tkdnd/tkinterdnd2 no instalado")
+            return
+
+        registered = 0
+        drop_command = self.register(self._handle_drop_data)
+        for widget in widgets:
+            try:
+                self.tk.call("tkdnd::drop_target", "register", str(widget), "DND_Files")
+                self.tk.call("bind", str(widget), "<<Drop:DND_Files>>", f"{drop_command} %D")
+            except Exception:  # noqa: BLE001
+                logger.debug("No se pudo registrar tkdnd nativo para %s", widget, exc_info=True)
+                continue
+            registered += 1
+        if registered:
+            logger.info("KNOWLEDGE_CAPTURE: drag&drop activo con tkdnd=%s widgets=%s", tkdnd_version, registered)
+        else:
+            logger.info("KNOWLEDGE_CAPTURE: drag&drop no disponible en esta ventana")
+
+    def _handle_files_dropped(self, event: tk.Event) -> None:
+        self._handle_drop_data(str(getattr(event, "data", "") or ""))
+
+    def _handle_drop_data(self, dropped_data: str) -> None:
+        try:
+            raw_paths = self.tk.splitlist(dropped_data)
+        except Exception:  # noqa: BLE001
+            raw_paths = tuple(dropped_data.split())
+        file_paths = [path for path in raw_paths if Path(path).is_file()]
+        if not file_paths:
+            self.status_var.set("No se encontraron archivos para adjuntar")
+            return
+        item_id = self._ensure_current_item_saved()
+        if item_id is None:
+            return
+        for file_path in file_paths:
+            logger.info("KNOWLEDGE_CAPTURE: archivo arrastrado item_id=%s path=%s", item_id, file_path)
+        self._add_attachment_paths(item_id, file_paths)
+
+    def _pillow_image_modules(self) -> tuple[object, object] | None:
+        if importlib.util.find_spec("PIL") is None or importlib.util.find_spec("PIL.ImageGrab") is None:
+            return None
+        image_module = importlib.import_module("PIL.Image")
+        image_grab_module = importlib.import_module("PIL.ImageGrab")
+        return image_module, image_grab_module
+
+    def _save_png_attachment(self, item_id: int, image: object, filename: str, *, log_message: str) -> Path | None:
+        target_dir = self._attachment_item_dir(item_id)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = self._safe_filename(filename)
+        destination = self._unique_attachment_path(target_dir, safe_name)
+        try:
+            if hasattr(image, "mode") and getattr(image, "mode") not in {"RGB", "RGBA"} and hasattr(image, "convert"):
+                image = image.convert("RGBA")
+            image.save(destination, format="PNG")
+            self._register_attachment_record(
+                item_id,
+                original_filename=safe_name,
+                destination=destination,
+                mime_type="image/png",
+                source_type="manual",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("No se pudo guardar la captura en Knowledge")
+            messagebox.showerror("Captura", f"No se pudo guardar la captura.\n\n{exc}", parent=self)
+            return None
+        self.refresh_attachments()
+        self.status_var.set(f"Captura guardada: {destination.name}")
+        logger.info("%s item_id=%s file=%s", log_message, item_id, destination)
+        return destination
+
+    def paste_clipboard_capture(self) -> None:
+        item_id = self._ensure_current_item_saved()
+        if item_id is None:
+            return
+        pillow_modules = self._pillow_image_modules()
+        if pillow_modules is None:
+            messagebox.showwarning(
+                "Pegar captura",
+                "Pillow no está disponible. Instala Pillow para pegar imágenes desde el portapapeles.",
+                parent=self,
+            )
+            logger.info("KNOWLEDGE_CAPTURE: captura pegada no disponible; Pillow no instalado")
+            return
+        image_module, image_grab_module = pillow_modules
+        try:
+            clipboard_content = image_grab_module.grabclipboard()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("No se pudo leer imagen del portapapeles")
+            messagebox.showwarning("Pegar captura", f"No se pudo leer el portapapeles.\n\n{exc}", parent=self)
+            return
+        if isinstance(clipboard_content, image_module.Image):
+            filename = f"captura_{datetime.now():%Y%m%d_%H%M%S}.png"
+            self._save_png_attachment(
+                item_id,
+                clipboard_content,
+                filename,
+                log_message="KNOWLEDGE_CAPTURE: captura pegada",
+            )
+            return
+        messagebox.showinfo("Pegar captura", "No hay una imagen en el portapapeles.", parent=self)
+        self.status_var.set("No hay imagen en el portapapeles")
+
+    def capture_screen(self) -> None:
+        item_id = self._ensure_current_item_saved()
+        if item_id is None:
+            return
+        pillow_modules = self._pillow_image_modules()
+        if pillow_modules is None:
+            messagebox.showwarning(
+                "Capturar pantalla",
+                "Próximamente: la captura de pantalla requiere Pillow en esta fase.",
+                parent=self,
+            )
+            logger.info("KNOWLEDGE_CAPTURE: pantalla capturada no disponible; Pillow no instalado")
+            return
+        _image_module, image_grab_module = pillow_modules
+        try:
+            screenshot = image_grab_module.grab()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("No se pudo capturar la pantalla")
+            messagebox.showwarning("Capturar pantalla", f"Próximamente: no se pudo capturar la pantalla.\n\n{exc}", parent=self)
+            return
+        filename = f"captura_{datetime.now():%Y%m%d_%H%M%S}.png"
+        self._save_png_attachment(
+            item_id,
+            screenshot,
+            filename,
+            log_message="KNOWLEDGE_CAPTURE: pantalla capturada",
+        )
+
     def refresh_attachments(self) -> None:
         if not hasattr(self, "attachments_tree"):
             return
@@ -497,44 +733,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
         selected_paths = filedialog.askopenfilenames(title="Añadir adjuntos a Knowledge", parent=self)
         if not selected_paths:
             return
-        target_dir = self._attachment_item_dir(item_id)
-        target_dir.mkdir(parents=True, exist_ok=True)
-        added = 0
-        for selected_path in selected_paths:
-            source_path = Path(selected_path)
-            if not source_path.exists() or not source_path.is_file():
-                logger.warning("KNOWLEDGE_ATTACHMENT: archivo inexistente path=%s", source_path)
-                continue
-            timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
-            safe_name = self._safe_filename(source_path.name)
-            stored_filename = f"{timestamp}_{safe_name}"
-            destination = self._unique_attachment_path(target_dir, stored_filename)
-            try:
-                shutil.copy2(source_path, destination)
-                mime_type, _encoding = mimetypes.guess_type(str(destination))
-                file_size = destination.stat().st_size
-                self.repo.add_attachment(
-                    item_id=item_id,
-                    original_filename=source_path.name,
-                    stored_filename=destination.name,
-                    stored_path=str(destination),
-                    mime_type=mime_type or "",
-                    file_size=file_size,
-                    source_type="manual",
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.exception("No se pudo añadir el adjunto de Knowledge")
-                messagebox.showerror(
-                    "Añadir adjunto",
-                    f"No se pudo añadir el archivo:\n{source_path}\n\n{exc}",
-                    parent=self,
-                )
-                continue
-            added += 1
-            logger.info("KNOWLEDGE_ATTACHMENT: añadido item_id=%s file=%s", item_id, destination)
-        self.refresh_attachments()
-        if added:
-            self.status_var.set(f"{added} adjunto(s) añadido(s)")
+        self._add_attachment_paths(item_id, list(selected_paths))
 
     def _open_path_with_default_app(self, path: Path) -> None:
         if sys.platform.startswith("win"):
