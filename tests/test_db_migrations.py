@@ -114,6 +114,7 @@ def test_run_migrations_crea_schema_knowledge_manager() -> None:
         "knowledge_areas",
         "knowledge_item_types",
         "knowledge_items",
+        "knowledge_topics",
         "knowledge_tags",
         "knowledge_item_tags",
     }.issubset(tables)
@@ -124,13 +125,24 @@ def test_run_migrations_crea_schema_knowledge_manager() -> None:
         for row in conn.execute("SELECT name FROM knowledge_item_types").fetchall()
     }
     assert {"Nota", "Email", "Audio", "Documento", "Imagen"}.issubset(item_types)
+    item_columns = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(knowledge_items)").fetchall()
+    }
+    assert "topic_id" in item_columns
     indexes = {
         str(row[1])
         for row in conn.execute("PRAGMA index_list(knowledge_items)").fetchall()
     }
     assert {
         "idx_knowledge_items_area",
+        "idx_knowledge_items_topic",
         "idx_knowledge_items_type",
         "idx_knowledge_items_source",
         "idx_knowledge_items_title",
     }.issubset(indexes)
+    topic_indexes = {
+        str(row[1])
+        for row in conn.execute("PRAGMA index_list(knowledge_topics)").fetchall()
+    }
+    assert "idx_knowledge_topics_area" in topic_indexes

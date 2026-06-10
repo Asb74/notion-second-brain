@@ -1967,6 +1967,7 @@ class EmailManagerWindow(tk.Toplevel):
                     content=content,
                     area_id=area_id,
                     item_type_id=item_type_id,
+                    topic_id=None,
                     tags=["email"],
                     source_type="email",
                     source_id=str(row["gmail_id"] or gmail_id),
