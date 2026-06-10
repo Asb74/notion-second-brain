@@ -29,7 +29,7 @@ from app.ui.tooltips import add_tooltip
 logger = logging.getLogger(__name__)
 
 AUDIO_ATTACHMENT_EXTENSIONS = {".mp3", ".wav", ".m4a", ".ogg"}
-EXCEL_ATTACHMENT_EXTENSIONS = {".xls", ".xlsx", ".ods"}
+EXCEL_ATTACHMENT_EXTENSIONS = {".xls", ".xlsx", ".xlsm", ".xltx", ".ods"}
 WORD_ATTACHMENT_EXTENSIONS = {".doc", ".docx", ".odt"}
 PDF_ATTACHMENT_EXTENSIONS = {".pdf"}
 IMAGE_ATTACHMENT_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
@@ -730,7 +730,14 @@ class KnowledgeManagerWindow(tk.Toplevel):
         if suffix in EXCEL_ATTACHMENT_EXTENSIONS:
             if self._show_excel_attachment_preview(path):
                 return
-            self._show_file_info_preview(row, path, type_label="Excel")
+            excel_preview_note = None
+            if suffix == ".xls":
+                excel_preview_note = "La vista previa interna solo está disponible para Excel .xlsx/.xlsm/.xltx."
+            elif suffix in {".xlsx", ".xlsm", ".xltx"} and not self._module_available("openpyxl"):
+                excel_preview_note = "Instala openpyxl para ver una tabla interna de archivos .xlsx/.xlsm/.xltx."
+            elif suffix in {".xlsx", ".xlsm", ".xltx"}:
+                excel_preview_note = "No se pudo generar la tabla interna de este Excel."
+            self._show_file_info_preview(row, path, type_label="Excel", extra_message=excel_preview_note)
             return
         if suffix in WORD_ATTACHMENT_EXTENSIONS:
             if self._show_word_attachment_preview(path):
@@ -803,24 +810,44 @@ class KnowledgeManagerWindow(tk.Toplevel):
         return False
 
     def _show_excel_attachment_preview(self, path: Path) -> bool:
-        if path.suffix.lower() != ".xlsx" or not self._module_available("openpyxl"):
+        suffix = path.suffix.lower()
+        if suffix == ".xls":
+            logger.info("KNOWLEDGE_PREVIEW: excel preview no disponible para .xls path=%s", path)
             return False
-        openpyxl = importlib.import_module("openpyxl")
+        if suffix not in {".xlsx", ".xlsm", ".xltx"}:
+            return False
+
+        logger.info("KNOWLEDGE_PREVIEW: excel preview intentando path=%s", path)
+        if not self._module_available("openpyxl"):
+            logger.info("KNOWLEDGE_PREVIEW: openpyxl no disponible")
+            return False
+
+        try:
+            openpyxl = importlib.import_module("openpyxl")
+        except Exception as exc:  # noqa: BLE001
+            logger.info("KNOWLEDGE_PREVIEW: openpyxl no disponible")
+            logger.exception("KNOWLEDGE_PREVIEW: excel preview error %s path=%s", exc, path)
+            return False
+
+        workbook = None
         try:
             workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
             sheet = workbook.worksheets[0]
+            sheet_title = str(sheet.title)
             rows = []
             for row in sheet.iter_rows(max_row=20, max_col=8, values_only=True):
                 rows.append(["" if value is None else str(value) for value in row])
-            workbook.close()
-        except Exception:  # noqa: BLE001
-            logger.exception("No se pudo generar la vista previa Excel de Knowledge")
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("KNOWLEDGE_PREVIEW: excel preview error %s path=%s", exc, path)
             return False
+        finally:
+            if workbook is not None:
+                workbook.close()
 
         self._reset_attachment_preview_area()
         parent = self.attachment_preview_content
         parent.rowconfigure(1, weight=1)
-        ttk.Label(parent, text=f"📊 Excel · Hoja: {sheet.title}", anchor="w").grid(
+        ttk.Label(parent, text=f"📊 Excel · Hoja: {sheet_title}", anchor="w").grid(
             row=0, column=0, sticky="ew", pady=(0, 6)
         )
         columns = [f"col_{index}" for index in range(1, 9)]
@@ -837,7 +864,13 @@ class KnowledgeManagerWindow(tk.Toplevel):
         tree.configure(yscrollcommand=scrollbar.set)
         self._bind_preview_open(tree)
         self._bind_preview_open(parent)
-        logger.info("KNOWLEDGE_PREVIEW: excel preview filas=%s columnas=%s path=%s", len(rows), 8, path)
+        logger.info(
+            "KNOWLEDGE_PREVIEW: excel preview filas=%s columnas=%s hoja=%s path=%s",
+            len(rows),
+            8,
+            sheet_title,
+            path,
+        )
         return True
 
     @staticmethod
@@ -905,6 +938,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
         path: Path,
         *,
         type_label: str = "Archivo",
+        extra_message: str | None = None,
     ) -> None:
         file_size = path.stat().st_size if path.exists() else int(row["file_size"] or 0)
         mime_type = str(row["mime_type"] or mimetypes.guess_type(str(path))[0] or "Tipo desconocido")
@@ -918,13 +952,16 @@ class KnowledgeManagerWindow(tk.Toplevel):
             "Archivo": "📎",
         }
         icon = icon_by_type.get(type_label, "📎")
+        preview_message = "Vista previa no disponible. Haz clic para abrir el archivo."
+        if extra_message:
+            preview_message = f"{extra_message}\n\n{preview_message}"
         card_text = (
             f"{icon}  {type_label}\n\n"
             f"{filename}\n\n"
             f"Tipo: {mime_type}\n"
             f"Tamaño: {self._format_file_size(file_size)}\n"
             f"Ruta: {path}\n\n"
-            "Vista previa no disponible. Haz clic para abrir el archivo."
+            f"{preview_message}"
         )
         label = self._reset_attachment_preview_area(card_text)
         self._bind_preview_open(label)
