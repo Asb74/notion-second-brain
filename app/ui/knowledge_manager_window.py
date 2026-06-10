@@ -10,6 +10,7 @@ from tkinter import messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
 from app.persistence.knowledge_repository import KnowledgeRepository
+from app.persistence.masters_repository import MastersRepository
 from app.ui.app_icons import apply_app_icon
 
 logger = logging.getLogger(__name__)
@@ -21,9 +22,10 @@ class KnowledgeManagerWindow(tk.Toplevel):
     def __init__(self, parent: tk.Misc, db_connection: sqlite3.Connection):
         super().__init__(parent)
         self.repo = KnowledgeRepository(db_connection)
+        self.masters_repo = MastersRepository(db_connection)
         self.current_item_id: int | None = None
-        self.areas_by_name: dict[str, int | None] = {}
-        self.types_by_name: dict[str, int | None] = {}
+        self.areas_by_name: dict[str, str] = {}
+        self.types_by_name: dict[str, str] = {}
         self.topic_filter_by_name: dict[str, int | None] = {}
         self.topics_by_name: dict[str, int | None] = {}
         self.topic_name_by_id: dict[int, str] = {}
@@ -155,20 +157,18 @@ class KnowledgeManagerWindow(tk.Toplevel):
         ttk.Label(self, textvariable=self.status_var).grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 8))
 
     def _load_reference_values(self) -> None:
-        area_rows = self.repo.list_areas()
-        type_rows = self.repo.list_item_types()
-        self.areas_by_name = {str(row["name"]): int(row["id"]) for row in area_rows}
-        self.types_by_name = {str(row["name"]): int(row["id"]) for row in type_rows}
-        self.areas_by_name = {"": None, **self.areas_by_name}
-        self.types_by_name = {"": None, **self.types_by_name}
+        area_values = self.masters_repo.list_active("Area")
+        type_values = self.masters_repo.list_active("Tipo")
+        self.areas_by_name = {"": "", **{value: value for value in area_values}}
+        self.types_by_name = {"": "", **{value: value for value in type_values}}
         self.area_combo.configure(values=list(self.areas_by_name.keys()))
         self.type_combo.configure(values=list(self.types_by_name.keys()))
-        self.area_filter_combo.configure(values=["Todas", *[str(row["name"]) for row in area_rows]])
-        self.type_filter_combo.configure(values=["Todos", *[str(row["name"]) for row in type_rows]])
-        if not self.area_var.get() and area_rows:
-            self.area_var.set(str(area_rows[0]["name"]))
-        if not self.type_var.get() and type_rows:
-            self.type_var.set(str(type_rows[0]["name"]))
+        self.area_filter_combo.configure(values=["Todas", *area_values])
+        self.type_filter_combo.configure(values=["Todos", *type_values])
+        if not self.area_var.get() and area_values:
+            self.area_var.set(area_values[0])
+        if not self.type_var.get() and type_values:
+            self.type_var.set(type_values[0])
         self._refresh_topic_filter_values()
         self._refresh_topic_values(keep_value=self.topic_var.get())
 
@@ -181,9 +181,9 @@ class KnowledgeManagerWindow(tk.Toplevel):
         return topic_name
 
     def _refresh_topic_filter_values(self) -> None:
-        area_id = self._selected_filter_id(self.area_filter_var.get(), self.areas_by_name, "Todas")
-        topic_rows = self.repo.list_topics(area_id=area_id)
-        include_area = area_id is None
+        area = self._selected_filter_value(self.area_filter_var.get(), "Todas")
+        topic_rows = self.repo.list_topics(area=area)
+        include_area = area is None
         self.topic_filter_by_name = {"Todos": None}
         for row in topic_rows:
             self.topic_filter_by_name[self._topic_label(row, include_area)] = int(row["id"])
@@ -193,9 +193,9 @@ class KnowledgeManagerWindow(tk.Toplevel):
             self.topic_filter_var.set("Todos")
 
     def _refresh_topic_values(self, keep_value: str = "", selected_topic_id: int | None = None) -> None:
-        area_id = self.areas_by_name.get(self.area_var.get())
-        topic_rows = self.repo.list_topics(area_id=area_id) if area_id is not None else self.repo.list_topics()
-        include_area = area_id is None
+        area = self.areas_by_name.get(self.area_var.get(), "")
+        topic_rows = self.repo.list_topics(area=area) if area else self.repo.list_topics()
+        include_area = not area
         self.topics_by_name = {"": None}
         self.topic_name_by_id = {}
         for row in topic_rows:
@@ -231,14 +231,20 @@ class KnowledgeManagerWindow(tk.Toplevel):
             return None
         return mapping.get(value)
 
+    @staticmethod
+    def _selected_filter_value(value: str, empty_label: str) -> str | None:
+        if value == empty_label:
+            return None
+        return value.strip() or None
+
     def refresh_items(self) -> None:
         self._load_reference_values()
         for row_id in self.tree.get_children():
             self.tree.delete(row_id)
-        area_id = self._selected_filter_id(self.area_filter_var.get(), self.areas_by_name, "Todas")
-        type_id = self._selected_filter_id(self.type_filter_var.get(), self.types_by_name, "Todos")
+        area = self._selected_filter_value(self.area_filter_var.get(), "Todas")
+        tipo = self._selected_filter_value(self.type_filter_var.get(), "Todos")
         topic_id = self._selected_filter_id(self.topic_filter_var.get(), self.topic_filter_by_name, "Todos")
-        rows = self.repo.list_items(self.search_var.get(), area_id, type_id, topic_id=topic_id)
+        rows = self.repo.list_items(self.search_var.get(), area=area, tipo=tipo, topic_id=topic_id)
         for row in rows:
             self.tree.insert(
                 "",
@@ -300,8 +306,8 @@ class KnowledgeManagerWindow(tk.Toplevel):
             return
         content = self.content_text.get("1.0", "end").strip()
         summary = self.summary_text.get("1.0", "end").strip()
-        area_id = self.areas_by_name.get(self.area_var.get())
-        type_id = self.types_by_name.get(self.type_var.get())
+        area = self.areas_by_name.get(self.area_var.get(), "")
+        tipo = self.types_by_name.get(self.type_var.get(), "")
         topic_id = self.topics_by_name.get(self.topic_var.get())
         tags = self._tags_from_entry()
         try:
@@ -309,8 +315,8 @@ class KnowledgeManagerWindow(tk.Toplevel):
                 item_id = self.repo.create_item(
                     title=title,
                     content=content,
-                    area_id=area_id,
-                    item_type_id=type_id,
+                    area=area,
+                    tipo=tipo,
                     topic_id=topic_id,
                     tags=tags,
                     source_type=self.source_var.get().strip() or "manual",
@@ -324,8 +330,8 @@ class KnowledgeManagerWindow(tk.Toplevel):
                     item_id=self.current_item_id,
                     title=title,
                     content=content,
-                    area_id=area_id,
-                    item_type_id=type_id,
+                    area=area,
+                    tipo=tipo,
                     topic_id=topic_id,
                     tags=tags,
                     summary=summary,
@@ -360,9 +366,10 @@ class TopicManagerDialog(tk.Toplevel):
     def __init__(self, parent: tk.Misc, repo: KnowledgeRepository, on_change: Callable[[], None]) -> None:
         super().__init__(parent)
         self.repo = repo
+        self.masters_repo = MastersRepository(repo.conn)
         self.on_change = on_change
         self.selected_topic_id: int | None = None
-        self.areas_by_name: dict[str, int | None] = {}
+        self.areas_by_name: dict[str, str] = {}
 
         self.title("Gestionar temas")
         self.geometry("720x420")
@@ -421,8 +428,8 @@ class TopicManagerDialog(tk.Toplevel):
         ttk.Button(buttons, text="Desactivar", command=self.deactivate_topic).pack(side="left")
 
     def refresh(self) -> None:
-        area_rows = self.repo.list_areas()
-        self.areas_by_name = {"": None, **{str(row["name"]): int(row["id"]) for row in area_rows}}
+        area_values = self.masters_repo.list_active("Area")
+        self.areas_by_name = {"": "", **{value: value for value in area_values}}
         self.area_combo.configure(values=list(self.areas_by_name.keys()))
         for row_id in self.tree.get_children():
             self.tree.delete(row_id)
@@ -449,14 +456,14 @@ class TopicManagerDialog(tk.Toplevel):
         self.description_var.set(str(row["description"] or ""))
         self.active_var.set(bool(row["active"]))
 
-    def _area_id(self) -> int | None:
-        return self.areas_by_name.get(self.area_var.get())
+    def _area(self) -> str:
+        return self.areas_by_name.get(self.area_var.get(), "")
 
     def add_topic(self) -> None:
         try:
             topic_id = self.repo.create_topic(
                 name=self.name_var.get(),
-                area_id=self._area_id(),
+                area=self._area(),
                 description=self.description_var.get(),
             )
         except Exception as exc:  # noqa: BLE001
@@ -476,7 +483,7 @@ class TopicManagerDialog(tk.Toplevel):
             self.repo.update_topic(
                 topic_id=self.selected_topic_id,
                 name=self.name_var.get(),
-                area_id=self._area_id(),
+                area=self._area(),
                 description=self.description_var.get(),
                 active=self.active_var.get(),
             )

@@ -119,8 +119,8 @@ def migracion_3(conn: sqlite3.Connection) -> None:
 
 
 def ensure_knowledge_schema(conn: sqlite3.Connection) -> None:
-    """Create Knowledge Manager tables, indexes, and seed data idempotently."""
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    """Create Knowledge Manager tables, indexes, and compatibility migrations idempotently."""
+    # Legacy Knowledge-specific masters. New code uses global masters for area/tipo.
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS knowledge_areas (
@@ -153,6 +153,7 @@ def ensure_knowledge_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS knowledge_topics (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             area_id INTEGER,
+            area TEXT,
             name TEXT NOT NULL,
             description TEXT,
             sort_order INTEGER DEFAULT 0,
@@ -172,8 +173,10 @@ def ensure_knowledge_schema(conn: sqlite3.Connection) -> None:
             content TEXT,
             summary TEXT,
             area_id INTEGER,
+            area TEXT,
             topic_id INTEGER,
             item_type_id INTEGER,
+            tipo TEXT,
             source_type TEXT NOT NULL DEFAULT 'manual',
             source_id TEXT,
             source_path TEXT,
@@ -186,8 +189,49 @@ def ensure_knowledge_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    if "topic_id" not in _table_columns(conn, "knowledge_items"):
+    knowledge_item_columns = _table_columns(conn, "knowledge_items")
+    if "topic_id" not in knowledge_item_columns:
         conn.execute("ALTER TABLE knowledge_items ADD COLUMN topic_id INTEGER")
+    if "area" not in knowledge_item_columns:
+        conn.execute("ALTER TABLE knowledge_items ADD COLUMN area TEXT")
+    if "tipo" not in knowledge_item_columns:
+        conn.execute("ALTER TABLE knowledge_items ADD COLUMN tipo TEXT")
+    if "area" not in _table_columns(conn, "knowledge_topics"):
+        conn.execute("ALTER TABLE knowledge_topics ADD COLUMN area TEXT")
+
+    conn.execute(
+        """
+        UPDATE knowledge_topics
+        SET area = (
+            SELECT ka.name
+            FROM knowledge_areas ka
+            WHERE ka.id = knowledge_topics.area_id
+        )
+        WHERE (area IS NULL OR TRIM(area) = '') AND area_id IS NOT NULL
+        """
+    )
+    conn.execute(
+        """
+        UPDATE knowledge_items
+        SET area = (
+            SELECT ka.name
+            FROM knowledge_areas ka
+            WHERE ka.id = knowledge_items.area_id
+        )
+        WHERE (area IS NULL OR TRIM(area) = '') AND area_id IS NOT NULL
+        """
+    )
+    conn.execute(
+        """
+        UPDATE knowledge_items
+        SET tipo = (
+            SELECT kit.name
+            FROM knowledge_item_types kit
+            WHERE kit.id = knowledge_items.item_type_id
+        )
+        WHERE (tipo IS NULL OR TRIM(tipo) = '') AND item_type_id IS NOT NULL
+        """
+    )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS knowledge_tags (
@@ -209,30 +253,15 @@ def ensure_knowledge_schema(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_items_area ON knowledge_items(area_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_items_area_text ON knowledge_items(area)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_items_topic ON knowledge_items(topic_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_items_type ON knowledge_items(item_type_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_items_tipo_text ON knowledge_items(tipo)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_topics_area ON knowledge_topics(area_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_topics_area_text ON knowledge_topics(area)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_items_source ON knowledge_items(source_type, source_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_items_title ON knowledge_items(title)")
 
-    for sort_order, name in enumerate(["General", "Personal", "Trabajo", "Proyectos", "Archivo"], start=1):
-        conn.execute(
-            """
-            INSERT INTO knowledge_areas(name, description, color, sort_order, active, created_at)
-            VALUES (?, '', '', ?, 1, ?)
-            ON CONFLICT(name) DO NOTHING
-            """,
-            (name, sort_order, now),
-        )
-    for name in ["Nota", "Procedimiento", "Reunión", "Proyecto", "Referencia", "Diario", "Audio", "Documento", "Imagen", "Email"]:
-        conn.execute(
-            """
-            INSERT INTO knowledge_item_types(name, description, icon, active, created_at)
-            VALUES (?, '', '', 1, ?)
-            ON CONFLICT(name) DO NOTHING
-            """,
-            (name, now),
-        )
     conn.commit()
 
 
