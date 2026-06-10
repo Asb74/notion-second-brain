@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -116,6 +117,107 @@ def migracion_3(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+
+def ensure_knowledge_schema(conn: sqlite3.Connection) -> None:
+    """Create Knowledge Manager tables, indexes, and seed data idempotently."""
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS knowledge_areas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            description TEXT,
+            color TEXT,
+            sort_order INTEGER DEFAULT 0,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS knowledge_item_types (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            description TEXT,
+            icon TEXT,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS knowledge_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            content TEXT,
+            summary TEXT,
+            area_id INTEGER,
+            item_type_id INTEGER,
+            source_type TEXT NOT NULL DEFAULT 'manual',
+            source_id TEXT,
+            source_path TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL,
+            updated_at TEXT,
+            FOREIGN KEY(area_id) REFERENCES knowledge_areas(id),
+            FOREIGN KEY(item_type_id) REFERENCES knowledge_item_types(id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS knowledge_tags (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS knowledge_item_tags (
+            item_id INTEGER NOT NULL,
+            tag_id INTEGER NOT NULL,
+            PRIMARY KEY(item_id, tag_id),
+            FOREIGN KEY(item_id) REFERENCES knowledge_items(id),
+            FOREIGN KEY(tag_id) REFERENCES knowledge_tags(id)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_items_area ON knowledge_items(area_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_items_type ON knowledge_items(item_type_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_items_source ON knowledge_items(source_type, source_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_items_title ON knowledge_items(title)")
+
+    for sort_order, name in enumerate(["General", "Personal", "Trabajo", "Proyectos", "Archivo"], start=1):
+        conn.execute(
+            """
+            INSERT INTO knowledge_areas(name, description, color, sort_order, active, created_at)
+            VALUES (?, '', '', ?, 1, ?)
+            ON CONFLICT(name) DO NOTHING
+            """,
+            (name, sort_order, now),
+        )
+    for name in ["Nota", "Procedimiento", "Reunión", "Proyecto", "Referencia", "Diario", "Audio", "Documento", "Imagen", "Email"]:
+        conn.execute(
+            """
+            INSERT INTO knowledge_item_types(name, description, icon, active, created_at)
+            VALUES (?, '', '', 1, ?)
+            ON CONFLICT(name) DO NOTHING
+            """,
+            (name, now),
+        )
+    conn.commit()
+
+
+def migracion_4(conn: sqlite3.Connection) -> None:
+    ensure_knowledge_schema(conn)
+
+
 def run_migrations(conn: sqlite3.Connection) -> None:
     current_version = obtener_version(conn)
 
@@ -130,6 +232,14 @@ def run_migrations(conn: sqlite3.Connection) -> None:
     if current_version < 3:
         migracion_3(conn)
         guardar_version(conn, 3)
+
+    if current_version < 4:
+        migracion_4(conn)
+        guardar_version(conn, 4)
+
+    # Keep Knowledge Manager schema idempotent even for databases whose schema_version
+    # was advanced by older application builds.
+    ensure_knowledge_schema(conn)
 
     cursor = conn.cursor()
     table_exists = cursor.execute(

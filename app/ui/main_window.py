@@ -35,6 +35,7 @@ from app.ui.email_manager_window import EmailManagerWindow
 from app.ui.calendar_manager_window import CalendarManagerWindow
 from app.ui.ml_manager_window import MLManagerWindow
 from app.ui.ml_quality_metrics_window import MLQualityMetricsWindow
+from app.ui.knowledge_manager_window import KnowledgeManagerWindow
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.app_icons import apply_app_icon
 from app.ui.dictation_widgets import attach_dictation
@@ -118,6 +119,7 @@ class MainWindow(ttk.Frame):
         self._calendar_window: CalendarManagerWindow | None = None
         self._ml_manager_window: MLManagerWindow | None = None
         self._ml_quality_window: MLQualityMetricsWindow | None = None
+        self._knowledge_window: KnowledgeManagerWindow | None = None
         self._calendar_client: GoogleCalendarClient | None = None
         self.calendar_repo = CalendarRepository(db_connection) if db_connection is not None else None
         self.calendar_name_to_id: dict[str, str] = {}
@@ -185,6 +187,10 @@ class MainWindow(ttk.Frame):
         modulos.add_command(label="ML Manager", command=self._open_ml_manager)
         modulos.add_command(label="ML Metrics", command=self._open_ml_quality_metrics)
         menubar.add_cascade(label="Módulos", menu=modulos)
+
+        conocimiento = tk.Menu(menubar, tearoff=0)
+        conocimiento.add_command(label="Knowledge Manager", command=self._open_knowledge_manager)
+        menubar.add_cascade(label="Conocimiento", menu=conocimiento)
 
         configuracion = tk.Menu(menubar, tearoff=0)
         configuracion.add_command(label="General", command=lambda: self._open_settings("General"))
@@ -295,6 +301,24 @@ class MainWindow(ttk.Frame):
         except Exception as exc:  # noqa: BLE001
             logger.exception("No se pudo abrir la agenda")
             messagebox.showerror("Error", f"No se pudo abrir la agenda.\n\n{exc}")
+
+    def _open_knowledge_manager(self) -> None:
+        if self.db_connection is None:
+            messagebox.showerror("Error", "No hay conexión de base de datos disponible para Knowledge Manager.")
+            return
+
+        if self._knowledge_window is not None and self._knowledge_window.winfo_exists():
+            self._knowledge_window.deiconify()
+            self._knowledge_window.lift()
+            self._knowledge_window.focus_force()
+            self._knowledge_window.refresh_items()
+            return
+
+        try:
+            self._knowledge_window = KnowledgeManagerWindow(self.master, self.db_connection)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("No se pudo abrir Knowledge Manager")
+            messagebox.showerror("Error", f"No se pudo abrir Knowledge Manager.\n\n{exc}")
 
 
     def _open_ml_manager(self) -> None:
