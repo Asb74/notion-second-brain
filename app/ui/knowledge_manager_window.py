@@ -291,12 +291,18 @@ class KnowledgeManagerWindow(tk.Toplevel):
             wraplength=560,
         )
         self.attachment_preview_label.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
+        self.attachment_preview_label.bind("<Button-1>", self._open_preview_attachment)
+        preview_frame.bind("<Configure>", self._schedule_attachment_preview_refresh)
         self.attachment_preview_open_button = ttk.Button(
             preview_frame,
             text="Abrir archivo",
             command=self.open_attachment,
         )
+        self._preview_image = None
         self.attachment_preview_image = None
+        self._preview_attachment_path: Path | None = None
+        self._preview_attachment_id: int | None = None
+        self._preview_resize_after_id: str | None = None
 
         dnd_available = self._setup_drag_and_drop((self, attachments_tab, self.attachments_tree, preview_frame))
         if dnd_available:
@@ -326,6 +332,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
             if total_height > 0:
                 try:
                     self.attachments_paned.sashpos(0, max(int(total_height * 0.25), 120))
+                    logger.info("KNOWLEDGE_UI: adjuntos sash 25/75 aplicado")
                 except Exception:  # noqa: BLE001
                     logger.debug("No se pudo aplicar sash inicial de adjuntos", exc_info=True)
 
@@ -606,8 +613,11 @@ class KnowledgeManagerWindow(tk.Toplevel):
     def _clear_attachment_preview(self, message: str = "Selecciona un adjunto para ver la vista previa.") -> None:
         if not hasattr(self, "attachment_preview_label"):
             return
+        self._preview_image = None
         self.attachment_preview_image = None
-        self.attachment_preview_label.configure(image="", text=message)
+        self._preview_attachment_path = None
+        self._preview_attachment_id = None
+        self.attachment_preview_label.configure(image="", text=message, cursor="")
         if hasattr(self, "attachment_preview_open_button"):
             self.attachment_preview_open_button.grid_remove()
 
@@ -617,6 +627,42 @@ class KnowledgeManagerWindow(tk.Toplevel):
             self._clear_attachment_preview()
             return
         self._show_attachment_preview(attachment_id)
+
+    def _schedule_attachment_preview_refresh(self, _event: tk.Event | None = None) -> None:
+        if not hasattr(self, "_preview_attachment_id") or self._preview_attachment_id is None:
+            return
+        if self._preview_resize_after_id is not None:
+            try:
+                self.after_cancel(self._preview_resize_after_id)
+            except Exception:  # noqa: BLE001
+                logger.debug("No se pudo cancelar refresco de preview de adjunto", exc_info=True)
+        self._preview_resize_after_id = self.after(180, self._refresh_attachment_preview_after_resize)
+
+    def _refresh_attachment_preview_after_resize(self) -> None:
+        self._preview_resize_after_id = None
+        attachment_id = self._preview_attachment_id
+        if attachment_id is not None:
+            self._show_attachment_preview(attachment_id)
+
+    def _open_preview_attachment(self, _event: tk.Event | None = None) -> None:
+        path = getattr(self, "_preview_attachment_path", None)
+        if path is None:
+            return
+        if not path.exists():
+            messagebox.showerror("Abrir adjunto", f"El archivo no existe:\n{path}", parent=self)
+            return
+        try:
+            self._open_path_with_default_app(path)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("No se pudo abrir el adjunto desde la vista previa de Knowledge")
+            messagebox.showerror("Abrir adjunto", f"No se pudo abrir el archivo.\n\n{exc}", parent=self)
+            return
+        logger.info("KNOWLEDGE_PREVIEW: click abrir archivo path=%s", path)
+
+    def _activate_preview_click(self, attachment_id: int, path: Path) -> None:
+        self._preview_attachment_id = attachment_id
+        self._preview_attachment_path = path
+        self.attachment_preview_label.configure(cursor="hand2")
 
     def _show_attachment_preview(self, attachment_id: int) -> None:
         row = self.repo.get_attachment(attachment_id)
@@ -630,48 +676,57 @@ class KnowledgeManagerWindow(tk.Toplevel):
         if not path.exists():
             self._clear_attachment_preview(f"El archivo no existe:\n{path}")
             return
+        self._activate_preview_click(attachment_id, path)
         if suffix in IMAGE_ATTACHMENT_EXTENSIONS or mime_type in {"image/png", "image/jpeg"}:
             if self._show_image_attachment_preview(path):
                 return
+            self._show_file_info_preview(row, path, type_label="Imagen")
+            return
         if suffix in PDF_ATTACHMENT_EXTENSIONS or mime_type == "application/pdf":
-            if self._show_pdf_attachment_preview(row, path):
+            if self._show_pdf_attachment_preview(path):
                 return
-            self._show_file_info_preview(row, path, action_text="Abrir PDF", type_label="PDF")
-            logger.info("KNOWLEDGE_PREVIEW: pdf preview no disponible path=%s", path)
+            self._show_file_info_preview(row, path, type_label="PDF")
             return
         if suffix in EXCEL_ATTACHMENT_EXTENSIONS:
-            self._show_file_info_preview(row, path, action_text="Abrir Excel", type_label="Excel")
+            self._show_file_info_preview(row, path, type_label="Excel")
             return
         if suffix in WORD_ATTACHMENT_EXTENSIONS:
-            self._show_file_info_preview(row, path, action_text="Abrir Word", type_label="Word")
+            self._show_file_info_preview(row, path, type_label="Word")
             return
         if suffix in AUDIO_ATTACHMENT_EXTENSIONS:
-            self._show_file_info_preview(row, path, action_text="Abrir/Reproducir", type_label="Audio")
+            self._show_file_info_preview(row, path, type_label="Audio")
             return
         self._show_file_info_preview(row, path)
 
+    @staticmethod
+    def _module_available(module_name: str) -> bool:
+        try:
+            return importlib.util.find_spec(module_name) is not None
+        except (ImportError, ModuleNotFoundError, ValueError):
+            return False
+
     def _show_image_attachment_preview(self, path: Path) -> bool:
-        if importlib.util.find_spec("PIL") is None or importlib.util.find_spec("PIL.ImageTk") is None:
+        if not self._module_available("PIL") or not self._module_available("PIL.ImageTk"):
             return False
         image_module = importlib.import_module("PIL.Image")
         image_tk_module = importlib.import_module("PIL.ImageTk")
         try:
-            image = image_module.open(path)
-            self._display_pil_preview(image, image_tk_module)
+            with image_module.open(path) as image:
+                self._display_pil_preview(image, image_tk_module)
         except Exception:  # noqa: BLE001
             logger.exception("No se pudo generar la vista previa de imagen de Knowledge")
             return False
-        self.attachment_preview_label.configure(image=self.attachment_preview_image, text="")
+        self.attachment_preview_label.configure(image=self._preview_image, text="")
         self.attachment_preview_open_button.grid_remove()
-        logger.info("KNOWLEDGE_PREVIEW: imagen cargada path=%s", path)
+        logger.info("KNOWLEDGE_PREVIEW: imagen renderizada path=%s", path)
         return True
 
-    def _show_pdf_attachment_preview(self, row: sqlite3.Row, path: Path) -> bool:
-        if importlib.util.find_spec("PIL") is None or importlib.util.find_spec("PIL.ImageTk") is None:
+    def _show_pdf_attachment_preview(self, path: Path) -> bool:
+        if not self._module_available("PIL") or not self._module_available("PIL.ImageTk"):
             return False
         image_module = importlib.import_module("PIL.Image")
         image_tk_module = importlib.import_module("PIL.ImageTk")
-        if importlib.util.find_spec("fitz") is not None:
+        if self._module_available("fitz"):
             fitz = importlib.import_module("fitz")
             try:
                 document = fitz.open(path)
@@ -683,24 +738,22 @@ class KnowledgeManagerWindow(tk.Toplevel):
                 image = image_module.frombytes("RGB", [pixmap.width, pixmap.height], pixmap.samples)
                 document.close()
                 self._display_pil_preview(image, image_tk_module)
-                self.attachment_preview_label.configure(image=self.attachment_preview_image, text="")
-                self.attachment_preview_open_button.configure(text="Abrir PDF")
-                self.attachment_preview_open_button.grid(row=1, column=0, pady=(0, 8))
-                logger.info("KNOWLEDGE_PREVIEW: pdf preview disponible path=%s", path)
+                self.attachment_preview_label.configure(image=self._preview_image, text="")
+                self.attachment_preview_open_button.grid_remove()
+                logger.info("KNOWLEDGE_PREVIEW: pdf primera pagina renderizada path=%s", path)
                 return True
             except Exception:  # noqa: BLE001
                 logger.exception("No se pudo generar la vista previa PDF con PyMuPDF")
-        if importlib.util.find_spec("pdf2image") is not None:
+        if self._module_available("pdf2image"):
             pdf2image = importlib.import_module("pdf2image")
             try:
                 pages = pdf2image.convert_from_path(str(path), first_page=1, last_page=1)
                 if not pages:
                     return False
                 self._display_pil_preview(pages[0], image_tk_module)
-                self.attachment_preview_label.configure(image=self.attachment_preview_image, text="")
-                self.attachment_preview_open_button.configure(text="Abrir PDF")
-                self.attachment_preview_open_button.grid(row=1, column=0, pady=(0, 8))
-                logger.info("KNOWLEDGE_PREVIEW: pdf preview disponible path=%s", path)
+                self.attachment_preview_label.configure(image=self._preview_image, text="")
+                self.attachment_preview_open_button.grid_remove()
+                logger.info("KNOWLEDGE_PREVIEW: pdf primera pagina renderizada path=%s", path)
                 return True
             except Exception:  # noqa: BLE001
                 logger.exception("No se pudo generar la vista previa PDF con pdf2image")
@@ -708,9 +761,12 @@ class KnowledgeManagerWindow(tk.Toplevel):
 
     def _display_pil_preview(self, image: object, image_tk_module: object) -> None:
         width, height = self._attachment_preview_bounds()
+        if hasattr(image, "copy"):
+            image = image.copy()
         if hasattr(image, "thumbnail"):
             image.thumbnail((width, height))
-        self.attachment_preview_image = image_tk_module.PhotoImage(image)
+        self._preview_image = image_tk_module.PhotoImage(image)
+        self.attachment_preview_image = self._preview_image
 
     def _attachment_preview_bounds(self) -> tuple[int, int]:
         self.update_idletasks()
@@ -725,23 +781,33 @@ class KnowledgeManagerWindow(tk.Toplevel):
         row: sqlite3.Row,
         path: Path,
         *,
-        action_text: str = "Abrir archivo",
         type_label: str = "Archivo",
     ) -> None:
         file_size = path.stat().st_size if path.exists() else int(row["file_size"] or 0)
         mime_type = str(row["mime_type"] or mimetypes.guess_type(str(path))[0] or "Tipo desconocido")
-        file_info = (
-            f"{type_label}: {row['original_filename'] or row['stored_filename'] or path.name}\n"
+        filename = str(row["original_filename"] or row["stored_filename"] or path.name)
+        icon_by_type = {
+            "PDF": "📄",
+            "Excel": "📊",
+            "Word": "📝",
+            "Audio": "🎧",
+            "Imagen": "🖼️",
+            "Archivo": "📎",
+        }
+        icon = icon_by_type.get(type_label, "📎")
+        card_text = (
+            f"{icon}  {type_label}\n\n"
+            f"{filename}\n\n"
             f"Tipo: {mime_type}\n"
             f"Tamaño: {self._format_file_size(file_size)}\n"
             f"Ruta: {path}\n\n"
-            "Vista interna no disponible. Usa el botón para abrirlo con la aplicación predeterminada."
+            "Haz clic en esta tarjeta para abrir el archivo con la aplicación predeterminada."
         )
+        self._preview_image = None
         self.attachment_preview_image = None
-        self.attachment_preview_label.configure(image="", text=file_info)
-        self.attachment_preview_open_button.configure(text=action_text)
-        self.attachment_preview_open_button.grid(row=1, column=0, pady=(0, 8))
-        logger.info("KNOWLEDGE_PREVIEW: fallback abrir archivo path=%s", path)
+        self.attachment_preview_label.configure(image="", text=card_text)
+        self.attachment_preview_open_button.grid_remove()
+        logger.info("KNOWLEDGE_PREVIEW: tarjeta fallback tipo=%s path=%s", type_label, path)
 
     def _register_attachment_record(
         self,
