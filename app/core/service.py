@@ -82,9 +82,14 @@ class NoteService:
     def list_masters(self, category: str):
         return self.masters_repo.list_all(category)
 
-    def add_master(self, category: str, value: str) -> None:
+    def add_master(self, category: str, value: str, description: str = "") -> None:
         logger.info("MASTERS: operación local sin Notion add category=%s value=%s", category, value)
-        self.masters_repo.add_master(category, value)
+        self.masters_repo.add_master(category, value, description)
+
+    def update_master(self, category: str, old_value: str, new_value: str, description: str) -> None:
+        if old_value != new_value and self.masters_repo.is_locked(category, old_value):
+            raise ValueError(f"'{old_value}' está bloqueado por el sistema y no puede renombrarse.")
+        self.masters_repo.update_master(category, old_value, new_value, description)
 
     def deactivate_master(self, category: str, value: str) -> None:
         if self.masters_repo.is_locked(category, value):

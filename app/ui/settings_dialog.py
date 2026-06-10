@@ -27,6 +27,8 @@ class SettingsDialog(tk.Toplevel):
         load_master_values: Callable[[str], list[str]],
         add_master_value: Callable[[str, str], None],
         delete_master_value: Callable[[str, str], None],
+        list_master_rows: Callable[[str], list] | None = None,
+        update_master_value: Callable[[str, str, str, str], None] | None = None,
         on_open_master: Callable[[str], None] | None = None,
         initial_tab: str = "General",
     ):
@@ -44,11 +46,16 @@ class SettingsDialog(tk.Toplevel):
         self._load_master_values = load_master_values
         self._add_master = add_master_value
         self._delete_master = delete_master_value
+        self._list_master_rows = list_master_rows
+        self._update_master = update_master_value
         self._on_open_master = on_open_master
+        self._selected_master_category = ""
+        self._selected_master_value = ""
         self.config_manager = ConfigManager()
 
         self.areas_list: tk.Listbox | None = None
         self.tipos_list: tk.Listbox | None = None
+        self.master_name_var = tk.StringVar()
 
         self.config_vars: dict[str, tk.Variable] = {
             "notion_token": tk.StringVar(),
@@ -193,22 +200,100 @@ class SettingsDialog(tk.Toplevel):
 
         body.columnconfigure(0, weight=1)
         body.columnconfigure(1, weight=1)
-        body.rowconfigure(1, weight=1)
+        body.rowconfigure(2, weight=1)
 
-        ttk.Label(body, text="Áreas").grid(row=0, column=0, sticky="w", pady=(0, 4))
-        ttk.Label(body, text="Tipos").grid(row=0, column=1, sticky="w", pady=(0, 4))
+        ttk.Label(
+            body,
+            text="Área define el ámbito principal. Tipo define la naturaleza del contenido. Abre cada gestor para editar Nombre y Descripción.",
+            wraplength=720,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+        ttk.Label(body, text="Áreas").grid(row=1, column=0, sticky="w", pady=(0, 4))
+        ttk.Label(body, text="Tipos").grid(row=1, column=1, sticky="w", pady=(0, 4))
 
         self.areas_list = tk.Listbox(body, height=10)
-        self.areas_list.grid(row=1, column=0, sticky="nsew", padx=(0, 6), pady=(0, 8))
+        self.areas_list.grid(row=2, column=0, sticky="nsew", padx=(0, 6), pady=(0, 8))
+        self.areas_list.bind("<<ListboxSelect>>", lambda _event: self._load_master_detail("Area"))
 
         self.tipos_list = tk.Listbox(body, height=10)
-        self.tipos_list.grid(row=1, column=1, sticky="nsew", padx=(6, 0), pady=(0, 8))
+        self.tipos_list.grid(row=2, column=1, sticky="nsew", padx=(6, 0), pady=(0, 8))
+        self.tipos_list.bind("<<ListboxSelect>>", lambda _event: self._load_master_detail("Tipo"))
         self._reload_master_lists()
 
+        detail = ttk.LabelFrame(body, text="Nombre y descripción")
+        detail.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        detail.columnconfigure(1, weight=1)
+        ttk.Label(detail, text="Nombre").grid(row=0, column=0, sticky="w", padx=8, pady=(8, 4))
+        ttk.Entry(detail, textvariable=self.master_name_var).grid(row=0, column=1, sticky="ew", padx=8, pady=(8, 4))
+        ttk.Label(detail, text="Descripción").grid(row=1, column=0, sticky="nw", padx=8, pady=(0, 8))
+        self.master_description_text = tk.Text(detail, height=4, wrap="word")
+        self.master_description_text.grid(row=1, column=1, sticky="ew", padx=8, pady=(0, 8))
+
         actions = ttk.Frame(body)
-        actions.grid(row=2, column=0, columnspan=2, sticky="e")
+        actions.grid(row=4, column=0, columnspan=2, sticky="e")
+        ttk.Button(actions, text="Gestionar Áreas", command=lambda: self._open_master_manager("Area")).pack(side="right", padx=(6, 0))
+        ttk.Button(actions, text="Gestionar Tipos", command=lambda: self._open_master_manager("Tipo")).pack(side="right", padx=(6, 0))
         ttk.Button(actions, text="Añadir", command=self._add_master_item).pack(side="right", padx=(6, 0))
+        ttk.Button(actions, text="Editar", command=self._edit_master_item).pack(side="right", padx=(6, 0))
         ttk.Button(actions, text="Eliminar", command=self._remove_master_item).pack(side="right")
+
+    def _master_description(self) -> str:
+        widget = getattr(self, "master_description_text", None)
+        if widget is None:
+            return ""
+        return widget.get("1.0", "end").strip()
+
+    def _set_master_description(self, value: str) -> None:
+        widget = getattr(self, "master_description_text", None)
+        if widget is None:
+            return
+        widget.delete("1.0", "end")
+        widget.insert("1.0", value)
+
+    def _load_master_detail(self, category: str) -> None:
+        list_widget = self.areas_list if category == "Area" else self.tipos_list
+        if list_widget is None or not list_widget.curselection():
+            return
+        if category == "Area" and self.tipos_list is not None:
+            self.tipos_list.selection_clear(0, tk.END)
+        if category == "Tipo" and self.areas_list is not None:
+            self.areas_list.selection_clear(0, tk.END)
+        value = str(list_widget.get(list_widget.curselection()[0])).strip()
+        self._selected_master_category = category
+        self._selected_master_value = value
+        self.master_name_var.set(value)
+        description = ""
+        if self._list_master_rows is not None:
+            for row in self._list_master_rows(category):
+                if str(row["value"]) == value:
+                    description = str(row["description"] or "")
+                    break
+        self._set_master_description(description)
+
+    def _edit_master_item(self) -> None:
+        if not self._selected_master_category or not self._selected_master_value:
+            messagebox.showinfo("Datos maestros", "Selecciona un área o tipo para editar.", parent=self)
+            return
+        if self._update_master is None:
+            self._open_master_manager(self._selected_master_category)
+            return
+        try:
+            self._update_master(
+                self._selected_master_category,
+                self._selected_master_value,
+                self.master_name_var.get(),
+                self._master_description(),
+            )
+            self._selected_master_value = self.master_name_var.get().strip()
+            self._reload_master_lists()
+        except Exception as exc:  # pragma: no cover - defensive UI safeguard
+            messagebox.showerror("Error", f"No se pudo editar el valor: {exc}", parent=self)
+
+    def _open_master_manager(self, category: str) -> None:
+        if self._on_open_master is None:
+            return
+        self._on_open_master(category)
+        self._reload_master_lists()
 
     def _build_footer(self) -> None:
         footer = ttk.Frame(self)
@@ -288,14 +373,19 @@ class SettingsDialog(tk.Toplevel):
             messagebox.showinfo("Datos maestros", "Selecciona la lista de Áreas o Tipos para añadir elementos.", parent=self)
             return
         category, _ = target
-        value = simpledialog.askstring("Añadir", f"Nuevo valor para {category}:", parent=self)
-        if value is None:
-            return
+        value = self.master_name_var.get().strip()
+        if not value:
+            value = simpledialog.askstring("Añadir", f"Nuevo valor para {category}:", parent=self)
+            if value is None:
+                return
         clean = value.strip()
         if not clean:
             return
         try:
-            self._add_master(category, clean)
+            try:
+                self._add_master(category, clean, self._master_description())
+            except TypeError:
+                self._add_master(category, clean)
             self._reload_master_lists()
         except Exception as exc:  # pragma: no cover - defensive UI safeguard
             messagebox.showerror("Error", f"No se pudo añadir el valor: {exc}", parent=self)

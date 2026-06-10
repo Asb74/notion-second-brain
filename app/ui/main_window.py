@@ -203,6 +203,8 @@ class MainWindow(ttk.Frame):
         menubar.add_cascade(label="Configuración", menu=configuracion)
 
         ayuda = tk.Menu(menubar, tearoff=0)
+        ayuda.add_command(label="Guía rápida", command=self._show_quick_guide)
+        ayuda.add_separator()
         ayuda.add_command(label="Logs", command=self._show_logs_info)
         ayuda.add_command(label="Diagnóstico", command=self._show_diagnostics_info)
         ayuda.add_separator()
@@ -714,12 +716,49 @@ class MainWindow(ttk.Frame):
             load_master_values=self.service.get_master_values,
             add_master_value=self.service.add_master,
             delete_master_value=self.service.deactivate_master,
+            list_master_rows=self.service.list_masters,
+            update_master_value=self.service.update_master,
             on_open_master=self._open_masters_dialog,
             initial_tab=initial_tab,
         )
 
     def abrir_validacion_pedidos(self) -> None:
         self._open_settings("Validación pedidos")
+
+    def _show_quick_guide(self) -> None:
+        logger.info("HELP: guía rápida abierta")
+        guide = tk.Toplevel(self.master)
+        apply_app_icon(guide)
+        guide.title("Guía rápida")
+        guide.geometry("640x520")
+        guide.minsize(560, 420)
+        guide.transient(self.master)
+        guide.columnconfigure(0, weight=1)
+        guide.rowconfigure(0, weight=1)
+
+        text = (
+            "Sansebas Nexus organiza la información en tres niveles:\n\n"
+            "1. Área\n"
+            "   Gran ámbito de vida o trabajo.\n"
+            "   Ejemplos: Personal, Trabajo, Sansebas, Archivo.\n\n"
+            "2. Tema\n"
+            "   Materia concreta dentro de un área.\n"
+            "   Ejemplos: Liquidaciones, Producción, Programación, Familia.\n\n"
+            "3. Tipo\n"
+            "   Naturaleza del contenido.\n"
+            "   Ejemplos: Nota, Tarea, Reunión, Documento, Procedimiento, Decisión.\n\n"
+            "Además:\n"
+            "- Las etiquetas son palabras clave libres.\n"
+            "- La fuente indica de dónde viene la información.\n"
+            "- Knowledge Manager guarda conocimiento permanente.\n"
+            "- Agenda gestiona fechas, tareas y eventos.\n"
+            "- Emails permite convertir correos en notas, acciones o conocimiento."
+        )
+        content = tk.Text(guide, wrap="word", padx=14, pady=14, height=20)
+        content.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        content.insert("1.0", text)
+        content.configure(state="disabled")
+        ttk.Button(guide, text="Cerrar", command=guide.destroy).grid(row=1, column=0, sticky="e", padx=10, pady=(0, 10))
 
     def _show_logs_info(self) -> None:
         messagebox.showinfo(
