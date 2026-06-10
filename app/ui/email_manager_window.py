@@ -41,6 +41,7 @@ from app.core.models import NoteCreateRequest
 from app.core.outlook.outlook_service import OutlookService
 from app.core.service import NoteService
 from app.persistence.email_repository import EmailRepository
+from app.persistence.knowledge_repository import KnowledgeRepository
 from app.persistence.calendar_repository import CalendarRepository
 from app.persistence.training_repository import TrainingRepository
 from app.persistence.pedidos_repository import PedidosRepository
@@ -611,6 +612,7 @@ class EmailManagerWindow(tk.Toplevel):
         global_training_path = Path(os.getenv("GLOBAL_TRAINING_DATA_PATH", "training_data.json"))
         self.global_learning_store = GlobalLearningStore(file_path=global_training_path)
         self.outlook_service = OutlookService(db_connection)
+        self.knowledge_repo = KnowledgeRepository(db_connection)
         self.attachment_cache = AttachmentCache(gmail_client=gmail_client)
         self.my_email = self._resolve_my_email()
 
@@ -1006,6 +1008,7 @@ class EmailManagerWindow(tk.Toplevel):
 
         self.tree_context_menu = tk.Menu(self.tree, tearoff=0)
         self.tree_context_menu.add_command(label="Marcar como ignorado", command=self._mark_selected_as_ignored)
+        self.tree_context_menu.add_command(label="Guardar como conocimiento", command=self._save_selected_emails_as_knowledge)
 
         self.excel_filter = ExcelTreeFilter(
             master=self,
@@ -1149,6 +1152,7 @@ class EmailManagerWindow(tk.Toplevel):
 
         acciones_menu = tk.Menu(menubar, tearoff=0)
         acciones_menu.add_command(label="Crear nota", command=self._create_notes_from_selected_emails)
+        acciones_menu.add_command(label="Guardar como conocimiento", command=self._save_selected_emails_as_knowledge)
         acciones_menu.add_command(label="Crear evento", command=self._create_events_from_selected_emails)
         acciones_menu.add_separator()
         acciones_menu.add_command(label="Responder", command=self._create_outlook_draft)
@@ -1176,6 +1180,7 @@ class EmailManagerWindow(tk.Toplevel):
             ("🙈 Marcar ignoradas", self._mark_selected_as_ignored),
             ("🏷 Nueva categoría", self._create_category),
             ("📝 Crear nota", self._create_notes_from_selected_emails),
+            ("🧠 Guardar como conocimiento", self._save_selected_emails_as_knowledge),
             ("📅 Crear evento", self._create_events_from_selected_emails),
         ]
         for idx, (label, command) in enumerate(quick_actions):
@@ -1915,6 +1920,71 @@ class EmailManagerWindow(tk.Toplevel):
             self.calendar_refresh_callback()
         self.system_log(f"Creación de notas finalizada. Notas: {created_count}, omitidos: {skipped_count}")
         messagebox.showinfo("Resultado", f"Notas creadas: {created_count}\nOmitidos: {skipped_count}")
+
+    def _default_knowledge_area_id(self) -> int | None:
+        areas = self.knowledge_repo.list_areas()
+        for row in areas:
+            if str(row["name"] or "").lower() == "general":
+                return int(row["id"])
+        return int(areas[0]["id"]) if areas else None
+
+    def _default_knowledge_email_type_id(self) -> int | None:
+        item_types = self.knowledge_repo.list_item_types()
+        for row in item_types:
+            if str(row["name"] or "").lower() == "email":
+                return int(row["id"])
+        return int(item_types[0]["id"]) if item_types else None
+
+    def _save_selected_emails_as_knowledge(self) -> None:
+        selected_ids = self._selected_ids()
+        if not selected_ids:
+            messagebox.showwarning("Atención", "Selecciona al menos un correo para guardar como conocimiento.")
+            return
+
+        area_id = self._default_knowledge_area_id()
+        item_type_id = self._default_knowledge_email_type_id()
+        created_count = 0
+        skipped_count = 0
+        for gmail_id in selected_ids:
+            row = self.email_repo.get_email_content(gmail_id)
+            if row is None:
+                self.system_log(f"Email no encontrado para guardar como conocimiento: {gmail_id}", level="WARNING")
+                skipped_count += 1
+                continue
+
+            subject = str(row["subject"] or "").strip()
+            body_text = str(row["body_text"] or "").strip()
+            body_html = str(row["body_html"] or "").strip()
+            content = body_text or self._html_to_text(body_html)
+            if not subject and not content:
+                self.system_log(f"Email sin contenido para guardar como conocimiento: {gmail_id}", level="WARNING")
+                skipped_count += 1
+                continue
+
+            try:
+                item_id = self.knowledge_repo.create_item(
+                    title=subject or f"Email {gmail_id}",
+                    content=content,
+                    area_id=area_id,
+                    item_type_id=item_type_id,
+                    tags=["email"],
+                    source_type="email",
+                    source_id=str(row["gmail_id"] or gmail_id),
+                    summary="",
+                )
+                logger.info("KNOWLEDGE: email guardado como conocimiento gmail_id=%s", gmail_id)
+                self.system_log(f"KNOWLEDGE: email guardado como conocimiento gmail_id={gmail_id} item_id={item_id}")
+                created_count += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("No se pudo guardar email como conocimiento %s", gmail_id)
+                self.system_log(f"Error guardando email como conocimiento {gmail_id}: {exc}", level="ERROR")
+                skipped_count += 1
+
+        messagebox.showinfo(
+            "Guardar como conocimiento",
+            f"Notas de conocimiento creadas: {created_count}\nOmitidos: {skipped_count}",
+        )
+
 
     def _create_events_from_selected_emails(self) -> None:
         selected_ids = self._selected_ids()
