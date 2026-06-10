@@ -322,8 +322,9 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self._preview_attachment_path: Path | None = None
         self._preview_attachment_id: int | None = None
         self._current_preview_path: Path | None = None
+        self._current_preview_type: str | None = None
         self._current_preview_bounds: tuple[int, int] | None = None
-        self._preview_resize_after_id: str | None = None
+        self._preview_after_id: str | None = None
 
         dnd_available = self._setup_drag_and_drop((self, attachments_tab, self.attachments_tree, preview_frame))
         if dnd_available:
@@ -675,6 +676,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self._preview_attachment_path = None
         self._preview_attachment_id = None
         self._current_preview_path = None
+        self._current_preview_type = None
         self._current_preview_bounds = None
         self._reset_attachment_preview_area(message, clickable=False)
 
@@ -688,15 +690,15 @@ class KnowledgeManagerWindow(tk.Toplevel):
     def _schedule_attachment_preview_refresh(self, _event: tk.Event | None = None) -> None:
         if not hasattr(self, "_preview_attachment_id") or self._preview_attachment_id is None:
             return
-        if self._preview_resize_after_id is not None:
+        if self._preview_after_id is not None:
             try:
-                self.after_cancel(self._preview_resize_after_id)
+                self.after_cancel(self._preview_after_id)
             except Exception:  # noqa: BLE001
                 logger.debug("No se pudo cancelar refresco de preview de adjunto", exc_info=True)
-        self._preview_resize_after_id = self.after(180, self._refresh_attachment_preview_after_resize)
+        self._preview_after_id = self.after(180, self._refresh_attachment_preview_after_resize)
 
     def _refresh_attachment_preview_after_resize(self) -> None:
-        self._preview_resize_after_id = None
+        self._preview_after_id = None
         attachment_id = self._preview_attachment_id
         if attachment_id is None:
             return
@@ -734,24 +736,26 @@ class KnowledgeManagerWindow(tk.Toplevel):
         if not path.exists():
             self._clear_attachment_preview(f"El archivo no existe:\n{path}")
             return
-        if not force and self._current_preview_path == path:
-            logger.info("KNOWLEDGE_PREVIEW: preview omitido mismo archivo path=%s", path)
+        preview_type = self._attachment_preview_type(path, mime_type)
+        if not force and self._current_preview_path == path and self._current_preview_type == preview_type:
+            logger.info("KNOWLEDGE_PREVIEW: omitido mismo archivo path=%s", path)
             return
         self._activate_preview_click(attachment_id, path)
         self._current_preview_path = path
+        self._current_preview_type = preview_type
         self._current_preview_bounds = self._attachment_preview_bounds()
-        if suffix in IMAGE_ATTACHMENT_EXTENSIONS or mime_type.startswith("image/"):
+        if preview_type == "image":
             if self._show_image_attachment_preview(path):
                 return
             self._show_file_info_preview(row, path, type_label="Imagen")
             return
-        if suffix in PDF_ATTACHMENT_EXTENSIONS or mime_type == "application/pdf":
+        if preview_type == "pdf":
             if self._show_pdf_attachment_preview(path):
                 return
             logger.info("KNOWLEDGE_PREVIEW: pdf fallback sin motor path=%s", path)
             self._show_file_info_preview(row, path, type_label="PDF")
             return
-        if suffix in EXCEL_ATTACHMENT_EXTENSIONS:
+        if preview_type == "excel":
             if self._show_excel_attachment_preview(path):
                 return
             excel_preview_note = None
@@ -763,16 +767,31 @@ class KnowledgeManagerWindow(tk.Toplevel):
                 excel_preview_note = "No se pudo generar la tabla interna de este Excel."
             self._show_file_info_preview(row, path, type_label="Excel", extra_message=excel_preview_note)
             return
-        if suffix in WORD_ATTACHMENT_EXTENSIONS:
+        if preview_type == "word":
             if self._show_word_attachment_preview(path):
                 return
             logger.info("KNOWLEDGE_PREVIEW: word fallback path=%s", path)
             self._show_file_info_preview(row, path, type_label="Word")
             return
-        if suffix in AUDIO_ATTACHMENT_EXTENSIONS:
+        if preview_type == "audio":
             self._show_file_info_preview(row, path, type_label="Audio")
             return
         self._show_file_info_preview(row, path)
+
+    @staticmethod
+    def _attachment_preview_type(path: Path, mime_type: str) -> str:
+        suffix = path.suffix.lower()
+        if suffix in IMAGE_ATTACHMENT_EXTENSIONS or mime_type.startswith("image/"):
+            return "image"
+        if suffix in PDF_ATTACHMENT_EXTENSIONS or mime_type == "application/pdf":
+            return "pdf"
+        if suffix in EXCEL_ATTACHMENT_EXTENSIONS:
+            return "excel"
+        if suffix in WORD_ATTACHMENT_EXTENSIONS:
+            return "word"
+        if suffix in AUDIO_ATTACHMENT_EXTENSIONS:
+            return "audio"
+        return "file"
 
     @staticmethod
     def _module_available(module_name: str) -> bool:
@@ -797,30 +816,35 @@ class KnowledgeManagerWindow(tk.Toplevel):
         return True
 
     def _show_pdf_attachment_preview(self, path: Path) -> bool:
-        if not self._module_available("fitz"):
-            logger.info("KNOWLEDGE_PREVIEW: pymupdf no disponible")
-            return False
         if not self._module_available("PIL") or not self._module_available("PIL.ImageTk"):
             logger.info("KNOWLEDGE_PREVIEW: pdf fallback sin motor path=%s", path)
             return False
 
+        try:
+            import fitz  # type: ignore
+        except Exception as exc:  # noqa: BLE001
+            logger.info("KNOWLEDGE_PREVIEW: pdf fallback sin motor path=%s", path)
+            logger.debug("KNOWLEDGE_PREVIEW: pdf pymupdf no disponible %s path=%s", exc, path)
+            return False
+
         image_module = importlib.import_module("PIL.Image")
         image_tk_module = importlib.import_module("PIL.ImageTk")
-        fitz = importlib.import_module("fitz")
         document = None
         try:
-            document = fitz.open(path)
+            logger.info("KNOWLEDGE_PREVIEW: pdf pymupdf intentando path=%s", path)
+            document = fitz.open(str(path))
             if document.page_count < 1:
+                logger.info("KNOWLEDGE_PREVIEW: pdf pymupdf error sin páginas path=%s", path)
                 return False
             page = document.load_page(0)
-            pixmap = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
-            image = image_module.frombytes("RGB", (pixmap.width, pixmap.height), pixmap.samples)
+            pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+            image = image_module.frombytes("RGB", [pixmap.width, pixmap.height], pixmap.samples)
             self._display_pil_preview(image, image_tk_module)
             self.attachment_preview_label.configure(image=self._preview_image, text="")
             logger.info("KNOWLEDGE_PREVIEW: pdf pymupdf renderizado path=%s", path)
             return True
-        except Exception:  # noqa: BLE001
-            logger.exception("No se pudo generar la vista previa PDF con PyMuPDF")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("KNOWLEDGE_PREVIEW: pdf pymupdf error %s path=%s", exc, path)
             return False
         finally:
             if document is not None:
