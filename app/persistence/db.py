@@ -150,12 +150,29 @@ def ensure_knowledge_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS knowledge_topics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            area_id INTEGER,
+            name TEXT NOT NULL,
+            description TEXT,
+            sort_order INTEGER DEFAULT 0,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT,
+            FOREIGN KEY(area_id) REFERENCES knowledge_areas(id),
+            UNIQUE(area_id, name)
+        )
+        """
+    )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS knowledge_items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT NOT NULL,
             content TEXT,
             summary TEXT,
             area_id INTEGER,
+            topic_id INTEGER,
             item_type_id INTEGER,
             source_type TEXT NOT NULL DEFAULT 'manual',
             source_id TEXT,
@@ -164,10 +181,13 @@ def ensure_knowledge_schema(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL,
             updated_at TEXT,
             FOREIGN KEY(area_id) REFERENCES knowledge_areas(id),
+            FOREIGN KEY(topic_id) REFERENCES knowledge_topics(id),
             FOREIGN KEY(item_type_id) REFERENCES knowledge_item_types(id)
         )
         """
     )
+    if "topic_id" not in _table_columns(conn, "knowledge_items"):
+        conn.execute("ALTER TABLE knowledge_items ADD COLUMN topic_id INTEGER")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS knowledge_tags (
@@ -189,7 +209,9 @@ def ensure_knowledge_schema(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_items_area ON knowledge_items(area_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_items_topic ON knowledge_items(topic_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_items_type ON knowledge_items(item_type_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_topics_area ON knowledge_topics(area_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_items_source ON knowledge_items(source_type, source_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_items_title ON knowledge_items(title)")
 

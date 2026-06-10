@@ -73,6 +73,65 @@ class KnowledgeRepository:
         )
         self.conn.commit()
 
+    def list_topics(self, area_id: int | None = None, active_only: bool = True) -> list[sqlite3.Row]:
+        query = """
+            SELECT kt.*, ka.name AS area_name
+            FROM knowledge_topics kt
+            LEFT JOIN knowledge_areas ka ON ka.id = kt.area_id
+        """
+        clauses: list[str] = []
+        params: list[object] = []
+        if area_id is not None:
+            clauses.append("kt.area_id = ?")
+            params.append(area_id)
+        if active_only:
+            clauses.append("kt.active = 1")
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY ka.sort_order ASC, ka.name COLLATE NOCASE ASC, kt.sort_order ASC, kt.name COLLATE NOCASE ASC"
+        return self.conn.execute(query, tuple(params)).fetchall()
+
+    def create_topic(
+        self,
+        name: str,
+        area_id: int | None = None,
+        description: str = "",
+    ) -> int:
+        cleaned = name.strip()
+        if not cleaned:
+            raise ValueError("El nombre del tema no puede estar vacío")
+        now = self._now()
+        cursor = self.conn.execute(
+            """
+            INSERT INTO knowledge_topics(name, area_id, description, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (cleaned, area_id, description.strip(), now, now),
+        )
+        self.conn.commit()
+        return int(cursor.lastrowid)
+
+    def update_topic(
+        self,
+        topic_id: int,
+        name: str,
+        area_id: int | None = None,
+        description: str = "",
+        active: bool = True,
+    ) -> None:
+        cleaned = name.strip()
+        if not cleaned:
+            raise ValueError("El nombre del tema no puede estar vacío")
+        self.conn.execute(
+            """
+            UPDATE knowledge_topics
+            SET name = ?, area_id = ?, description = ?, active = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (cleaned, area_id, description.strip(), int(active), self._now(), topic_id),
+        )
+        self.conn.commit()
+
     def list_item_types(self, active_only: bool = True) -> list[sqlite3.Row]:
         query = "SELECT * FROM knowledge_item_types"
         if active_only:
@@ -127,6 +186,7 @@ class KnowledgeRepository:
         source_id: str = "",
         source_path: str = "",
         summary: str = "",
+        topic_id: int | None = None,
     ) -> int:
         cleaned_title = title.strip()
         if not cleaned_title:
@@ -135,15 +195,16 @@ class KnowledgeRepository:
         cursor = self.conn.execute(
             """
             INSERT INTO knowledge_items(
-                title, content, summary, area_id, item_type_id, source_type, source_id,
+                title, content, summary, area_id, topic_id, item_type_id, source_type, source_id,
                 source_path, status, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
             """,
             (
                 cleaned_title,
                 content,
                 summary,
                 area_id,
+                topic_id,
                 item_type_id,
                 source_type.strip() or "manual",
                 source_id.strip(),
@@ -167,6 +228,7 @@ class KnowledgeRepository:
         tags: list[str] | None = None,
         summary: str = "",
         status: str = "active",
+        topic_id: int | None = None,
     ) -> None:
         cleaned_title = title.strip()
         if not cleaned_title:
@@ -174,11 +236,11 @@ class KnowledgeRepository:
         self.conn.execute(
             """
             UPDATE knowledge_items
-            SET title = ?, content = ?, summary = ?, area_id = ?, item_type_id = ?,
+            SET title = ?, content = ?, summary = ?, area_id = ?, topic_id = ?, item_type_id = ?,
                 status = ?, updated_at = ?
             WHERE id = ?
             """,
-            (cleaned_title, content, summary, area_id, item_type_id, status.strip() or "active", self._now(), item_id),
+            (cleaned_title, content, summary, area_id, topic_id, item_type_id, status.strip() or "active", self._now(), item_id),
         )
         self.set_tags_for_item(item_id, tags or [])
         self.conn.commit()
@@ -186,9 +248,10 @@ class KnowledgeRepository:
     def get_item(self, item_id: int) -> sqlite3.Row | None:
         return self.conn.execute(
             """
-            SELECT ki.*, ka.name AS area_name, kit.name AS item_type_name
+            SELECT ki.*, ka.name AS area_name, kt.name AS topic_name, kit.name AS item_type_name
             FROM knowledge_items ki
             LEFT JOIN knowledge_areas ka ON ka.id = ki.area_id
+            LEFT JOIN knowledge_topics kt ON kt.id = ki.topic_id
             LEFT JOIN knowledge_item_types kit ON kit.id = ki.item_type_id
             WHERE ki.id = ?
             """,
@@ -201,6 +264,7 @@ class KnowledgeRepository:
         area_id: int | None = None,
         item_type_id: int | None = None,
         limit: int = 500,
+        topic_id: int | None = None,
     ) -> list[sqlite3.Row]:
         clauses = ["ki.status != 'deleted'"]
         params: list[object] = []
@@ -220,13 +284,17 @@ class KnowledgeRepository:
         if item_type_id is not None:
             clauses.append("ki.item_type_id = ?")
             params.append(item_type_id)
+        if topic_id is not None:
+            clauses.append("ki.topic_id = ?")
+            params.append(topic_id)
         params.append(max(1, int(limit)))
         return self.conn.execute(
             f"""
             SELECT ki.id, ki.title, ki.source_type, ki.updated_at, ki.created_at,
-                   ka.name AS area_name, kit.name AS item_type_name
+                   ka.name AS area_name, kt.name AS topic_name, kit.name AS item_type_name
             FROM knowledge_items ki
             LEFT JOIN knowledge_areas ka ON ka.id = ki.area_id
+            LEFT JOIN knowledge_topics kt ON kt.id = ki.topic_id
             LEFT JOIN knowledge_item_types kit ON kit.id = ki.item_type_id
             WHERE {' AND '.join(clauses)}
             ORDER BY COALESCE(ki.updated_at, ki.created_at) DESC, ki.id DESC
