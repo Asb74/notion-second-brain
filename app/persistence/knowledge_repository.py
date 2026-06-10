@@ -416,6 +416,60 @@ class KnowledgeRepository:
                 (item_id, int(row["id"])),
             )
 
+    def add_attachment(
+        self,
+        item_id: int,
+        original_filename: str,
+        stored_filename: str,
+        stored_path: str,
+        mime_type: str = "",
+        file_size: int = 0,
+        source_type: str = "manual",
+    ) -> int:
+        now = self._now()
+        cursor = self.conn.execute(
+            """
+            INSERT INTO knowledge_attachments(
+                item_id, original_filename, stored_filename, stored_path,
+                mime_type, file_size, source_type, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                item_id,
+                original_filename.strip(),
+                stored_filename.strip(),
+                stored_path.strip(),
+                mime_type.strip(),
+                int(file_size or 0),
+                source_type.strip() or "manual",
+                now,
+                now,
+            ),
+        )
+        self.conn.commit()
+        return int(cursor.lastrowid)
+
+    def list_attachments(self, item_id: int) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            """
+            SELECT *
+            FROM knowledge_attachments
+            WHERE item_id = ?
+            ORDER BY created_at DESC, id DESC
+            """,
+            (item_id,),
+        ).fetchall()
+
+    def get_attachment(self, attachment_id: int) -> sqlite3.Row | None:
+        return self.conn.execute(
+            "SELECT * FROM knowledge_attachments WHERE id = ?",
+            (attachment_id,),
+        ).fetchone()
+
+    def delete_attachment(self, attachment_id: int) -> None:
+        self.conn.execute("DELETE FROM knowledge_attachments WHERE id = ?", (attachment_id,))
+        self.conn.commit()
+
     def list_tags(self) -> list[str]:
         rows = self.conn.execute(
             "SELECT name FROM knowledge_tags ORDER BY name COLLATE NOCASE ASC"
