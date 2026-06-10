@@ -35,6 +35,20 @@ PDF_ATTACHMENT_EXTENSIONS = {".pdf"}
 IMAGE_ATTACHMENT_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
 
+def open_file_with_default_app(path: Path) -> None:
+    """Open a file or folder with the operating system default application."""
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"El archivo no existe: {path}")
+
+    if sys.platform.startswith("win"):
+        os.startfile(str(path))  # type: ignore[attr-defined]
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", str(path)])
+    else:
+        subprocess.Popen(["xdg-open", str(path)])
+
+
 class KnowledgeManagerWindow(tk.Toplevel):
     """Basic CRUD interface for manual and sourced knowledge notes."""
 
@@ -307,6 +321,8 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self.attachment_preview_image = None
         self._preview_attachment_path: Path | None = None
         self._preview_attachment_id: int | None = None
+        self._current_preview_path: Path | None = None
+        self._current_preview_bounds: tuple[int, int] | None = None
         self._preview_resize_after_id: str | None = None
 
         dnd_available = self._setup_drag_and_drop((self, attachments_tab, self.attachments_tree, preview_frame))
@@ -658,6 +674,8 @@ class KnowledgeManagerWindow(tk.Toplevel):
             return
         self._preview_attachment_path = None
         self._preview_attachment_id = None
+        self._current_preview_path = None
+        self._current_preview_bounds = None
         self._reset_attachment_preview_area(message, clickable=False)
 
     def _on_attachment_selected(self, _event: tk.Event | None = None) -> None:
@@ -680,8 +698,12 @@ class KnowledgeManagerWindow(tk.Toplevel):
     def _refresh_attachment_preview_after_resize(self) -> None:
         self._preview_resize_after_id = None
         attachment_id = self._preview_attachment_id
-        if attachment_id is not None:
-            self._show_attachment_preview(attachment_id)
+        if attachment_id is None:
+            return
+        bounds = self._attachment_preview_bounds()
+        if self._current_preview_bounds == bounds:
+            return
+        self._show_attachment_preview(attachment_id, force=True)
 
     def _open_preview_attachment(self, _event: tk.Event | None = None) -> None:
         path = getattr(self, "_preview_attachment_path", None)
@@ -690,11 +712,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
         if not path.exists():
             messagebox.showerror("Abrir adjunto", f"El archivo no existe:\n{path}", parent=self)
             return
-        try:
-            self._open_path_with_default_app(path)
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("No se pudo abrir el adjunto desde la vista previa de Knowledge")
-            messagebox.showerror("Abrir adjunto", f"No se pudo abrir el archivo.\n\n{exc}", parent=self)
+        if not self._open_file_with_default_app(path):
             return
         logger.info("KNOWLEDGE_PREVIEW: click abrir archivo path=%s", path)
 
@@ -704,7 +722,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
         if hasattr(self, "attachment_preview_label"):
             self.attachment_preview_label.configure(cursor="hand2")
 
-    def _show_attachment_preview(self, attachment_id: int) -> None:
+    def _show_attachment_preview(self, attachment_id: int, *, force: bool = False) -> None:
         row = self.repo.get_attachment(attachment_id)
         if row is None:
             self._clear_attachment_preview("No se encontró el adjunto seleccionado.")
@@ -716,7 +734,12 @@ class KnowledgeManagerWindow(tk.Toplevel):
         if not path.exists():
             self._clear_attachment_preview(f"El archivo no existe:\n{path}")
             return
+        if not force and self._current_preview_path == path:
+            logger.info("KNOWLEDGE_PREVIEW: preview omitido mismo archivo path=%s", path)
+            return
         self._activate_preview_click(attachment_id, path)
+        self._current_preview_path = path
+        self._current_preview_bounds = self._attachment_preview_bounds()
         if suffix in IMAGE_ATTACHMENT_EXTENSIONS or mime_type.startswith("image/"):
             if self._show_image_attachment_preview(path):
                 return
@@ -725,6 +748,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
         if suffix in PDF_ATTACHMENT_EXTENSIONS or mime_type == "application/pdf":
             if self._show_pdf_attachment_preview(path):
                 return
+            logger.info("KNOWLEDGE_PREVIEW: pdf fallback sin motor path=%s", path)
             self._show_file_info_preview(row, path, type_label="PDF")
             return
         if suffix in EXCEL_ATTACHMENT_EXTENSIONS:
@@ -742,6 +766,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
         if suffix in WORD_ATTACHMENT_EXTENSIONS:
             if self._show_word_attachment_preview(path):
                 return
+            logger.info("KNOWLEDGE_PREVIEW: word fallback path=%s", path)
             self._show_file_info_preview(row, path, type_label="Word")
             return
         if suffix in AUDIO_ATTACHMENT_EXTENSIONS:
@@ -772,42 +797,34 @@ class KnowledgeManagerWindow(tk.Toplevel):
         return True
 
     def _show_pdf_attachment_preview(self, path: Path) -> bool:
-        if not self._module_available("PIL") or not self._module_available("PIL.ImageTk"):
+        if not self._module_available("fitz"):
+            logger.info("KNOWLEDGE_PREVIEW: pymupdf no disponible")
             return False
+        if not self._module_available("PIL") or not self._module_available("PIL.ImageTk"):
+            logger.info("KNOWLEDGE_PREVIEW: pdf fallback sin motor path=%s", path)
+            return False
+
         image_module = importlib.import_module("PIL.Image")
         image_tk_module = importlib.import_module("PIL.ImageTk")
-        if self._module_available("fitz"):
-            fitz = importlib.import_module("fitz")
-            document = None
-            try:
-                document = fitz.open(path)
-                if document.page_count < 1:
-                    return False
-                page = document.load_page(0)
-                pixmap = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
-                image = image_module.frombytes("RGB", [pixmap.width, pixmap.height], pixmap.samples)
-                self._display_pil_preview(image, image_tk_module)
-                self.attachment_preview_label.configure(image=self._preview_image, text="")
-                logger.info("KNOWLEDGE_PREVIEW: pdf primera pagina renderizada path=%s", path)
-                return True
-            except Exception:  # noqa: BLE001
-                logger.exception("No se pudo generar la vista previa PDF con PyMuPDF")
-            finally:
-                if document is not None:
-                    document.close()
-        if self._module_available("pdf2image"):
-            pdf2image = importlib.import_module("pdf2image")
-            try:
-                pages = pdf2image.convert_from_path(str(path), first_page=1, last_page=1)
-                if not pages:
-                    return False
-                self._display_pil_preview(pages[0], image_tk_module)
-                self.attachment_preview_label.configure(image=self._preview_image, text="")
-                logger.info("KNOWLEDGE_PREVIEW: pdf primera pagina renderizada path=%s", path)
-                return True
-            except Exception:  # noqa: BLE001
-                logger.exception("No se pudo generar la vista previa PDF con pdf2image")
-        return False
+        fitz = importlib.import_module("fitz")
+        document = None
+        try:
+            document = fitz.open(path)
+            if document.page_count < 1:
+                return False
+            page = document.load_page(0)
+            pixmap = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
+            image = image_module.frombytes("RGB", (pixmap.width, pixmap.height), pixmap.samples)
+            self._display_pil_preview(image, image_tk_module)
+            self.attachment_preview_label.configure(image=self._preview_image, text="")
+            logger.info("KNOWLEDGE_PREVIEW: pdf pymupdf renderizado path=%s", path)
+            return True
+        except Exception:  # noqa: BLE001
+            logger.exception("No se pudo generar la vista previa PDF con PyMuPDF")
+            return False
+        finally:
+            if document is not None:
+                document.close()
 
     def _show_excel_attachment_preview(self, path: Path) -> bool:
         suffix = path.suffix.lower()
@@ -883,7 +900,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
 
     def _show_word_attachment_preview(self, path: Path) -> bool:
         if path.suffix.lower() != ".docx" or not self._module_available("docx"):
-            logger.info("KNOWLEDGE_PREVIEW: word preview no disponible path=%s", path)
+            logger.info("KNOWLEDGE_PREVIEW: word fallback path=%s", path)
             return False
         docx = importlib.import_module("docx")
         try:
@@ -891,10 +908,10 @@ class KnowledgeManagerWindow(tk.Toplevel):
             lines = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
         except Exception:  # noqa: BLE001
             logger.exception("No se pudo generar la vista previa Word de Knowledge")
-            logger.info("KNOWLEDGE_PREVIEW: word preview no disponible path=%s", path)
+            logger.info("KNOWLEDGE_PREVIEW: word fallback path=%s", path)
             return False
         if not lines:
-            logger.info("KNOWLEDGE_PREVIEW: word preview no disponible path=%s", path)
+            logger.info("KNOWLEDGE_PREVIEW: word fallback path=%s", path)
             return False
 
         self._reset_attachment_preview_area()
@@ -916,6 +933,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
     def _display_pil_preview(self, image: object, image_tk_module: object) -> None:
         label = self._reset_attachment_preview_area()
         width, height = self._attachment_preview_bounds()
+        self._current_preview_bounds = (width, height)
         if hasattr(image, "copy"):
             image = image.copy()
         if hasattr(image, "thumbnail"):
@@ -1218,13 +1236,15 @@ class KnowledgeManagerWindow(tk.Toplevel):
             return
         self._add_attachment_paths(item_id, list(selected_paths))
 
-    def _open_path_with_default_app(self, path: Path) -> None:
-        if sys.platform.startswith("win"):
-            os.startfile(str(path))  # type: ignore[attr-defined]
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", str(path)])
-        else:
-            subprocess.Popen(["xdg-open", str(path)])
+    def _open_file_with_default_app(self, path: Path) -> bool:
+        try:
+            logger.info("KNOWLEDGE_ATTACHMENT: abriendo archivo path=%s", path)
+            open_file_with_default_app(path)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("KNOWLEDGE_ATTACHMENT: error abriendo archivo path=%s", path)
+            messagebox.showerror("Abrir adjunto", f"No se pudo abrir el archivo.\n\n{exc}", parent=self)
+            return False
 
     def open_attachment(self) -> None:
         attachment_id = self._selected_attachment_id()
@@ -1240,13 +1260,8 @@ class KnowledgeManagerWindow(tk.Toplevel):
         if not path.exists():
             messagebox.showerror("Abrir adjunto", f"El archivo no existe:\n{path}", parent=self)
             return
-        try:
-            self._open_path_with_default_app(path)
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("No se pudo abrir el adjunto de Knowledge")
-            messagebox.showerror("Abrir adjunto", f"No se pudo abrir el archivo.\n\n{exc}", parent=self)
-            return
-        logger.info("KNOWLEDGE_ATTACHMENT: abierto path=%s", path)
+        if self._open_file_with_default_app(path):
+            logger.info("KNOWLEDGE_ATTACHMENT: abierto path=%s", path)
 
     def remove_attachment(self) -> None:
         attachment_id = self._selected_attachment_id()
@@ -1282,13 +1297,8 @@ class KnowledgeManagerWindow(tk.Toplevel):
         if not folder.exists():
             messagebox.showerror("Abrir carpeta", f"La carpeta no existe:\n{folder}", parent=self)
             return
-        try:
-            self._open_path_with_default_app(folder)
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("No se pudo abrir la carpeta de adjuntos de Knowledge")
-            messagebox.showerror("Abrir carpeta", f"No se pudo abrir la carpeta.\n\n{exc}", parent=self)
-            return
-        logger.info("KNOWLEDGE_ATTACHMENT: carpeta abierta path=%s", folder)
+        if self._open_file_with_default_app(folder):
+            logger.info("KNOWLEDGE_ATTACHMENT: carpeta abierta path=%s", folder)
 
 
 class TopicManagerDialog(tk.Toplevel):
