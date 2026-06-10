@@ -29,6 +29,10 @@ from app.ui.tooltips import add_tooltip
 logger = logging.getLogger(__name__)
 
 AUDIO_ATTACHMENT_EXTENSIONS = {".mp3", ".wav", ".m4a", ".ogg"}
+EXCEL_ATTACHMENT_EXTENSIONS = {".xls", ".xlsx"}
+WORD_ATTACHMENT_EXTENSIONS = {".doc", ".docx"}
+PDF_ATTACHMENT_EXTENSIONS = {".pdf"}
+IMAGE_ATTACHMENT_EXTENSIONS = {".png", ".jpg", ".jpeg"}
 
 
 class KnowledgeManagerWindow(tk.Toplevel):
@@ -49,6 +53,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
         apply_app_icon(self)
         self.geometry("1180x760")
         self.minsize(980, 620)
+        self.after(0, self._maximize_window)
         logger.info("KNOWLEDGE: módulo abierto")
 
         self.search_var = tk.StringVar()
@@ -68,6 +73,26 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self._load_reference_values()
         self.refresh_items()
 
+    def _maximize_window(self) -> None:
+        """Open Knowledge Manager with as much screen space as the platform allows."""
+        try:
+            if sys.platform.startswith("win"):
+                self.state("zoomed")
+            else:
+                self.attributes("-zoomed", True)
+            logger.info("KNOWLEDGE_UI: ventana maximizada")
+            return
+        except Exception:  # noqa: BLE001
+            logger.debug("No se pudo maximizar Knowledge Manager con estado nativo", exc_info=True)
+
+        try:
+            width = max(self.winfo_screenwidth() - 20, 1180)
+            height = max(self.winfo_screenheight() - 80, 760)
+            self.geometry(f"{width}x{height}+0+0")
+        except Exception:  # noqa: BLE001
+            self.geometry("1180x760")
+        logger.info("KNOWLEDGE_UI: ventana maximizada")
+
     def _build_layout(self) -> None:
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
@@ -83,13 +108,13 @@ class KnowledgeManagerWindow(tk.Toplevel):
             row=0, column=0, sticky="ew", padx=10, pady=(10, 0)
         )
 
-        paned = ttk.PanedWindow(self, orient="horizontal")
-        paned.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
+        self.main_paned = ttk.PanedWindow(self, orient="horizontal")
+        self.main_paned.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
 
-        left = ttk.Frame(paned)
-        right = ttk.Frame(paned)
-        paned.add(left, weight=2)
-        paned.add(right, weight=3)
+        left = ttk.Frame(self.main_paned)
+        right = ttk.Frame(self.main_paned)
+        self.main_paned.add(left, weight=1)
+        self.main_paned.add(right, weight=3)
         left.columnconfigure(0, weight=1)
         left.rowconfigure(3, weight=1)
         right.columnconfigure(1, weight=1)
@@ -118,18 +143,16 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self.topic_filter_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh_items())
         self.type_filter_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh_items())
 
-        columns = ("id", "title", "area", "topic", "type", "source", "updated")
-        self.tree = ttk.Treeview(left, columns=columns, show="headings", selectmode="browse")
+        columns = ("type", "source", "updated")
+        self.tree = ttk.Treeview(left, columns=columns, show="tree headings", selectmode="browse")
         headings = {
-            "id": "ID",
-            "title": "Título",
-            "area": "Área",
-            "topic": "Tema",
             "type": "Tipo",
             "source": "Fuente",
             "updated": "Actualizado",
         }
-        widths = {"id": 60, "title": 220, "area": 110, "topic": 130, "type": 110, "source": 90, "updated": 140}
+        self.tree.heading("#0", text="Área / Tema / Nota")
+        self.tree.column("#0", width=280, minwidth=180, anchor="w", stretch=True)
+        widths = {"type": 90, "source": 80, "updated": 130}
         for column in columns:
             self.tree.heading(column, text=headings[column])
             self.tree.column(column, width=widths[column], anchor="w")
@@ -219,27 +242,10 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self.summary_text.grid(row=1, column=0, sticky="nsew")
 
         attachments_tab.columnconfigure(0, weight=1)
-        attachments_tab.rowconfigure(0, weight=1)
-        attachments_tab.rowconfigure(2, weight=2)
-
-        attachment_columns = ("filename", "type", "size", "date")
-        self.attachments_tree = ttk.Treeview(
-            attachments_tab, columns=attachment_columns, show="headings", selectmode="browse", height=8
-        )
-        attachment_headings = {"filename": "Archivo", "type": "Tipo", "size": "Tamaño", "date": "Fecha"}
-        attachment_widths = {"filename": 300, "type": 140, "size": 90, "date": 150}
-        for column in attachment_columns:
-            self.attachments_tree.heading(column, text=attachment_headings[column])
-            self.attachments_tree.column(column, width=attachment_widths[column], anchor="w")
-        self.attachments_tree.grid(row=0, column=0, sticky="nsew", pady=(0, 6))
-        self.attachments_tree.bind("<Double-1>", lambda _event: self.open_attachment())
-        self.attachments_tree.bind("<<TreeviewSelect>>", self._on_attachment_selected)
-        attachments_scrollbar = ttk.Scrollbar(attachments_tab, orient="vertical", command=self.attachments_tree.yview)
-        attachments_scrollbar.grid(row=0, column=1, sticky="ns", pady=(0, 6))
-        self.attachments_tree.configure(yscrollcommand=attachments_scrollbar.set)
+        attachments_tab.rowconfigure(1, weight=1)
 
         attachment_buttons = ttk.Frame(attachments_tab)
-        attachment_buttons.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        attachment_buttons.grid(row=0, column=0, sticky="ew", pady=(0, 6))
         ttk.Button(attachment_buttons, text="Añadir archivo", command=self.add_attachments).pack(
             side="left", padx=(0, 6)
         )
@@ -250,8 +256,31 @@ class KnowledgeManagerWindow(tk.Toplevel):
         ttk.Button(attachment_buttons, text="Quitar", command=self.remove_attachment).pack(side="left", padx=(0, 6))
         ttk.Button(attachment_buttons, text="Abrir carpeta", command=self.open_attachment_folder).pack(side="left")
 
-        preview_frame = ttk.LabelFrame(attachments_tab, text="Vista previa")
-        preview_frame.grid(row=2, column=0, columnspan=2, sticky="nsew")
+        self.attachments_paned = ttk.PanedWindow(attachments_tab, orient="vertical")
+        self.attachments_paned.grid(row=1, column=0, sticky="nsew")
+
+        attachments_list_frame = ttk.Frame(self.attachments_paned)
+        preview_frame = ttk.LabelFrame(self.attachments_paned, text="Vista previa")
+        self.attachments_paned.add(attachments_list_frame, weight=1)
+        self.attachments_paned.add(preview_frame, weight=3)
+        attachments_list_frame.columnconfigure(0, weight=1)
+        attachments_list_frame.rowconfigure(0, weight=1)
+
+        attachment_columns = ("filename", "type", "size", "date")
+        self.attachments_tree = ttk.Treeview(
+            attachments_list_frame, columns=attachment_columns, show="headings", selectmode="browse", height=6
+        )
+        attachment_headings = {"filename": "Archivo", "type": "Tipo", "size": "Tamaño", "date": "Fecha"}
+        attachment_widths = {"filename": 300, "type": 140, "size": 90, "date": 150}
+        for column in attachment_columns:
+            self.attachments_tree.heading(column, text=attachment_headings[column])
+            self.attachments_tree.column(column, width=attachment_widths[column], anchor="w")
+        self.attachments_tree.grid(row=0, column=0, sticky="nsew")
+        self.attachments_tree.bind("<Double-1>", lambda _event: self.open_attachment())
+        self.attachments_tree.bind("<<TreeviewSelect>>", self._on_attachment_selected)
+        attachments_scrollbar = ttk.Scrollbar(attachments_list_frame, orient="vertical", command=self.attachments_tree.yview)
+        attachments_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.attachments_tree.configure(yscrollcommand=attachments_scrollbar.set)
         preview_frame.columnconfigure(0, weight=1)
         preview_frame.rowconfigure(0, weight=1)
         self.attachment_preview_label = ttk.Label(
@@ -262,6 +291,11 @@ class KnowledgeManagerWindow(tk.Toplevel):
             wraplength=560,
         )
         self.attachment_preview_label.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
+        self.attachment_preview_open_button = ttk.Button(
+            preview_frame,
+            text="Abrir archivo",
+            command=self.open_attachment,
+        )
         self.attachment_preview_image = None
 
         dnd_available = self._setup_drag_and_drop((self, attachments_tab, self.attachments_tree, preview_frame))
@@ -273,11 +307,27 @@ class KnowledgeManagerWindow(tk.Toplevel):
             )
         else:
             dnd_message = "Arrastrar y soltar no está disponible en este entorno. Usa Añadir archivo."
-        ttk.Label(attachments_tab, text=dnd_message, foreground="#555555").grid(
-            row=3, column=0, columnspan=2, sticky="ew", pady=(6, 0)
-        )
+        ttk.Label(attachments_tab, text=dnd_message, foreground="#555555").grid(row=2, column=0, sticky="ew", pady=(6, 0))
 
         ttk.Label(self, textvariable=self.status_var).grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 8))
+        self.after_idle(self._apply_initial_sash_positions)
+
+    def _apply_initial_sash_positions(self) -> None:
+        self.update_idletasks()
+        total_width = self.main_paned.winfo_width()
+        if total_width > 0:
+            try:
+                self.main_paned.sashpos(0, max(int(total_width * 0.25), 240))
+                logger.info("KNOWLEDGE_UI: sash inicial 25/75 aplicado")
+            except Exception:  # noqa: BLE001
+                logger.debug("No se pudo aplicar sash inicial de Knowledge Manager", exc_info=True)
+        if hasattr(self, "attachments_paned"):
+            total_height = self.attachments_paned.winfo_height()
+            if total_height > 0:
+                try:
+                    self.attachments_paned.sashpos(0, max(int(total_height * 0.25), 120))
+                except Exception:  # noqa: BLE001
+                    logger.debug("No se pudo aplicar sash inicial de adjuntos", exc_info=True)
 
     def _load_reference_values(self) -> None:
         area_values = self.masters_repo.list_active("Area")
@@ -368,22 +418,45 @@ class KnowledgeManagerWindow(tk.Toplevel):
         tipo = self._selected_filter_value(self.type_filter_var.get(), "Todos")
         topic_id = self._selected_filter_id(self.topic_filter_var.get(), self.topic_filter_by_name, "Todos")
         rows = self.repo.list_items(self.search_var.get(), area=area, tipo=tipo, topic_id=topic_id)
+        rows = sorted(
+            rows,
+            key=lambda row: (
+                str(row["area_name"] or "Sin área").casefold(),
+                str(row["topic_name"] or "Sin tema").casefold(),
+                str(row["title"] or "").casefold(),
+                int(row["id"]),
+            ),
+        )
+        area_nodes: dict[str, str] = {}
+        topic_nodes: dict[tuple[str, str], str] = {}
         for row in rows:
+            area_name = str(row["area_name"] or "Sin área")
+            topic_name = str(row["topic_name"] or "Sin tema")
+            area_iid = area_nodes.get(area_name)
+            if area_iid is None:
+                area_iid = f"area:{area_name}"
+                area_nodes[area_name] = area_iid
+                self.tree.insert("", "end", iid=area_iid, text=area_name, open=True, values=("", "", ""))
+            topic_key = (area_name, topic_name)
+            topic_iid = topic_nodes.get(topic_key)
+            if topic_iid is None:
+                topic_iid = f"topic:{area_name}:{topic_name}"
+                topic_nodes[topic_key] = topic_iid
+                self.tree.insert(area_iid, "end", iid=topic_iid, text=topic_name, open=True, values=("", "", ""))
+            item_type = str(row["item_type_name"] or "Nota")
             self.tree.insert(
-                "",
+                topic_iid,
                 "end",
-                iid=str(row["id"]),
+                iid=f"note:{row['id']}",
+                text=f"[{item_type}] {row['title'] or ''}",
                 values=(
-                    row["id"],
-                    row["title"] or "",
-                    row["area_name"] or "",
-                    row["topic_name"] or "",
-                    row["item_type_name"] or "",
+                    item_type,
                     row["source_type"] or "",
                     row["updated_at"] or row["created_at"] or "",
                 ),
             )
         self.status_var.set(f"{len(rows)} notas cargadas")
+        logger.info("KNOWLEDGE_TREE: árbol reconstruido items=%s", len(rows))
 
     def new_item(self) -> None:
         self.current_item_id = None
@@ -402,7 +475,10 @@ class KnowledgeManagerWindow(tk.Toplevel):
         selection = self.tree.selection()
         if not selection:
             return
-        item_id = int(selection[0])
+        selected_iid = str(selection[0])
+        if not selected_iid.startswith("note:"):
+            return
+        item_id = int(selected_iid.removeprefix("note:"))
         row = self.repo.get_item(item_id)
         if row is None:
             return
@@ -465,7 +541,9 @@ class KnowledgeManagerWindow(tk.Toplevel):
                 self.status_var.set(f"Nota actualizada id={self.current_item_id}")
             self.refresh_items()
             if self.current_item_id is not None:
-                self.tree.selection_set(str(self.current_item_id))
+                current_iid = f"note:{self.current_item_id}"
+                if self.tree.exists(current_iid):
+                    self.tree.selection_set(current_iid)
                 self.refresh_attachments()
             return self.current_item_id
         except Exception as exc:  # noqa: BLE001
@@ -530,6 +608,8 @@ class KnowledgeManagerWindow(tk.Toplevel):
             return
         self.attachment_preview_image = None
         self.attachment_preview_label.configure(image="", text=message)
+        if hasattr(self, "attachment_preview_open_button"):
+            self.attachment_preview_open_button.grid_remove()
 
     def _on_attachment_selected(self, _event: tk.Event | None = None) -> None:
         attachment_id = self._selected_attachment_id()
@@ -550,37 +630,118 @@ class KnowledgeManagerWindow(tk.Toplevel):
         if not path.exists():
             self._clear_attachment_preview(f"El archivo no existe:\n{path}")
             return
-        if suffix in {".png", ".jpg", ".jpeg"} or mime_type in {"image/png", "image/jpeg"}:
+        if suffix in IMAGE_ATTACHMENT_EXTENSIONS or mime_type in {"image/png", "image/jpeg"}:
             if self._show_image_attachment_preview(path):
                 return
+        if suffix in PDF_ATTACHMENT_EXTENSIONS or mime_type == "application/pdf":
+            if self._show_pdf_attachment_preview(row, path):
+                return
+            self._show_file_info_preview(row, path, action_text="Abrir PDF", type_label="PDF")
+            logger.info("KNOWLEDGE_PREVIEW: pdf preview no disponible path=%s", path)
+            return
+        if suffix in EXCEL_ATTACHMENT_EXTENSIONS:
+            self._show_file_info_preview(row, path, action_text="Abrir Excel", type_label="Excel")
+            return
+        if suffix in WORD_ATTACHMENT_EXTENSIONS:
+            self._show_file_info_preview(row, path, action_text="Abrir Word", type_label="Word")
+            return
+        if suffix in AUDIO_ATTACHMENT_EXTENSIONS:
+            self._show_file_info_preview(row, path, action_text="Abrir/Reproducir", type_label="Audio")
+            return
         self._show_file_info_preview(row, path)
 
     def _show_image_attachment_preview(self, path: Path) -> bool:
         if importlib.util.find_spec("PIL") is None or importlib.util.find_spec("PIL.ImageTk") is None:
             return False
+        image_module = importlib.import_module("PIL.Image")
+        image_tk_module = importlib.import_module("PIL.ImageTk")
         try:
-            image_module = importlib.import_module("PIL.Image")
-            image_tk_module = importlib.import_module("PIL.ImageTk")
             image = image_module.open(path)
-            image.thumbnail((520, 320))
-            self.attachment_preview_image = image_tk_module.PhotoImage(image)
+            self._display_pil_preview(image, image_tk_module)
         except Exception:  # noqa: BLE001
             logger.exception("No se pudo generar la vista previa de imagen de Knowledge")
             return False
         self.attachment_preview_label.configure(image=self.attachment_preview_image, text="")
+        self.attachment_preview_open_button.grid_remove()
+        logger.info("KNOWLEDGE_PREVIEW: imagen cargada path=%s", path)
         return True
 
-    def _show_file_info_preview(self, row: sqlite3.Row, path: Path) -> None:
+    def _show_pdf_attachment_preview(self, row: sqlite3.Row, path: Path) -> bool:
+        if importlib.util.find_spec("PIL") is None or importlib.util.find_spec("PIL.ImageTk") is None:
+            return False
+        image_module = importlib.import_module("PIL.Image")
+        image_tk_module = importlib.import_module("PIL.ImageTk")
+        if importlib.util.find_spec("fitz") is not None:
+            fitz = importlib.import_module("fitz")
+            try:
+                document = fitz.open(path)
+                if document.page_count < 1:
+                    document.close()
+                    return False
+                page = document.load_page(0)
+                pixmap = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
+                image = image_module.frombytes("RGB", [pixmap.width, pixmap.height], pixmap.samples)
+                document.close()
+                self._display_pil_preview(image, image_tk_module)
+                self.attachment_preview_label.configure(image=self.attachment_preview_image, text="")
+                self.attachment_preview_open_button.configure(text="Abrir PDF")
+                self.attachment_preview_open_button.grid(row=1, column=0, pady=(0, 8))
+                logger.info("KNOWLEDGE_PREVIEW: pdf preview disponible path=%s", path)
+                return True
+            except Exception:  # noqa: BLE001
+                logger.exception("No se pudo generar la vista previa PDF con PyMuPDF")
+        if importlib.util.find_spec("pdf2image") is not None:
+            pdf2image = importlib.import_module("pdf2image")
+            try:
+                pages = pdf2image.convert_from_path(str(path), first_page=1, last_page=1)
+                if not pages:
+                    return False
+                self._display_pil_preview(pages[0], image_tk_module)
+                self.attachment_preview_label.configure(image=self.attachment_preview_image, text="")
+                self.attachment_preview_open_button.configure(text="Abrir PDF")
+                self.attachment_preview_open_button.grid(row=1, column=0, pady=(0, 8))
+                logger.info("KNOWLEDGE_PREVIEW: pdf preview disponible path=%s", path)
+                return True
+            except Exception:  # noqa: BLE001
+                logger.exception("No se pudo generar la vista previa PDF con pdf2image")
+        return False
+
+    def _display_pil_preview(self, image: object, image_tk_module: object) -> None:
+        width, height = self._attachment_preview_bounds()
+        if hasattr(image, "thumbnail"):
+            image.thumbnail((width, height))
+        self.attachment_preview_image = image_tk_module.PhotoImage(image)
+
+    def _attachment_preview_bounds(self) -> tuple[int, int]:
+        self.update_idletasks()
+        current_width = self.attachment_preview_label.winfo_width()
+        current_height = self.attachment_preview_label.winfo_height()
+        width = current_width - 24 if current_width > 120 else 720
+        height = current_height - 24 if current_height > 120 else 500
+        return width, height
+
+    def _show_file_info_preview(
+        self,
+        row: sqlite3.Row,
+        path: Path,
+        *,
+        action_text: str = "Abrir archivo",
+        type_label: str = "Archivo",
+    ) -> None:
         file_size = path.stat().st_size if path.exists() else int(row["file_size"] or 0)
         mime_type = str(row["mime_type"] or mimetypes.guess_type(str(path))[0] or "Tipo desconocido")
         file_info = (
-            f"Archivo: {row['original_filename'] or row['stored_filename'] or path.name}\n"
+            f"{type_label}: {row['original_filename'] or row['stored_filename'] or path.name}\n"
             f"Tipo: {mime_type}\n"
             f"Tamaño: {self._format_file_size(file_size)}\n"
-            f"Ruta: {path}"
+            f"Ruta: {path}\n\n"
+            "Vista interna no disponible. Usa el botón para abrirlo con la aplicación predeterminada."
         )
         self.attachment_preview_image = None
         self.attachment_preview_label.configure(image="", text=file_info)
+        self.attachment_preview_open_button.configure(text=action_text)
+        self.attachment_preview_open_button.grid(row=1, column=0, pady=(0, 8))
+        logger.info("KNOWLEDGE_PREVIEW: fallback abrir archivo path=%s", path)
 
     def _register_attachment_record(
         self,
