@@ -73,40 +73,57 @@ class KnowledgeRepository:
         )
         self.conn.commit()
 
-    def list_topics(self, area_id: int | None = None, active_only: bool = True) -> list[sqlite3.Row]:
+    def list_topics(
+        self,
+        area: str | None = None,
+        active_only: bool = True,
+        area_id: int | None = None,
+    ) -> list[sqlite3.Row]:
         query = """
-            SELECT kt.*, ka.name AS area_name
+            SELECT kt.*, COALESCE(NULLIF(kt.area, ''), ka.name) AS area_name
             FROM knowledge_topics kt
             LEFT JOIN knowledge_areas ka ON ka.id = kt.area_id
         """
         clauses: list[str] = []
         params: list[object] = []
-        if area_id is not None:
+        if isinstance(area, int):
+            area_id = area
+            area = None
+        cleaned_area = (area or "").strip()
+        if cleaned_area:
+            clauses.append("COALESCE(NULLIF(kt.area, ''), ka.name) = ?")
+            params.append(cleaned_area)
+        elif area_id is not None:
             clauses.append("kt.area_id = ?")
             params.append(area_id)
         if active_only:
             clauses.append("kt.active = 1")
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
-        query += " ORDER BY ka.sort_order ASC, ka.name COLLATE NOCASE ASC, kt.sort_order ASC, kt.name COLLATE NOCASE ASC"
+        query += " ORDER BY area_name COLLATE NOCASE ASC, kt.sort_order ASC, kt.name COLLATE NOCASE ASC"
         return self.conn.execute(query, tuple(params)).fetchall()
 
     def create_topic(
         self,
         name: str,
-        area_id: int | None = None,
+        area: str | None = None,
         description: str = "",
+        area_id: int | None = None,
     ) -> int:
+        if isinstance(area, int):
+            area_id = area
+            area = None
         cleaned = name.strip()
         if not cleaned:
             raise ValueError("El nombre del tema no puede estar vacío")
+        cleaned_area = (area or "").strip() or self._legacy_area_name(area_id)
         now = self._now()
         cursor = self.conn.execute(
             """
-            INSERT INTO knowledge_topics(name, area_id, description, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO knowledge_topics(name, area_id, area, description, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (cleaned, area_id, description.strip(), now, now),
+            (cleaned, area_id, cleaned_area, description.strip(), now, now),
         )
         self.conn.commit()
         return int(cursor.lastrowid)
@@ -115,20 +132,25 @@ class KnowledgeRepository:
         self,
         topic_id: int,
         name: str,
-        area_id: int | None = None,
+        area: str | None = None,
         description: str = "",
         active: bool = True,
+        area_id: int | None = None,
     ) -> None:
+        if isinstance(area, int):
+            area_id = area
+            area = None
         cleaned = name.strip()
         if not cleaned:
             raise ValueError("El nombre del tema no puede estar vacío")
+        cleaned_area = (area or "").strip() or self._legacy_area_name(area_id)
         self.conn.execute(
             """
             UPDATE knowledge_topics
-            SET name = ?, area_id = ?, description = ?, active = ?, updated_at = ?
+            SET name = ?, area_id = ?, area = ?, description = ?, active = ?, updated_at = ?
             WHERE id = ?
             """,
-            (cleaned, area_id, description.strip(), int(active), self._now(), topic_id),
+            (cleaned, area_id, cleaned_area, description.strip(), int(active), self._now(), topic_id),
         )
         self.conn.commit()
 
@@ -175,37 +197,55 @@ class KnowledgeRepository:
         )
         self.conn.commit()
 
+    def _legacy_area_name(self, area_id: int | None) -> str:
+        if area_id is None:
+            return ""
+        row = self.conn.execute("SELECT name FROM knowledge_areas WHERE id = ?", (area_id,)).fetchone()
+        return str(row["name"] or "") if row else ""
+
+    def _legacy_type_name(self, item_type_id: int | None) -> str:
+        if item_type_id is None:
+            return ""
+        row = self.conn.execute("SELECT name FROM knowledge_item_types WHERE id = ?", (item_type_id,)).fetchone()
+        return str(row["name"] or "") if row else ""
+
     def create_item(
         self,
         title: str,
         content: str,
-        area_id: int | None,
-        item_type_id: int | None,
+        area_id: int | None = None,
+        item_type_id: int | None = None,
         tags: list[str] | None = None,
         source_type: str = "manual",
         source_id: str = "",
         source_path: str = "",
         summary: str = "",
         topic_id: int | None = None,
+        area: str = "",
+        tipo: str = "",
     ) -> int:
         cleaned_title = title.strip()
         if not cleaned_title:
             raise ValueError("El título no puede estar vacío")
+        cleaned_area = area.strip() or self._legacy_area_name(area_id)
+        cleaned_tipo = tipo.strip() or self._legacy_type_name(item_type_id)
         now = self._now()
         cursor = self.conn.execute(
             """
             INSERT INTO knowledge_items(
-                title, content, summary, area_id, topic_id, item_type_id, source_type, source_id,
-                source_path, status, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+                title, content, summary, area_id, area, topic_id, item_type_id, tipo, source_type,
+                source_id, source_path, status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
             """,
             (
                 cleaned_title,
                 content,
                 summary,
                 area_id,
+                cleaned_area,
                 topic_id,
                 item_type_id,
+                cleaned_tipo,
                 source_type.strip() or "manual",
                 source_id.strip(),
                 source_path.strip(),
@@ -223,24 +263,40 @@ class KnowledgeRepository:
         item_id: int,
         title: str,
         content: str,
-        area_id: int | None,
-        item_type_id: int | None,
+        area_id: int | None = None,
+        item_type_id: int | None = None,
         tags: list[str] | None = None,
         summary: str = "",
         status: str = "active",
         topic_id: int | None = None,
+        area: str = "",
+        tipo: str = "",
     ) -> None:
         cleaned_title = title.strip()
         if not cleaned_title:
             raise ValueError("El título no puede estar vacío")
+        cleaned_area = area.strip() or self._legacy_area_name(area_id)
+        cleaned_tipo = tipo.strip() or self._legacy_type_name(item_type_id)
         self.conn.execute(
             """
             UPDATE knowledge_items
-            SET title = ?, content = ?, summary = ?, area_id = ?, topic_id = ?, item_type_id = ?,
-                status = ?, updated_at = ?
+            SET title = ?, content = ?, summary = ?, area_id = ?, area = ?, topic_id = ?,
+                item_type_id = ?, tipo = ?, status = ?, updated_at = ?
             WHERE id = ?
             """,
-            (cleaned_title, content, summary, area_id, topic_id, item_type_id, status.strip() or "active", self._now(), item_id),
+            (
+                cleaned_title,
+                content,
+                summary,
+                area_id,
+                cleaned_area,
+                topic_id,
+                item_type_id,
+                cleaned_tipo,
+                status.strip() or "active",
+                self._now(),
+                item_id,
+            ),
         )
         self.set_tags_for_item(item_id, tags or [])
         self.conn.commit()
@@ -248,7 +304,10 @@ class KnowledgeRepository:
     def get_item(self, item_id: int) -> sqlite3.Row | None:
         return self.conn.execute(
             """
-            SELECT ki.*, ka.name AS area_name, kt.name AS topic_name, kit.name AS item_type_name
+            SELECT ki.*,
+                   COALESCE(NULLIF(ki.area, ''), ka.name) AS area_name,
+                   kt.name AS topic_name,
+                   COALESCE(NULLIF(ki.tipo, ''), kit.name) AS item_type_name
             FROM knowledge_items ki
             LEFT JOIN knowledge_areas ka ON ka.id = ki.area_id
             LEFT JOIN knowledge_topics kt ON kt.id = ki.topic_id
@@ -265,6 +324,8 @@ class KnowledgeRepository:
         item_type_id: int | None = None,
         limit: int = 500,
         topic_id: int | None = None,
+        area: str | None = None,
+        tipo: str | None = None,
     ) -> list[sqlite3.Row]:
         clauses = ["ki.status != 'deleted'"]
         params: list[object] = []
@@ -278,10 +339,18 @@ class KnowledgeRepository:
                 "WHERE kit2.item_id = ki.id AND kt.name LIKE ?))"
             )
             params.extend([like, like, like, like])
-        if area_id is not None:
+        cleaned_area = (area or "").strip()
+        cleaned_tipo = (tipo or "").strip()
+        if cleaned_area:
+            clauses.append("COALESCE(NULLIF(ki.area, ''), ka.name) = ?")
+            params.append(cleaned_area)
+        elif area_id is not None:
             clauses.append("ki.area_id = ?")
             params.append(area_id)
-        if item_type_id is not None:
+        if cleaned_tipo:
+            clauses.append("COALESCE(NULLIF(ki.tipo, ''), kit.name) = ?")
+            params.append(cleaned_tipo)
+        elif item_type_id is not None:
             clauses.append("ki.item_type_id = ?")
             params.append(item_type_id)
         if topic_id is not None:
@@ -291,7 +360,9 @@ class KnowledgeRepository:
         return self.conn.execute(
             f"""
             SELECT ki.id, ki.title, ki.source_type, ki.updated_at, ki.created_at,
-                   ka.name AS area_name, kt.name AS topic_name, kit.name AS item_type_name
+                   COALESCE(NULLIF(ki.area, ''), ka.name) AS area_name,
+                   kt.name AS topic_name,
+                   COALESCE(NULLIF(ki.tipo, ''), kit.name) AS item_type_name
             FROM knowledge_items ki
             LEFT JOIN knowledge_areas ka ON ka.id = ki.area_id
             LEFT JOIN knowledge_topics kt ON kt.id = ki.topic_id

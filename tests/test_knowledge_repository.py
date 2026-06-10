@@ -8,7 +8,10 @@ def _repo() -> KnowledgeRepository:
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     run_migrations(conn)
-    return KnowledgeRepository(conn)
+    repo = KnowledgeRepository(conn)
+    repo.create_area("Legacy Area")
+    repo.create_item_type("Legacy Type")
+    return repo
 
 
 def test_topics_and_items_support_optional_topic() -> None:
@@ -56,3 +59,25 @@ def test_update_topic_and_item_topic() -> None:
 
     repo.update_item(item_id, "Nota", "Contenido", area_id, type_id, topic_id=topic_id, tags=[])
     assert repo.get_item(item_id)["topic_id"] == topic_id
+
+
+def test_items_and_topics_support_global_area_tipo_text() -> None:
+    repo = _repo()
+    topic_id = repo.create_topic("Tema global", area="General", description="Descripción")
+    item_id = repo.create_item(
+        title="Nota global",
+        content="Contenido",
+        area="General",
+        tipo="Nota",
+        topic_id=topic_id,
+        tags=["global"],
+    )
+
+    item = repo.get_item(item_id)
+    assert item["area"] == "General"
+    assert item["tipo"] == "Nota"
+    assert item["area_name"] == "General"
+    assert item["item_type_name"] == "Nota"
+    assert item["topic_name"] == "Tema global"
+    assert [row["id"] for row in repo.list_items(area="General", tipo="Nota")] == [item_id]
+    assert [row["id"] for row in repo.list_topics(area="General")] == [topic_id]

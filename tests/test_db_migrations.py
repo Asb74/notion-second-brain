@@ -118,26 +118,28 @@ def test_run_migrations_crea_schema_knowledge_manager() -> None:
         "knowledge_tags",
         "knowledge_item_tags",
     }.issubset(tables)
-    areas = [str(row[0]) for row in conn.execute("SELECT name FROM knowledge_areas ORDER BY sort_order ASC").fetchall()]
-    assert areas[:5] == ["General", "Personal", "Trabajo", "Proyectos", "Archivo"]
-    item_types = {
-        str(row[0])
-        for row in conn.execute("SELECT name FROM knowledge_item_types").fetchall()
-    }
-    assert {"Nota", "Email", "Audio", "Documento", "Imagen"}.issubset(item_types)
+    assert conn.execute("SELECT COUNT(*) FROM knowledge_areas").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM knowledge_item_types").fetchone()[0] == 0
     item_columns = {
         str(row[1])
         for row in conn.execute("PRAGMA table_info(knowledge_items)").fetchall()
     }
-    assert "topic_id" in item_columns
+    assert {"topic_id", "area", "tipo"}.issubset(item_columns)
+    topic_columns = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(knowledge_topics)").fetchall()
+    }
+    assert "area" in topic_columns
     indexes = {
         str(row[1])
         for row in conn.execute("PRAGMA index_list(knowledge_items)").fetchall()
     }
     assert {
         "idx_knowledge_items_area",
+        "idx_knowledge_items_area_text",
         "idx_knowledge_items_topic",
         "idx_knowledge_items_type",
+        "idx_knowledge_items_tipo_text",
         "idx_knowledge_items_source",
         "idx_knowledge_items_title",
     }.issubset(indexes)
@@ -145,4 +147,76 @@ def test_run_migrations_crea_schema_knowledge_manager() -> None:
         str(row[1])
         for row in conn.execute("PRAGMA index_list(knowledge_topics)").fetchall()
     }
-    assert "idx_knowledge_topics_area" in topic_indexes
+    assert {"idx_knowledge_topics_area", "idx_knowledge_topics_area_text"}.issubset(topic_indexes)
+
+
+def test_run_migrations_backfills_knowledge_area_tipo_text_from_legacy_ids() -> None:
+    conn = _conn()
+    conn.executescript(
+        """
+        CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+        INSERT INTO schema_version VALUES (4);
+        CREATE TABLE knowledge_areas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            description TEXT,
+            color TEXT,
+            sort_order INTEGER DEFAULT 0,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT
+        );
+        CREATE TABLE knowledge_item_types (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            description TEXT,
+            icon TEXT,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT
+        );
+        CREATE TABLE knowledge_topics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            area_id INTEGER,
+            name TEXT NOT NULL,
+            description TEXT,
+            sort_order INTEGER DEFAULT 0,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT,
+            FOREIGN KEY(area_id) REFERENCES knowledge_areas(id),
+            UNIQUE(area_id, name)
+        );
+        CREATE TABLE knowledge_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            content TEXT,
+            summary TEXT,
+            area_id INTEGER,
+            topic_id INTEGER,
+            item_type_id INTEGER,
+            source_type TEXT NOT NULL DEFAULT 'manual',
+            source_id TEXT,
+            source_path TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL,
+            updated_at TEXT,
+            FOREIGN KEY(area_id) REFERENCES knowledge_areas(id),
+            FOREIGN KEY(topic_id) REFERENCES knowledge_topics(id),
+            FOREIGN KEY(item_type_id) REFERENCES knowledge_item_types(id)
+        );
+        INSERT INTO knowledge_areas(id, name, created_at) VALUES (1, 'Legacy Area', 'now');
+        INSERT INTO knowledge_item_types(id, name, created_at) VALUES (1, 'Legacy Type', 'now');
+        INSERT INTO knowledge_topics(id, area_id, name, created_at) VALUES (1, 1, 'Legacy Topic', 'now');
+        INSERT INTO knowledge_items(id, title, area_id, item_type_id, topic_id, source_type, status, created_at)
+        VALUES (1, 'Legacy Item', 1, 1, 1, 'manual', 'active', 'now');
+        """
+    )
+
+    run_migrations(conn)
+
+    item = conn.execute("SELECT area, tipo FROM knowledge_items WHERE id = 1").fetchone()
+    topic = conn.execute("SELECT area FROM knowledge_topics WHERE id = 1").fetchone()
+    assert item["area"] == "Legacy Area"
+    assert item["tipo"] == "Legacy Type"
+    assert topic["area"] == "Legacy Area"
