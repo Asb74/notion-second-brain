@@ -29,10 +29,10 @@ from app.ui.tooltips import add_tooltip
 logger = logging.getLogger(__name__)
 
 AUDIO_ATTACHMENT_EXTENSIONS = {".mp3", ".wav", ".m4a", ".ogg"}
-EXCEL_ATTACHMENT_EXTENSIONS = {".xls", ".xlsx"}
-WORD_ATTACHMENT_EXTENSIONS = {".doc", ".docx"}
+EXCEL_ATTACHMENT_EXTENSIONS = {".xls", ".xlsx", ".ods"}
+WORD_ATTACHMENT_EXTENSIONS = {".doc", ".docx", ".odt"}
 PDF_ATTACHMENT_EXTENSIONS = {".pdf"}
-IMAGE_ATTACHMENT_EXTENSIONS = {".png", ".jpg", ".jpeg"}
+IMAGE_ATTACHMENT_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
 
 class KnowledgeManagerWindow(tk.Toplevel):
@@ -283,15 +283,20 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self.attachments_tree.configure(yscrollcommand=attachments_scrollbar.set)
         preview_frame.columnconfigure(0, weight=1)
         preview_frame.rowconfigure(0, weight=1)
+        self.attachment_preview_content = ttk.Frame(preview_frame)
+        self.attachment_preview_content.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
+        self.attachment_preview_content.columnconfigure(0, weight=1)
+        self.attachment_preview_content.rowconfigure(0, weight=1)
         self.attachment_preview_label = ttk.Label(
-            preview_frame,
+            self.attachment_preview_content,
             text="Selecciona un adjunto para ver la vista previa.",
             anchor="center",
             justify="center",
             wraplength=560,
         )
-        self.attachment_preview_label.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
+        self.attachment_preview_label.grid(row=0, column=0, sticky="nsew")
         self.attachment_preview_label.bind("<Button-1>", self._open_preview_attachment)
+        self.attachment_preview_content.bind("<Button-1>", self._open_preview_attachment)
         preview_frame.bind("<Configure>", self._schedule_attachment_preview_refresh)
         self.attachment_preview_open_button = ttk.Button(
             preview_frame,
@@ -610,16 +615,50 @@ class KnowledgeManagerWindow(tk.Toplevel):
             return None
         return int(selection[0])
 
-    def _clear_attachment_preview(self, message: str = "Selecciona un adjunto para ver la vista previa.") -> None:
-        if not hasattr(self, "attachment_preview_label"):
-            return
+    def _reset_attachment_preview_area(
+        self,
+        message: str = "",
+        *,
+        clickable: bool = True,
+    ) -> ttk.Label:
+        if hasattr(self, "attachment_preview_content"):
+            for child in self.attachment_preview_content.winfo_children():
+                child.destroy()
+            self.attachment_preview_content.columnconfigure(0, weight=1)
+            self.attachment_preview_content.rowconfigure(0, weight=1)
+            parent = self.attachment_preview_content
+        else:
+            parent = self
         self._preview_image = None
         self.attachment_preview_image = None
-        self._preview_attachment_path = None
-        self._preview_attachment_id = None
-        self.attachment_preview_label.configure(image="", text=message, cursor="")
+        self.attachment_preview_label = ttk.Label(
+            parent,
+            text=message,
+            anchor="center",
+            justify="center",
+            wraplength=760,
+            cursor="hand2" if clickable else "",
+        )
+        self.attachment_preview_label.grid(row=0, column=0, sticky="nsew")
+        self.attachment_preview_label.bind("<Button-1>", self._open_preview_attachment)
         if hasattr(self, "attachment_preview_open_button"):
             self.attachment_preview_open_button.grid_remove()
+        return self.attachment_preview_label
+
+    def _bind_preview_open(self, widget: tk.Misc) -> None:
+        widget.bind("<Button-1>", self._open_preview_attachment)
+        widget.bind("<Double-1>", self._open_preview_attachment)
+        try:
+            widget.configure(cursor="hand2")
+        except tk.TclError:
+            pass
+
+    def _clear_attachment_preview(self, message: str = "Selecciona un adjunto para ver la vista previa.") -> None:
+        if not hasattr(self, "attachment_preview_content") and not hasattr(self, "attachment_preview_label"):
+            return
+        self._preview_attachment_path = None
+        self._preview_attachment_id = None
+        self._reset_attachment_preview_area(message, clickable=False)
 
     def _on_attachment_selected(self, _event: tk.Event | None = None) -> None:
         attachment_id = self._selected_attachment_id()
@@ -662,7 +701,8 @@ class KnowledgeManagerWindow(tk.Toplevel):
     def _activate_preview_click(self, attachment_id: int, path: Path) -> None:
         self._preview_attachment_id = attachment_id
         self._preview_attachment_path = path
-        self.attachment_preview_label.configure(cursor="hand2")
+        if hasattr(self, "attachment_preview_label"):
+            self.attachment_preview_label.configure(cursor="hand2")
 
     def _show_attachment_preview(self, attachment_id: int) -> None:
         row = self.repo.get_attachment(attachment_id)
@@ -677,7 +717,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
             self._clear_attachment_preview(f"El archivo no existe:\n{path}")
             return
         self._activate_preview_click(attachment_id, path)
-        if suffix in IMAGE_ATTACHMENT_EXTENSIONS or mime_type in {"image/png", "image/jpeg"}:
+        if suffix in IMAGE_ATTACHMENT_EXTENSIONS or mime_type.startswith("image/"):
             if self._show_image_attachment_preview(path):
                 return
             self._show_file_info_preview(row, path, type_label="Imagen")
@@ -688,9 +728,13 @@ class KnowledgeManagerWindow(tk.Toplevel):
             self._show_file_info_preview(row, path, type_label="PDF")
             return
         if suffix in EXCEL_ATTACHMENT_EXTENSIONS:
+            if self._show_excel_attachment_preview(path):
+                return
             self._show_file_info_preview(row, path, type_label="Excel")
             return
         if suffix in WORD_ATTACHMENT_EXTENSIONS:
+            if self._show_word_attachment_preview(path):
+                return
             self._show_file_info_preview(row, path, type_label="Word")
             return
         if suffix in AUDIO_ATTACHMENT_EXTENSIONS:
@@ -717,7 +761,6 @@ class KnowledgeManagerWindow(tk.Toplevel):
             logger.exception("No se pudo generar la vista previa de imagen de Knowledge")
             return False
         self.attachment_preview_label.configure(image=self._preview_image, text="")
-        self.attachment_preview_open_button.grid_remove()
         logger.info("KNOWLEDGE_PREVIEW: imagen renderizada path=%s", path)
         return True
 
@@ -728,22 +771,23 @@ class KnowledgeManagerWindow(tk.Toplevel):
         image_tk_module = importlib.import_module("PIL.ImageTk")
         if self._module_available("fitz"):
             fitz = importlib.import_module("fitz")
+            document = None
             try:
                 document = fitz.open(path)
                 if document.page_count < 1:
-                    document.close()
                     return False
                 page = document.load_page(0)
                 pixmap = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
                 image = image_module.frombytes("RGB", [pixmap.width, pixmap.height], pixmap.samples)
-                document.close()
                 self._display_pil_preview(image, image_tk_module)
                 self.attachment_preview_label.configure(image=self._preview_image, text="")
-                self.attachment_preview_open_button.grid_remove()
                 logger.info("KNOWLEDGE_PREVIEW: pdf primera pagina renderizada path=%s", path)
                 return True
             except Exception:  # noqa: BLE001
                 logger.exception("No se pudo generar la vista previa PDF con PyMuPDF")
+            finally:
+                if document is not None:
+                    document.close()
         if self._module_available("pdf2image"):
             pdf2image = importlib.import_module("pdf2image")
             try:
@@ -752,14 +796,92 @@ class KnowledgeManagerWindow(tk.Toplevel):
                     return False
                 self._display_pil_preview(pages[0], image_tk_module)
                 self.attachment_preview_label.configure(image=self._preview_image, text="")
-                self.attachment_preview_open_button.grid_remove()
                 logger.info("KNOWLEDGE_PREVIEW: pdf primera pagina renderizada path=%s", path)
                 return True
             except Exception:  # noqa: BLE001
                 logger.exception("No se pudo generar la vista previa PDF con pdf2image")
         return False
 
+    def _show_excel_attachment_preview(self, path: Path) -> bool:
+        if path.suffix.lower() != ".xlsx" or not self._module_available("openpyxl"):
+            return False
+        openpyxl = importlib.import_module("openpyxl")
+        try:
+            workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
+            sheet = workbook.worksheets[0]
+            rows = []
+            for row in sheet.iter_rows(max_row=20, max_col=8, values_only=True):
+                rows.append(["" if value is None else str(value) for value in row])
+            workbook.close()
+        except Exception:  # noqa: BLE001
+            logger.exception("No se pudo generar la vista previa Excel de Knowledge")
+            return False
+
+        self._reset_attachment_preview_area()
+        parent = self.attachment_preview_content
+        parent.rowconfigure(1, weight=1)
+        ttk.Label(parent, text=f"📊 Excel · Hoja: {sheet.title}", anchor="w").grid(
+            row=0, column=0, sticky="ew", pady=(0, 6)
+        )
+        columns = [f"col_{index}" for index in range(1, 9)]
+        tree = ttk.Treeview(parent, columns=columns, show="headings", height=min(max(len(rows), 1), 20))
+        for index, column in enumerate(columns, start=1):
+            tree.heading(column, text=self._excel_column_name(index))
+            tree.column(column, width=110, minwidth=70, anchor="w")
+        for row_values in rows:
+            padded_values = [*row_values, *([""] * (8 - len(row_values)))]
+            tree.insert("", "end", values=padded_values[:8])
+        tree.grid(row=1, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=tree.yview)
+        scrollbar.grid(row=1, column=1, sticky="ns")
+        tree.configure(yscrollcommand=scrollbar.set)
+        self._bind_preview_open(tree)
+        self._bind_preview_open(parent)
+        logger.info("KNOWLEDGE_PREVIEW: excel preview filas=%s columnas=%s path=%s", len(rows), 8, path)
+        return True
+
+    @staticmethod
+    def _excel_column_name(index: int) -> str:
+        name = ""
+        while index:
+            index, remainder = divmod(index - 1, 26)
+            name = chr(65 + remainder) + name
+        return name
+
+    def _show_word_attachment_preview(self, path: Path) -> bool:
+        if path.suffix.lower() != ".docx" or not self._module_available("docx"):
+            logger.info("KNOWLEDGE_PREVIEW: word preview no disponible path=%s", path)
+            return False
+        docx = importlib.import_module("docx")
+        try:
+            document = docx.Document(str(path))
+            lines = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
+        except Exception:  # noqa: BLE001
+            logger.exception("No se pudo generar la vista previa Word de Knowledge")
+            logger.info("KNOWLEDGE_PREVIEW: word preview no disponible path=%s", path)
+            return False
+        if not lines:
+            logger.info("KNOWLEDGE_PREVIEW: word preview no disponible path=%s", path)
+            return False
+
+        self._reset_attachment_preview_area()
+        parent = self.attachment_preview_content
+        ttk.Label(parent, text="📝 Word · Primeras líneas", anchor="w").grid(
+            row=0, column=0, sticky="ew", pady=(0, 6)
+        )
+        text = ScrolledText(parent, wrap="word", height=12, cursor="hand2")
+        text.grid(row=1, column=0, sticky="nsew")
+        parent.rowconfigure(1, weight=1)
+        preview_text = "\n".join(lines[:30])
+        text.insert("1.0", preview_text)
+        text.configure(state="disabled")
+        self._bind_preview_open(text)
+        self._bind_preview_open(parent)
+        logger.info("KNOWLEDGE_PREVIEW: word preview disponible path=%s", path)
+        return True
+
     def _display_pil_preview(self, image: object, image_tk_module: object) -> None:
+        label = self._reset_attachment_preview_area()
         width, height = self._attachment_preview_bounds()
         if hasattr(image, "copy"):
             image = image.copy()
@@ -767,11 +889,12 @@ class KnowledgeManagerWindow(tk.Toplevel):
             image.thumbnail((width, height))
         self._preview_image = image_tk_module.PhotoImage(image)
         self.attachment_preview_image = self._preview_image
+        label.configure(image=self._preview_image, text="")
 
     def _attachment_preview_bounds(self) -> tuple[int, int]:
         self.update_idletasks()
-        current_width = self.attachment_preview_label.winfo_width()
-        current_height = self.attachment_preview_label.winfo_height()
+        current_width = self.attachment_preview_content.winfo_width()
+        current_height = self.attachment_preview_content.winfo_height()
         width = current_width - 24 if current_width > 120 else 720
         height = current_height - 24 if current_height > 120 else 500
         return width, height
@@ -801,12 +924,10 @@ class KnowledgeManagerWindow(tk.Toplevel):
             f"Tipo: {mime_type}\n"
             f"Tamaño: {self._format_file_size(file_size)}\n"
             f"Ruta: {path}\n\n"
-            "Haz clic en esta tarjeta para abrir el archivo con la aplicación predeterminada."
+            "Vista previa no disponible. Haz clic para abrir el archivo."
         )
-        self._preview_image = None
-        self.attachment_preview_image = None
-        self.attachment_preview_label.configure(image="", text=card_text)
-        self.attachment_preview_open_button.grid_remove()
+        label = self._reset_attachment_preview_area(card_text)
+        self._bind_preview_open(label)
         logger.info("KNOWLEDGE_PREVIEW: tarjeta fallback tipo=%s path=%s", type_label, path)
 
     def _register_attachment_record(
