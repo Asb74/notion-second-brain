@@ -255,6 +255,23 @@ def ensure_knowledge_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS knowledge_attachments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_id INTEGER NOT NULL,
+            original_filename TEXT NOT NULL,
+            stored_filename TEXT NOT NULL,
+            stored_path TEXT NOT NULL,
+            mime_type TEXT,
+            file_size INTEGER,
+            source_type TEXT NOT NULL DEFAULT 'manual',
+            created_at TEXT NOT NULL,
+            updated_at TEXT,
+            FOREIGN KEY(item_id) REFERENCES knowledge_items(id)
+        )
+        """
+    )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_items_area ON knowledge_items(area_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_items_area_text ON knowledge_items(area)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_items_topic ON knowledge_items(topic_id)")
@@ -264,6 +281,7 @@ def ensure_knowledge_schema(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_topics_area_text ON knowledge_topics(area)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_items_source ON knowledge_items(source_type, source_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_items_title ON knowledge_items(title)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_attachments_item ON knowledge_attachments(item_id)")
 
     conn.commit()
 
@@ -588,5 +606,6 @@ class Database:
 
 def default_data_dir() -> Path:
     """Return default AppData directory for user data on Windows-compatible layout."""
-    appdata = Path.home() / "AppData" / "Roaming"
-    return appdata / "NotionSecondBrain"
+    from app.config.config_paths import app_data_dir
+
+    return app_data_dir()

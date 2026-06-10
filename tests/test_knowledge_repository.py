@@ -81,3 +81,33 @@ def test_items_and_topics_support_global_area_tipo_text() -> None:
     assert item["topic_name"] == "Tema global"
     assert [row["id"] for row in repo.list_items(area="General", tipo="Nota")] == [item_id]
     assert [row["id"] for row in repo.list_topics(area="General")] == [topic_id]
+
+
+def test_knowledge_attachment_crud() -> None:
+    repo = _repo()
+    item_id = repo.create_item(title="Nota con adjunto", content="Contenido")
+
+    attachment_id = repo.add_attachment(
+        item_id=item_id,
+        original_filename="documento.pdf",
+        stored_filename="20260610_documento.pdf",
+        stored_path="/tmp/20260610_documento.pdf",
+        mime_type="application/pdf",
+        file_size=2048,
+    )
+
+    attachment = repo.get_attachment(attachment_id)
+    assert attachment is not None
+    assert attachment["item_id"] == item_id
+    assert attachment["original_filename"] == "documento.pdf"
+    assert attachment["stored_filename"] == "20260610_documento.pdf"
+    assert attachment["stored_path"] == "/tmp/20260610_documento.pdf"
+    assert attachment["mime_type"] == "application/pdf"
+    assert attachment["file_size"] == 2048
+    assert attachment["source_type"] == "manual"
+    assert [row["id"] for row in repo.list_attachments(item_id)] == [attachment_id]
+
+    repo.delete_attachment(attachment_id)
+
+    assert repo.get_attachment(attachment_id) is None
+    assert repo.list_attachments(item_id) == []
