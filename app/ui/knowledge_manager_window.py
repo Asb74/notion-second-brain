@@ -93,9 +93,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
         left.columnconfigure(0, weight=1)
         left.rowconfigure(3, weight=1)
         right.columnconfigure(1, weight=1)
-        right.rowconfigure(6, weight=3)
-        right.rowconfigure(7, weight=1)
-        right.rowconfigure(8, weight=1)
+        right.rowconfigure(6, weight=1)
 
         ttk.Label(left, text="Buscar").grid(row=0, column=0, sticky="w")
         search_entry = ttk.Entry(left, textvariable=self.search_var)
@@ -181,13 +179,25 @@ class KnowledgeManagerWindow(tk.Toplevel):
         source_entry.grid(row=5, column=1, sticky="ew", pady=(0, 4))
         add_tooltip(source_entry, "Origen del contenido: manual, email, audio, PDF, Evernote, etc.")
 
-        content_label_frame = ttk.Frame(right)
-        content_label_frame.grid(row=6, column=0, sticky="nw", pady=(0, 4))
-        ttk.Label(content_label_frame, text="Contenido").pack(anchor="w")
-        self.content_text = ScrolledText(right, wrap="word", height=18)
-        self.content_text.grid(row=6, column=1, sticky="nsew", pady=(0, 8))
-        self.content_dictation_controls = attach_dictation(self.content_text, content_label_frame)
-        self.content_dictation_controls.pack(anchor="w", pady=(4, 0))
+        notebook = ttk.Notebook(right)
+        notebook.grid(row=6, column=0, columnspan=2, sticky="nsew", pady=(8, 0))
+
+        content_tab = ttk.Frame(notebook, padding=6)
+        summary_tab = ttk.Frame(notebook, padding=6)
+        attachments_tab = ttk.Frame(notebook, padding=6)
+        notebook.add(content_tab, text="Contenido")
+        notebook.add(summary_tab, text="Resumen")
+        notebook.add(attachments_tab, text="Adjuntos")
+
+        content_tab.columnconfigure(0, weight=1)
+        content_tab.rowconfigure(1, weight=1)
+        content_header = ttk.Frame(content_tab)
+        content_header.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        ttk.Label(content_header, text="Contenido").pack(side="left")
+        self.content_text = ScrolledText(content_tab, wrap="word", height=24)
+        self.content_text.grid(row=1, column=0, sticky="nsew")
+        self.content_dictation_controls = attach_dictation(self.content_text, content_header)
+        self.content_dictation_controls.pack(side="right")
         for child in self.content_dictation_controls.winfo_children():
             if isinstance(child, ttk.Button):
                 child.configure(text="🎙 Dictar", width=10)
@@ -199,45 +209,73 @@ class KnowledgeManagerWindow(tk.Toplevel):
                 add_tooltip(child, "Dicta texto en la posición actual del cursor del contenido.")
                 break
 
-        ttk.Label(right, text="Resumen").grid(row=7, column=0, sticky="nw")
-        self.summary_text = ScrolledText(right, wrap="word", height=6)
-        self.summary_text.grid(row=7, column=1, sticky="nsew")
+        summary_tab.columnconfigure(0, weight=1)
+        summary_tab.rowconfigure(1, weight=1)
+        summary_header = ttk.Frame(summary_tab)
+        summary_header.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        ttk.Label(summary_header, text="Resumen").pack(side="left")
+        ttk.Button(summary_header, text="Generar resumen", state="disabled").pack(side="right")
+        self.summary_text = ScrolledText(summary_tab, wrap="word", height=24)
+        self.summary_text.grid(row=1, column=0, sticky="nsew")
 
-        attachments_frame = ttk.LabelFrame(right, text="Adjuntos")
-        attachments_frame.grid(row=8, column=0, columnspan=2, sticky="nsew", pady=(8, 0))
-        attachments_frame.columnconfigure(0, weight=1)
-        attachments_frame.rowconfigure(0, weight=1)
+        attachments_tab.columnconfigure(0, weight=1)
+        attachments_tab.rowconfigure(0, weight=1)
+        attachments_tab.rowconfigure(2, weight=2)
 
         attachment_columns = ("filename", "type", "size", "date")
         self.attachments_tree = ttk.Treeview(
-            attachments_frame, columns=attachment_columns, show="headings", selectmode="browse", height=5
+            attachments_tab, columns=attachment_columns, show="headings", selectmode="browse", height=8
         )
         attachment_headings = {"filename": "Archivo", "type": "Tipo", "size": "Tamaño", "date": "Fecha"}
         attachment_widths = {"filename": 300, "type": 140, "size": 90, "date": 150}
         for column in attachment_columns:
             self.attachments_tree.heading(column, text=attachment_headings[column])
             self.attachments_tree.column(column, width=attachment_widths[column], anchor="w")
-        self.attachments_tree.grid(row=0, column=0, sticky="nsew", padx=(6, 0), pady=6)
+        self.attachments_tree.grid(row=0, column=0, sticky="nsew", pady=(0, 6))
         self.attachments_tree.bind("<Double-1>", lambda _event: self.open_attachment())
-        attachments_scrollbar = ttk.Scrollbar(attachments_frame, orient="vertical", command=self.attachments_tree.yview)
-        attachments_scrollbar.grid(row=0, column=1, sticky="ns", pady=6)
+        self.attachments_tree.bind("<<TreeviewSelect>>", self._on_attachment_selected)
+        attachments_scrollbar = ttk.Scrollbar(attachments_tab, orient="vertical", command=self.attachments_tree.yview)
+        attachments_scrollbar.grid(row=0, column=1, sticky="ns", pady=(0, 6))
         self.attachments_tree.configure(yscrollcommand=attachments_scrollbar.set)
 
-        attachment_buttons = ttk.Frame(attachments_frame)
-        attachment_buttons.grid(row=1, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 6))
-        ttk.Button(attachment_buttons, text="Añadir archivo", command=self.add_attachments).pack(side="left", padx=(0, 6))
+        attachment_buttons = ttk.Frame(attachments_tab)
+        attachment_buttons.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        ttk.Button(attachment_buttons, text="Añadir archivo", command=self.add_attachments).pack(
+            side="left", padx=(0, 6)
+        )
         ttk.Button(attachment_buttons, text="Pegar captura", command=self.paste_clipboard_capture).pack(
             side="left", padx=(0, 6)
         )
-        ttk.Button(attachment_buttons, text="Capturar pantalla", command=self.capture_screen).pack(side="left", padx=(0, 6))
         ttk.Button(attachment_buttons, text="Abrir", command=self.open_attachment).pack(side="left", padx=(0, 6))
         ttk.Button(attachment_buttons, text="Quitar", command=self.remove_attachment).pack(side="left", padx=(0, 6))
         ttk.Button(attachment_buttons, text="Abrir carpeta", command=self.open_attachment_folder).pack(side="left")
-        add_tooltip(
-            self.attachments_tree,
-            "Arrastra archivos aquí para adjuntarlos. También acepta audios mp3, wav, m4a y ogg.",
+
+        preview_frame = ttk.LabelFrame(attachments_tab, text="Vista previa")
+        preview_frame.grid(row=2, column=0, columnspan=2, sticky="nsew")
+        preview_frame.columnconfigure(0, weight=1)
+        preview_frame.rowconfigure(0, weight=1)
+        self.attachment_preview_label = ttk.Label(
+            preview_frame,
+            text="Selecciona un adjunto para ver la vista previa.",
+            anchor="center",
+            justify="center",
+            wraplength=560,
         )
-        self._setup_drag_and_drop((self, attachments_frame, self.attachments_tree))
+        self.attachment_preview_label.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
+        self.attachment_preview_image = None
+
+        dnd_available = self._setup_drag_and_drop((self, attachments_tab, self.attachments_tree, preview_frame))
+        if dnd_available:
+            dnd_message = "Arrastra archivos aquí para adjuntarlos."
+            add_tooltip(
+                self.attachments_tree,
+                "Arrastra archivos aquí para adjuntarlos. También acepta audios mp3, wav, m4a y ogg.",
+            )
+        else:
+            dnd_message = "Arrastrar y soltar no está disponible en este entorno. Usa Añadir archivo."
+        ttk.Label(attachments_tab, text=dnd_message, foreground="#555555").grid(
+            row=3, column=0, columnspan=2, sticky="ew", pady=(6, 0)
+        )
 
         ttk.Label(self, textvariable=self.status_var).grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 8))
 
@@ -487,6 +525,63 @@ class KnowledgeManagerWindow(tk.Toplevel):
             return None
         return int(selection[0])
 
+    def _clear_attachment_preview(self, message: str = "Selecciona un adjunto para ver la vista previa.") -> None:
+        if not hasattr(self, "attachment_preview_label"):
+            return
+        self.attachment_preview_image = None
+        self.attachment_preview_label.configure(image="", text=message)
+
+    def _on_attachment_selected(self, _event: tk.Event | None = None) -> None:
+        attachment_id = self._selected_attachment_id()
+        if attachment_id is None:
+            self._clear_attachment_preview()
+            return
+        self._show_attachment_preview(attachment_id)
+
+    def _show_attachment_preview(self, attachment_id: int) -> None:
+        row = self.repo.get_attachment(attachment_id)
+        if row is None:
+            self._clear_attachment_preview("No se encontró el adjunto seleccionado.")
+            self.refresh_attachments()
+            return
+        path = Path(str(row["stored_path"] or ""))
+        mime_type = str(row["mime_type"] or "")
+        suffix = path.suffix.lower()
+        if not path.exists():
+            self._clear_attachment_preview(f"El archivo no existe:\n{path}")
+            return
+        if suffix in {".png", ".jpg", ".jpeg"} or mime_type in {"image/png", "image/jpeg"}:
+            if self._show_image_attachment_preview(path):
+                return
+        self._show_file_info_preview(row, path)
+
+    def _show_image_attachment_preview(self, path: Path) -> bool:
+        if importlib.util.find_spec("PIL") is None or importlib.util.find_spec("PIL.ImageTk") is None:
+            return False
+        try:
+            image_module = importlib.import_module("PIL.Image")
+            image_tk_module = importlib.import_module("PIL.ImageTk")
+            image = image_module.open(path)
+            image.thumbnail((520, 320))
+            self.attachment_preview_image = image_tk_module.PhotoImage(image)
+        except Exception:  # noqa: BLE001
+            logger.exception("No se pudo generar la vista previa de imagen de Knowledge")
+            return False
+        self.attachment_preview_label.configure(image=self.attachment_preview_image, text="")
+        return True
+
+    def _show_file_info_preview(self, row: sqlite3.Row, path: Path) -> None:
+        file_size = path.stat().st_size if path.exists() else int(row["file_size"] or 0)
+        mime_type = str(row["mime_type"] or mimetypes.guess_type(str(path))[0] or "Tipo desconocido")
+        file_info = (
+            f"Archivo: {row['original_filename'] or row['stored_filename'] or path.name}\n"
+            f"Tipo: {mime_type}\n"
+            f"Tamaño: {self._format_file_size(file_size)}\n"
+            f"Ruta: {path}"
+        )
+        self.attachment_preview_image = None
+        self.attachment_preview_label.configure(image="", text=file_info)
+
     def _register_attachment_record(
         self,
         item_id: int,
@@ -543,10 +638,10 @@ class KnowledgeManagerWindow(tk.Toplevel):
             self.status_var.set(f"{added} adjunto(s) añadido(s)")
         return added
 
-    def _setup_drag_and_drop(self, widgets: tuple[tk.Misc, ...]) -> None:
+    def _setup_drag_and_drop(self, widgets: tuple[tk.Misc, ...]) -> bool:
         if importlib.util.find_spec("tkinterdnd2") is not None:
             tkinterdnd2 = importlib.import_module("tkinterdnd2")
-            dnd_files = getattr(tkinterdnd2, "DND_FILES", "DND_Files")
+            dnd_files = getattr(tkinterdnd2, "DROP_FILES", getattr(tkinterdnd2, "DND_FILES", "DND_Files"))
             registered = 0
             for widget in widgets:
                 if not hasattr(widget, "drop_target_register") or not hasattr(widget, "dnd_bind"):
@@ -559,15 +654,15 @@ class KnowledgeManagerWindow(tk.Toplevel):
                     continue
                 registered += 1
             if registered:
-                logger.info("KNOWLEDGE_CAPTURE: drag&drop activo widgets=%s", registered)
-                return
+                logger.info("KNOWLEDGE_DND: tkinterdnd activo widgets=%s", registered)
+                return True
 
         tkdnd_version = ""
         try:
             tkdnd_version = str(self.tk.call("package", "require", "tkdnd"))
         except Exception:  # noqa: BLE001
-            logger.info("KNOWLEDGE_CAPTURE: drag&drop no disponible; tkdnd/tkinterdnd2 no instalado")
-            return
+            logger.info("KNOWLEDGE_DND: tkinterdnd no disponible")
+            return False
 
         registered = 0
         drop_command = self.register(self._handle_drop_data)
@@ -580,9 +675,10 @@ class KnowledgeManagerWindow(tk.Toplevel):
                 continue
             registered += 1
         if registered:
-            logger.info("KNOWLEDGE_CAPTURE: drag&drop activo con tkdnd=%s widgets=%s", tkdnd_version, registered)
-        else:
-            logger.info("KNOWLEDGE_CAPTURE: drag&drop no disponible en esta ventana")
+            logger.info("KNOWLEDGE_DND: tkdnd activo version=%s widgets=%s", tkdnd_version, registered)
+            return True
+        logger.info("KNOWLEDGE_DND: tkinterdnd no disponible")
+        return False
 
     def _handle_files_dropped(self, event: tk.Event) -> None:
         self._handle_drop_data(str(getattr(event, "data", "") or ""))
@@ -592,6 +688,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
             raw_paths = self.tk.splitlist(dropped_data)
         except Exception:  # noqa: BLE001
             raw_paths = tuple(dropped_data.split())
+        logger.info("KNOWLEDGE_DND: drop recibido paths=%s", list(raw_paths))
         file_paths = [path for path in raw_paths if Path(path).is_file()]
         if not file_paths:
             self.status_var.set("No se encontraron archivos para adjuntar")
@@ -600,7 +697,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
         if item_id is None:
             return
         for file_path in file_paths:
-            logger.info("KNOWLEDGE_CAPTURE: archivo arrastrado item_id=%s path=%s", item_id, file_path)
+            logger.info("KNOWLEDGE_DND: adjuntando archivo=%s", file_path)
         self._add_attachment_paths(item_id, file_paths)
 
     def _pillow_image_modules(self) -> tuple[object, object] | None:
@@ -700,6 +797,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
             return
         for row_id in self.attachments_tree.get_children():
             self.attachments_tree.delete(row_id)
+        self._clear_attachment_preview()
         if self.current_item_id is None:
             return
         for row in self.repo.list_attachments(self.current_item_id):
