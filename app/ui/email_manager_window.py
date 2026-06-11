@@ -52,9 +52,11 @@ from app.ml.ml_training_manager import MLTrainingManager
 from app.ml.retraining_service import DatasetRetrainingService
 from app.persistence.user_profile_repository import UserProfileRepository
 from app.services.email_entity_extractor import EmailEntityExtractor
+from app.services.knowledge_suggestion_service import suggest_knowledge_metadata
 from app.services.email_background_checker import EmailCheckerThread
 from app.services.openai_service import OpenAIService
 from app.ui.app_icons import apply_app_icon
+from app.ui.knowledge_metadata_dialog import KnowledgeMetadataDialog
 from app.ui.excel_filter import ExcelTreeFilter
 from app.ui.dictation_widgets import attach_dictation
 from app.ui.refinement_panel import (
@@ -1941,8 +1943,6 @@ class EmailManagerWindow(tk.Toplevel):
             messagebox.showwarning("Atención", "Selecciona al menos un correo para guardar como conocimiento.")
             return
 
-        area_id = self._default_knowledge_area_id()
-        item_type_id = self._default_knowledge_email_type_id()
         created_count = 0
         skipped_count = 0
         for gmail_id in selected_ids:
@@ -1961,20 +1961,60 @@ class EmailManagerWindow(tk.Toplevel):
                 skipped_count += 1
                 continue
 
+            title = subject or f"Email {gmail_id}"
             try:
-                item_id = self.knowledge_repo.create_item(
-                    title=subject or f"Email {gmail_id}",
+                suggestions = suggest_knowledge_metadata(
+                    title=title,
                     content=content,
-                    area_id=area_id,
-                    item_type_id=item_type_id,
-                    topic_id=None,
-                    tags=["email"],
-                    source_type="email",
+                    source="email",
+                    existing_tags=["Email"],
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("No se pudieron generar sugerencias Knowledge para email %s", gmail_id)
+                self.system_log(f"Sugerencias no disponibles para email {gmail_id}: {exc}", level="WARNING")
+                suggestions = {
+                    "area": "Archivo",
+                    "topic": "",
+                    "type": "Nota",
+                    "tags": ["Email"],
+                    "reason": "fallback seguro",
+                }
+
+            try:
+                logger.info("KNOWLEDGE_EMAIL_NOTE: dialog opened")
+                self.system_log("KNOWLEDGE_EMAIL_NOTE: dialog opened")
+                dialog = KnowledgeMetadataDialog(
+                    self,
+                    self.db_connection,
+                    title=title,
+                    content=content,
+                    source="email",
+                    suggestions=suggestions,
+                )
+                metadata = dialog.result
+                if metadata is None:
+                    logger.info("KNOWLEDGE_EMAIL_NOTE: cancelled")
+                    self.system_log("KNOWLEDGE_EMAIL_NOTE: cancelled")
+                    skipped_count += 1
+                    continue
+
+                item_id = self.knowledge_repo.create_item(
+                    title=str(metadata.get("title") or title),
+                    content=str(metadata.get("content") or content),
+                    area=str(metadata.get("area") or ""),
+                    tipo=str(metadata.get("type") or ""),
+                    topic_id=metadata.get("topic_id") if isinstance(metadata.get("topic_id"), int) else None,
+                    tags=(
+                        [str(tag) for tag in metadata.get("tags", []) if str(tag).strip()]
+                        if isinstance(metadata.get("tags"), list)
+                        else []
+                    ),
+                    source_type=str(metadata.get("source") or "email"),
                     source_id=str(row["gmail_id"] or gmail_id),
                     summary="",
                 )
-                logger.info("KNOWLEDGE: email guardado como conocimiento gmail_id=%s", gmail_id)
-                self.system_log(f"KNOWLEDGE: email guardado como conocimiento gmail_id={gmail_id} item_id={item_id}")
+                logger.info("KNOWLEDGE_EMAIL_NOTE: saved with metadata gmail_id=%s item_id=%s", gmail_id, item_id)
+                self.system_log(f"KNOWLEDGE_EMAIL_NOTE: saved with metadata gmail_id={gmail_id} item_id={item_id}")
                 created_count += 1
             except Exception as exc:  # noqa: BLE001
                 logger.exception("No se pudo guardar email como conocimiento %s", gmail_id)
