@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import hashlib
 import logging
 import mimetypes
 import os
@@ -13,6 +14,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import tkinter as tk
 from collections.abc import Callable
 from datetime import datetime
@@ -20,7 +22,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
-from app.config.config_paths import knowledge_attachments_dir
+from app.config.config_paths import app_data_dir, knowledge_attachments_dir
 from app.persistence.knowledge_repository import KnowledgeRepository
 from app.persistence.masters_repository import MastersRepository
 from app.ui.app_icons import apply_app_icon
@@ -34,6 +36,10 @@ EXCEL_ATTACHMENT_EXTENSIONS = {".xls", ".xlsx", ".xlsm", ".xltx", ".ods"}
 WORD_ATTACHMENT_EXTENSIONS = {".doc", ".docx", ".odt"}
 PDF_ATTACHMENT_EXTENSIONS = {".pdf"}
 IMAGE_ATTACHMENT_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+POWERPOINT_ATTACHMENT_EXTENSIONS = {".ppt", ".pptx", ".odp"}
+TEXT_ATTACHMENT_EXTENSIONS = {".txt", ".csv", ".log", ".md", ".json", ".xml", ".html", ".htm"}
+VIDEO_ATTACHMENT_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
+ARCHIVE_ATTACHMENT_EXTENSIONS = {".zip", ".rar", ".7z", ".tar", ".gz"}
 
 
 def open_file_with_default_app(path: Path) -> None:
@@ -326,6 +332,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self._current_preview_type: str | None = None
         self._current_preview_bounds: tuple[int, int] | None = None
         self._preview_after_id: str | None = None
+        self._preview_generation_tokens: set[str] = set()
 
         dnd_available = self._setup_drag_and_drop((self, attachments_tab, self.attachments_tree, preview_frame))
         if dnd_available:
@@ -733,7 +740,6 @@ class KnowledgeManagerWindow(tk.Toplevel):
             return
         path = Path(str(row["stored_path"] or ""))
         mime_type = str(row["mime_type"] or "")
-        suffix = path.suffix.lower()
         if not path.exists():
             self._clear_attachment_preview(f"El archivo no existe:\n{path}")
             return
@@ -745,44 +751,13 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self._current_preview_path = path
         self._current_preview_type = preview_type
         self._current_preview_bounds = self._attachment_preview_bounds()
-        if preview_type == "image":
-            if self._show_image_attachment_preview(path):
-                return
-            self._show_file_info_preview(row, path, type_label="Imagen")
+        if preview_type in {"audio", "video", "archive", "file"}:
+            type_labels = {"audio": "Audio", "video": "Vídeo", "archive": "Archivo", "file": "Archivo"}
+            logger.info("KNOWLEDGE_PREVIEW: preview fallback reason=tipo_no_visual path=%s", path)
+            self._show_file_info_preview(row, path, type_label=type_labels[preview_type])
             return
-        if preview_type == "pdf":
-            if self._show_pdf_attachment_preview(path):
-                return
-            logger.info("KNOWLEDGE_PREVIEW: pdf fallback sin motor path=%s", path)
-            self._show_file_info_preview(row, path, type_label="PDF")
-            return
-        if preview_type == "excel":
-            if self._show_excel_attachment_preview(path):
-                return
-            excel_preview_note = None
-            if suffix == ".xls":
-                excel_preview_note = "La vista previa interna solo está disponible para Excel .xlsx/.xlsm/.xltx."
-            elif suffix in {".xlsx", ".xlsm", ".xltx"} and not self._module_available("openpyxl"):
-                excel_preview_note = "Instala openpyxl para ver una tabla interna de archivos .xlsx/.xlsm/.xltx."
-            elif suffix in {".xlsx", ".xlsm", ".xltx"}:
-                excel_preview_note = "No se pudo generar la tabla interna de este Excel."
-            self._show_file_info_preview(row, path, type_label="Excel", extra_message=excel_preview_note)
-            return
-        if preview_type == "word":
-            if self._show_word_attachment_preview(path):
-                return
-            logger.info("KNOWLEDGE_PREVIEW: word fallback path=%s", path)
-            self._show_file_info_preview(
-                row,
-                path,
-                type_label="Word",
-                extra_message="Vista previa Word no disponible. Haz clic para abrir el archivo.",
-            )
-            return
-        if preview_type == "audio":
-            self._show_file_info_preview(row, path, type_label="Audio")
-            return
-        self._show_file_info_preview(row, path)
+
+        self._show_cached_visual_attachment_preview(row, path, preview_type)
 
     @staticmethod
     def _attachment_preview_type(path: Path, mime_type: str) -> str:
@@ -795,8 +770,16 @@ class KnowledgeManagerWindow(tk.Toplevel):
             return "excel"
         if suffix in WORD_ATTACHMENT_EXTENSIONS:
             return "word"
+        if suffix in POWERPOINT_ATTACHMENT_EXTENSIONS:
+            return "powerpoint"
+        if suffix in TEXT_ATTACHMENT_EXTENSIONS or mime_type.startswith("text/"):
+            return "text"
         if suffix in AUDIO_ATTACHMENT_EXTENSIONS:
             return "audio"
+        if suffix in VIDEO_ATTACHMENT_EXTENSIONS or mime_type.startswith("video/"):
+            return "video"
+        if suffix in ARCHIVE_ATTACHMENT_EXTENSIONS:
+            return "archive"
         return "file"
 
     @staticmethod
@@ -806,155 +789,225 @@ class KnowledgeManagerWindow(tk.Toplevel):
         except (ImportError, ModuleNotFoundError, ValueError):
             return False
 
-    def _show_image_attachment_preview(self, path: Path) -> bool:
-        if not self._module_available("PIL") or not self._module_available("PIL.ImageTk"):
-            return False
-        image_module = importlib.import_module("PIL.Image")
-        image_tk_module = importlib.import_module("PIL.ImageTk")
-        try:
-            with image_module.open(path) as image:
-                self._display_pil_preview(image, image_tk_module)
-        except Exception:  # noqa: BLE001
-            logger.exception("No se pudo generar la vista previa de imagen de Knowledge")
-            return False
-        self.attachment_preview_label.configure(image=self._preview_image, text="")
-        logger.info("KNOWLEDGE_PREVIEW: imagen renderizada path=%s", path)
-        return True
+    def _preview_cache_dir(self) -> Path:
+        return app_data_dir() / "knowledge" / "previews"
 
-    def _show_pdf_attachment_preview(self, path: Path) -> bool:
-        if not self._module_available("PIL") or not self._module_available("PIL.ImageTk"):
-            logger.info("KNOWLEDGE_PREVIEW: pdf fallback sin motor path=%s", path)
-            return False
+    def _preview_cache_path(self, path: Path) -> Path:
+        stat = path.stat()
+        key_source = f"{path.resolve()}|{stat.st_size}|{stat.st_mtime_ns}"
+        cache_key = hashlib.sha256(key_source.encode("utf-8", errors="ignore")).hexdigest()
+        return self._preview_cache_dir() / f"{cache_key}.png"
 
+    def _show_cached_visual_attachment_preview(self, row: sqlite3.Row, path: Path, preview_type: str) -> None:
+        cache_path = self._preview_cache_path(path)
+        if cache_path.exists():
+            logger.info("KNOWLEDGE_PREVIEW: preview cache hit path=%s cache=%s", path, cache_path)
+            if self._display_cached_preview_png(cache_path):
+                return
+            logger.info("KNOWLEDGE_PREVIEW: preview fallback reason=cache_no_mostrable path=%s", path)
+            self._show_file_info_preview(row, path, type_label=self._preview_type_label(preview_type))
+            return
+
+        logger.info("KNOWLEDGE_PREVIEW: preview cache miss path=%s cache=%s", path, cache_path)
+        token = str(cache_path)
+        self._reset_attachment_preview_area("Generando vista previa...\n\nHaz clic para abrir el archivo.")
+        self._bind_preview_open(self.attachment_preview_label)
+        if token in self._preview_generation_tokens:
+            return
+        self._preview_generation_tokens.add(token)
+        logger.info("KNOWLEDGE_PREVIEW: preview async started path=%s", path)
+        thread = threading.Thread(
+            target=self._generate_preview_png_async,
+            args=(row, path, preview_type, cache_path, token),
+            daemon=True,
+        )
+        thread.start()
+
+    @staticmethod
+    def _preview_type_label(preview_type: str) -> str:
+        return {
+            "image": "Imagen",
+            "pdf": "PDF",
+            "excel": "Excel",
+            "word": "Word",
+            "powerpoint": "PowerPoint",
+            "text": "Documento",
+        }.get(preview_type, "Archivo")
+
+    def _generate_preview_png_async(
+        self,
+        row: sqlite3.Row,
+        path: Path,
+        preview_type: str,
+        cache_path: Path,
+        token: str,
+    ) -> None:
+        success = False
+        reason = "desconocido"
         try:
-            import fitz  # type: ignore
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            success, reason = self._generate_preview_png(path, preview_type, cache_path)
         except Exception as exc:  # noqa: BLE001
-            logger.info("KNOWLEDGE_PREVIEW: pdf fallback sin motor path=%s", path)
-            logger.debug("KNOWLEDGE_PREVIEW: pdf pymupdf no disponible %s path=%s", exc, path)
-            return False
+            reason = f"error:{exc}"
+            logger.info("KNOWLEDGE_PREVIEW: preview fallback reason=%s path=%s", reason, path)
+        finally:
+            self._preview_generation_tokens.discard(token)
+        logger.info("KNOWLEDGE_PREVIEW: preview async finished success=%s reason=%s path=%s", success, reason, path)
+        try:
+            self.after(0, self._finish_preview_generation, row, path, preview_type, cache_path, success, reason)
+        except tk.TclError:
+            logger.info("KNOWLEDGE_PREVIEW: preview fallback reason=ventana_cerrada path=%s", path)
 
+    def _finish_preview_generation(
+        self,
+        row: sqlite3.Row,
+        path: Path,
+        preview_type: str,
+        cache_path: Path,
+        success: bool,
+        reason: str,
+    ) -> None:
+        if self._preview_attachment_path != path or self._current_preview_type != preview_type:
+            return
+        if success and cache_path.exists() and self._display_cached_preview_png(cache_path):
+            return
+        logger.info("KNOWLEDGE_PREVIEW: preview fallback reason=%s path=%s", reason, path)
+        message = "Vista previa visual no disponible. Haz clic para abrir el archivo."
+        self._show_file_info_preview(row, path, type_label=self._preview_type_label(preview_type), extra_message=message)
+
+    def _display_cached_preview_png(self, cache_path: Path) -> bool:
+        if not self._module_available("PIL") or not self._module_available("PIL.ImageTk"):
+            logger.info("KNOWLEDGE_PREVIEW: preview fallback reason=pillow_no_disponible cache=%s", cache_path)
+            return False
         image_module = importlib.import_module("PIL.Image")
         image_tk_module = importlib.import_module("PIL.ImageTk")
-        document = None
         try:
-            logger.info("KNOWLEDGE_PREVIEW: pdf pymupdf intentando path=%s", path)
-            document = fitz.open(str(path))
-            if document.page_count < 1:
-                logger.info("KNOWLEDGE_PREVIEW: pdf pymupdf error sin páginas path=%s", path)
-                return False
-            page = document.load_page(0)
-            pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
-            image = image_module.frombytes("RGB", [pixmap.width, pixmap.height], pixmap.samples)
-            self._display_pil_preview(image, image_tk_module)
-            self.attachment_preview_label.configure(image=self._preview_image, text="")
-            logger.info("KNOWLEDGE_PREVIEW: pdf pymupdf renderizado path=%s", path)
+            with image_module.open(cache_path) as image:
+                self._display_pil_preview(image, image_tk_module)
+            logger.info("KNOWLEDGE_PREVIEW: preview cache mostrado cache=%s", cache_path)
             return True
         except Exception as exc:  # noqa: BLE001
-            logger.warning("KNOWLEDGE_PREVIEW: pdf pymupdf error %s path=%s", exc, path)
+            logger.info("KNOWLEDGE_PREVIEW: preview fallback reason=png_error:%s cache=%s", exc, cache_path)
             return False
+
+    def _generate_preview_png(self, path: Path, preview_type: str, cache_path: Path) -> tuple[bool, str]:
+        if preview_type == "image":
+            return self._generate_image_thumbnail(path, cache_path)
+        if preview_type == "pdf":
+            return self._render_pdf_first_page_to_png(path, cache_path)
+        if preview_type in {"word", "excel", "powerpoint"}:
+            return self._generate_office_preview(path, preview_type, cache_path)
+        if preview_type == "text":
+            return self._generate_text_preview(path, cache_path)
+        return False, f"tipo_no_soportado:{preview_type}"
+
+    def _generate_image_thumbnail(self, path: Path, cache_path: Path) -> tuple[bool, str]:
+        if not self._module_available("PIL"):
+            return False, "pillow_no_disponible"
+        image_module = importlib.import_module("PIL.Image")
+        try:
+            with image_module.open(path) as image:
+                image.thumbnail((1600, 1600))
+                if image.mode not in {"RGB", "RGBA"}:
+                    image = image.convert("RGB")
+                image.save(cache_path, "PNG")
+            return True, "image_thumbnail"
+        except Exception as exc:  # noqa: BLE001
+            return False, f"image_error:{exc}"
+
+    def _render_pdf_first_page_to_png(self, pdf_path: Path, cache_path: Path) -> tuple[bool, str]:
+        if not self._module_available("fitz"):
+            return False, "pymupdf_no_disponible"
+        fitz = importlib.import_module("fitz")
+
+        document = None
+        try:
+            document = fitz.open(str(pdf_path))
+            if document.page_count < 1:
+                return False, "pdf_sin_paginas"
+            page = document.load_page(0)
+            pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+            pixmap.save(str(cache_path))
+            return True, "pymupdf"
+        except Exception as exc:  # noqa: BLE001
+            return False, f"pymupdf_error:{exc}"
         finally:
             if document is not None:
                 document.close()
 
-    def _show_excel_attachment_preview(self, path: Path) -> bool:
-        suffix = path.suffix.lower()
-        if suffix == ".xls":
-            logger.info("KNOWLEDGE_PREVIEW: excel preview no disponible para .xls path=%s", path)
-            return False
-        if suffix not in {".xlsx", ".xlsm", ".xltx"}:
-            return False
-
-        logger.info("KNOWLEDGE_PREVIEW: excel preview intentando path=%s", path)
-        if not self._module_available("openpyxl"):
-            logger.info("KNOWLEDGE_PREVIEW: openpyxl no disponible")
-            return False
-
-        try:
-            openpyxl = importlib.import_module("openpyxl")
-        except Exception as exc:  # noqa: BLE001
-            logger.info("KNOWLEDGE_PREVIEW: openpyxl no disponible")
-            logger.exception("KNOWLEDGE_PREVIEW: excel preview error %s path=%s", exc, path)
-            return False
-
-        workbook = None
-        try:
-            workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
-            sheet = workbook.worksheets[0]
-            sheet_title = str(sheet.title)
-            rows = []
-            for row in sheet.iter_rows(max_row=20, max_col=8, values_only=True):
-                rows.append(["" if value is None else str(value) for value in row])
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("KNOWLEDGE_PREVIEW: excel preview error %s path=%s", exc, path)
-            return False
-        finally:
-            if workbook is not None:
-                workbook.close()
-
-        self._reset_attachment_preview_area()
-        parent = self.attachment_preview_content
-        parent.rowconfigure(1, weight=1)
-        ttk.Label(parent, text=f"📊 Excel · Hoja: {sheet_title}", anchor="w").grid(
-            row=0, column=0, sticky="ew", pady=(0, 6)
-        )
-        columns = [f"col_{index}" for index in range(1, 9)]
-        tree = ttk.Treeview(parent, columns=columns, show="headings", height=min(max(len(rows), 1), 20))
-        for index, column in enumerate(columns, start=1):
-            tree.heading(column, text=self._excel_column_name(index))
-            tree.column(column, width=110, minwidth=70, anchor="w")
-        for row_values in rows:
-            padded_values = [*row_values, *([""] * (8 - len(row_values)))]
-            tree.insert("", "end", values=padded_values[:8])
-        tree.grid(row=1, column=0, sticky="nsew")
-        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=tree.yview)
-        scrollbar.grid(row=1, column=1, sticky="ns")
-        tree.configure(yscrollcommand=scrollbar.set)
-        self._bind_preview_open(tree)
-        self._bind_preview_open(parent)
-        logger.info(
-            "KNOWLEDGE_PREVIEW: excel preview filas=%s columnas=%s hoja=%s path=%s",
-            len(rows),
-            8,
-            sheet_title,
-            path,
-        )
-        return True
-
-    @staticmethod
-    def _excel_column_name(index: int) -> str:
-        name = ""
-        while index:
-            index, remainder = divmod(index - 1, 26)
-            name = chr(65 + remainder) + name
-        return name
-
-    def _show_word_attachment_preview(self, path: Path) -> bool:
-        if path.suffix.lower() not in {".doc", ".docx"}:
-            logger.info("KNOWLEDGE_PREVIEW: word visual no aplica suffix=%s path=%s", path.suffix.lower(), path)
-            return False
-
-        logger.info("KNOWLEDGE_PREVIEW: word visual intentando path=%s", path)
-        with tempfile.TemporaryDirectory(prefix="knowledge_word_preview_") as temp_dir_name:
+    def _generate_office_preview(self, path: Path, preview_type: str, cache_path: Path) -> tuple[bool, str]:
+        with tempfile.TemporaryDirectory(prefix="knowledge_preview_") as temp_dir_name:
             temp_dir = Path(temp_dir_name)
-            pdf_path, reason = self._convert_word_to_pdf(path, temp_dir)
-            if pdf_path is None:
-                logger.info("KNOWLEDGE_PREVIEW: word visual no disponible motivo=%s path=%s", reason, path)
-                return False
-            if self._show_pdf_attachment_preview(pdf_path):
-                logger.info("KNOWLEDGE_PREVIEW: word visual renderizado pdf=%s path=%s", pdf_path, path)
-                return True
+            pdf_path, reason = self._convert_document_to_pdf(path, temp_dir, allow_word_com=preview_type == "word")
+            if pdf_path is not None:
+                rendered, render_reason = self._render_pdf_first_page_to_png(pdf_path, cache_path)
+                return (True, f"{reason}+{render_reason}") if rendered else (False, render_reason)
+        if preview_type == "excel":
+            return self._generate_excel_grid_image(path, cache_path)
+        return False, reason
 
-        logger.info("KNOWLEDGE_PREVIEW: word visual no disponible motivo=render_pdf path=%s", path)
-        return False
-
-    def _convert_word_to_pdf(self, path: Path, temp_dir: Path) -> tuple[Path | None, str]:
+    def _convert_document_to_pdf(
+        self,
+        path: Path,
+        temp_dir: Path,
+        *,
+        allow_word_com: bool = False,
+    ) -> tuple[Path | None, str]:
         pdf_path, reason = self._convert_word_to_pdf_with_libreoffice(path, temp_dir)
-        if pdf_path is not None:
+        if pdf_path is not None or not allow_word_com or not sys.platform.startswith("win"):
             return pdf_path, reason
-        logger.info("KNOWLEDGE_PREVIEW: word libreoffice no disponible motivo=%s path=%s", reason, path)
-        if sys.platform.startswith("win"):
-            return self._convert_word_to_pdf_with_com(path, temp_dir)
-        return None, reason
+        return self._convert_word_to_pdf_with_com(path, temp_dir)
+
+    def _generate_excel_grid_image(self, path: Path, cache_path: Path) -> tuple[bool, str]:
+        if path.suffix.lower() not in {".xlsx", ".xlsm", ".xltx"}:
+            return False, "excel_sin_conversor"
+        if not self._module_available("openpyxl"):
+            return False, "openpyxl_no_disponible"
+        return self._generate_tabular_text_image(path, cache_path, is_excel=True)
+
+    def _generate_text_preview(self, path: Path, cache_path: Path) -> tuple[bool, str]:
+        return self._generate_tabular_text_image(path, cache_path, is_excel=False)
+
+    def _generate_tabular_text_image(self, path: Path, cache_path: Path, *, is_excel: bool) -> tuple[bool, str]:
+        if not self._module_available("PIL"):
+            return False, "pillow_no_disponible"
+        image_module = importlib.import_module("PIL.Image")
+        image_draw_module = importlib.import_module("PIL.ImageDraw")
+        image_font_module = importlib.import_module("PIL.ImageFont")
+        openpyxl = importlib.import_module("openpyxl") if is_excel else None
+        try:
+            lines: list[str]
+            title = path.name
+            if is_excel:
+                workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
+                try:
+                    sheet = workbook.worksheets[0]
+                    title = f"{path.name} · {sheet.title}"
+                    lines = []
+                    for row in sheet.iter_rows(max_row=28, max_col=8, values_only=True):
+                        lines.append("  |  ".join("" if value is None else str(value) for value in row))
+                finally:
+                    workbook.close()
+            else:
+                with path.open("r", encoding="utf-8", errors="replace") as handle:
+                    lines = [line.rstrip("\n") for _, line in zip(range(32), handle)]
+
+            width, height = 1200, 900
+            image = image_module.new("RGB", (width, height), "white")
+            draw = image_draw_module.Draw(image)
+            font = image_font_module.load_default()
+            draw.rectangle((0, 0, width, 64), fill="#f0f3f8")
+            draw.text((24, 22), title[:140], fill="#111827", font=font)
+            y = 92
+            for line in lines:
+                if y > height - 36:
+                    break
+                draw.text((24, y), line[:180], fill="#1f2937", font=font)
+                y += 26
+            image.save(cache_path, "PNG")
+            return True, "openpyxl_visual" if is_excel else "text_visual"
+        except Exception as exc:  # noqa: BLE001
+            return False, f"visual_text_error:{exc}"
 
     def _convert_word_to_pdf_with_libreoffice(self, path: Path, temp_dir: Path) -> tuple[Path | None, str]:
         soffice_path = shutil.which("soffice") or shutil.which("libreoffice")
@@ -990,10 +1043,9 @@ class KnowledgeManagerWindow(tk.Toplevel):
         return None, "libreoffice_sin_pdf"
 
     def _convert_word_to_pdf_with_com(self, path: Path, temp_dir: Path) -> tuple[Path | None, str]:
-        try:
-            win32com_client = importlib.import_module("win32com.client")
-        except Exception as exc:  # noqa: BLE001
-            return None, f"word_com_no_disponible:{exc}"
+        if not self._module_available("win32com.client"):
+            return None, "word_com_no_disponible"
+        win32com_client = importlib.import_module("win32com.client")
 
         pdf_path = temp_dir / f"{path.stem}.pdf"
         word_app = None
