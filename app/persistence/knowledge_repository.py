@@ -374,6 +374,27 @@ class KnowledgeRepository:
             tuple(params),
         ).fetchall()
 
+
+    def exists_evernote_duplicate(self, title: str, created: str = "") -> bool:
+        """Return True for the pilot Evernote duplicate rule: source + title + created date."""
+        cleaned_title = title.strip()
+        cleaned_created = created.strip()
+        if not cleaned_title:
+            return False
+        row = self.conn.execute(
+            """
+            SELECT 1
+            FROM knowledge_items
+            WHERE source_type = 'evernote'
+              AND title = ?
+              AND COALESCE(source_id, '') = ?
+              AND status != 'deleted'
+            LIMIT 1
+            """,
+            (cleaned_title, cleaned_created),
+        ).fetchone()
+        return row is not None
+
     def delete_item(self, item_id: int) -> None:
         self.conn.execute("DELETE FROM knowledge_item_tags WHERE item_id = ?", (item_id,))
         self.conn.execute("DELETE FROM knowledge_items WHERE id = ?", (item_id,))

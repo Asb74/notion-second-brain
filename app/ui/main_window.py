@@ -13,7 +13,7 @@ import importlib.util
 from datetime import datetime, timedelta
 from pathlib import Path
 from queue import Queue
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from tkcalendar import DateEntry
 
@@ -37,6 +37,8 @@ from app.ui.calendar_manager_window import CalendarManagerWindow
 from app.ui.ml_manager_window import MLManagerWindow
 from app.ui.ml_quality_metrics_window import MLQualityMetricsWindow
 from app.ui.knowledge_manager_window import KnowledgeManagerWindow
+from app.services.evernote_enex_importer import parse_enex_file
+from app.ui.evernote_import_dialog import EvernoteImportDialog
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.app_icons import apply_app_icon
 from app.ui.dictation_widgets import attach_dictation
@@ -191,6 +193,7 @@ class MainWindow(ttk.Frame):
 
         conocimiento = tk.Menu(menubar, tearoff=0)
         conocimiento.add_command(label="Knowledge Manager", command=self._open_knowledge_manager)
+        conocimiento.add_command(label="Importar Evernote (.enex)", command=self._import_evernote_enex)
         menubar.add_cascade(label="Conocimiento", menu=conocimiento)
 
         configuracion = tk.Menu(menubar, tearoff=0)
@@ -305,6 +308,43 @@ class MainWindow(ttk.Frame):
         except Exception as exc:  # noqa: BLE001
             logger.exception("No se pudo abrir la agenda")
             messagebox.showerror("Error", f"No se pudo abrir la agenda.\n\n{exc}")
+
+    def _import_evernote_enex(self) -> None:
+        if self.db_connection is None:
+            messagebox.showerror("Error", "No hay conexión de base de datos disponible para importar en Knowledge.")
+            return
+        selected_path = filedialog.askopenfilename(
+            title="Importar Evernote (.enex)",
+            filetypes=[("Evernote ENEX", "*.enex"), ("Todos los archivos", "*.*")],
+        )
+        if not selected_path:
+            return
+        logger.info("EVERNOTE_IMPORT: archivo seleccionado path=%s", selected_path)
+        try:
+            self.master.configure(cursor="watch")
+            self.master.update_idletasks()
+            notes = parse_enex_file(selected_path)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("No se pudo leer el archivo ENEX")
+            messagebox.showerror("Importar Evernote", f"No se pudo leer el archivo .enex.\n\n{exc}")
+            return
+        finally:
+            self.master.configure(cursor="")
+        if not notes:
+            messagebox.showwarning("Importar Evernote", "No se detectaron notas en el archivo seleccionado.")
+            return
+        EvernoteImportDialog(
+            self.master,
+            self.db_connection,
+            selected_path,
+            notes,
+            on_import_finished=self._refresh_knowledge_after_import,
+        )
+
+    def _refresh_knowledge_after_import(self) -> None:
+        if self._knowledge_window is not None and self._knowledge_window.winfo_exists():
+            self._knowledge_window.refresh_items()
+
 
     def _open_knowledge_manager(self) -> None:
         if self.db_connection is None:
