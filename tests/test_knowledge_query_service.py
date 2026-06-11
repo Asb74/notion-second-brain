@@ -79,7 +79,7 @@ def test_query_normalizes_recipe_question_to_huevo_and_requires_literal_match() 
     assert "huevo" in results[0]["snippet"].casefold()
 
 
-def test_query_prioritizes_quoted_exact_phrases_and_reports_match_source() -> None:
+def test_query_filters_quoted_exact_phrases_without_term_fallback() -> None:
     repo = _repo()
     phrase_id = repo.create_item(
         title="Compras Canarias",
@@ -87,19 +87,68 @@ def test_query_prioritizes_quoted_exact_phrases_and_reports_match_source() -> No
         area="Compras",
         tipo="Nota",
     )
-    repo.create_item(
+    mercadona_only_id = repo.create_item(
         title="Mercadona general",
-        content="Notas de supermercado. Canarias aparece en otra sección sin relación directa.",
+        content="Notas de supermercado sin la región buscada.",
+        area="Compras",
+        tipo="Nota",
+    )
+    canarias_only_id = repo.create_item(
+        title="Viaje a Canarias",
+        content="Lista de islas y alojamientos.",
+        area="Viajes",
+        tipo="Nota",
+    )
+    separated_terms_id = repo.create_item(
+        title="Mercadona general",
+        content="Canarias aparece en otra sección sin relación directa.",
         area="Compras",
         tipo="Nota",
     )
 
     results = query_knowledge('busca "mercadona canarias"', repository=repo)
 
-    assert results[0]["note_id"] == phrase_id
-    assert results[0]["score"] > results[1]["score"]
+    assert [result["note_id"] for result in results] == [phrase_id]
+    assert mercadona_only_id not in [result["note_id"] for result in results]
+    assert canarias_only_id not in [result["note_id"] for result in results]
+    assert separated_terms_id not in [result["note_id"] for result in results]
+    assert results[0]["score"] == 10
     assert results[0]["match_source"] == "contenido"
     assert "Mercadona Canarias" in results[0]["snippet"]
+
+
+def test_query_supports_single_quoted_exact_phrase_and_exact_snippets(tmp_path) -> None:
+    repo = _repo()
+    title_id = repo.create_item(
+        title="Mercadona Canarias",
+        content="Apunte de compras.",
+        area="Compras",
+        tipo="Nota",
+    )
+    attachment_id = repo.create_item(
+        title="Tickets guardados",
+        content="Recibos varios.",
+        area="Compras",
+        tipo="Nota",
+    )
+    attachment_path = tmp_path / "mercadona_canarias_ticket.txt"
+    attachment_path.write_text("ticket", encoding="utf-8")
+    repo.add_attachment(
+        item_id=attachment_id,
+        original_filename="mercadona canarias ticket.txt",
+        stored_filename="mercadona_canarias_ticket.txt",
+        stored_path=str(attachment_path),
+        mime_type="text/plain",
+        file_size=attachment_path.stat().st_size,
+    )
+
+    results = query_knowledge("busca 'mercadona canarias'", repository=repo)
+
+    assert [result["note_id"] for result in results] == [title_id, attachment_id]
+    assert results[0]["score"] == 20
+    assert results[0]["snippet"] == "Coincidencia exacta en título"
+    assert results[1]["score"] == 15
+    assert results[1]["snippet"].startswith("Coincidencia exacta en adjunto: mercadona canarias ticket.txt")
 
 
 def test_query_candidate_search_is_accent_insensitive() -> None:
