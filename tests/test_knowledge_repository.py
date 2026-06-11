@@ -131,3 +131,36 @@ def test_exists_evernote_duplicate_uses_title_created_and_source() -> None:
     assert repo.exists_evernote_duplicate("Nota Evernote", "20240101T120000Z") is True
     assert repo.exists_evernote_duplicate("Nota Evernote", "20240102T120000Z") is False
     assert repo.exists_evernote_duplicate("Nota manual", "20240101T120000Z") is False
+
+
+def test_automatic_knowledge_sources_create_empty_summary() -> None:
+    repo = _repo()
+
+    evernote_id = repo.create_item(
+        title="Receta Evernote",
+        content="migas (por persona)\nPan ...\nPimiento ...",
+        source_type="evernote",
+        summary="migas (por persona)\nPan ...\nPimiento ...",
+    )
+    email_id = repo.create_item(
+        title="Email importado",
+        content="Contenido completo del email",
+        source_type="email",
+        summary="Email origen: ejemplo",
+    )
+
+    assert repo.get_item(evernote_id)["summary"] == ""
+    assert repo.get_item(email_id)["summary"] == ""
+
+
+def test_manual_knowledge_summary_can_be_saved_by_user() -> None:
+    repo = _repo()
+
+    item_id = repo.create_item(
+        title="Nota manual",
+        content="Contenido",
+        source_type="manual",
+        summary="Resumen escrito manualmente",
+    )
+
+    assert repo.get_item(item_id)["summary"] == "Resumen escrito manualmente"

@@ -445,9 +445,14 @@ class EvernoteImportDialog(tk.Toplevel):
         topic_name = self._candidate_topic_name(note, suggestions, topic_mode, fixed_topic)
         return self._find_topic_id(area, topic_name) if topic_name else None
 
-    def _summary_for_note(self, note: dict[str, object]) -> str:
-        text = str(note.get("content_text") or "").strip()
-        return text[:240]
+    @staticmethod
+    def _summary_for_note(_note: dict[str, object]) -> str:
+        """Return an empty Knowledge summary for Evernote imports.
+
+        The Resumen field is intentionally reserved for future AI generation
+        or explicit user edits; importing must not copy content excerpts here.
+        """
+        return ""
 
     def _content_for_note(self, note: dict[str, object]) -> str:
         content = str(note.get("content_text") or "").strip()
