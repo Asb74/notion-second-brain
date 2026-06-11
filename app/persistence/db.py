@@ -287,6 +287,49 @@ def ensure_knowledge_schema(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_items_indexed_text ON knowledge_items(indexed_text)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_attachments_item ON knowledge_attachments(item_id)")
 
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS knowledge_entities (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_type TEXT NOT NULL,
+            value TEXT NOT NULL,
+            normalized_value TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS knowledge_entity_links (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_id INTEGER NOT NULL,
+            note_id INTEGER NOT NULL,
+            source TEXT NOT NULL,
+            snippet TEXT,
+            confidence REAL NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(entity_id) REFERENCES knowledge_entities(id),
+            FOREIGN KEY(note_id) REFERENCES knowledge_items(id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_entities_unique
+        ON knowledge_entities(entity_type, normalized_value)
+        """
+    )
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_entity_links_unique
+        ON knowledge_entity_links(entity_id, note_id, source)
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_entities_type ON knowledge_entities(entity_type)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_entity_links_entity ON knowledge_entity_links(entity_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_entity_links_note ON knowledge_entity_links(note_id)")
+
     conn.commit()
 
 

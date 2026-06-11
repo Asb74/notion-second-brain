@@ -36,6 +36,7 @@ from app.services.knowledge_summary_service import (
     generate_knowledge_summary,
 )
 from app.ui.app_icons import apply_app_icon
+from app.ui.knowledge_entities_window import KnowledgeEntitiesWindow
 from app.ui.knowledge_query_dialog import KnowledgeQueryDialog
 from app.ui.dictation_widgets import attach_dictation
 from app.ui.tooltips import add_tooltip
@@ -100,6 +101,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self.source_var = tk.StringVar(value="manual")
         self.status_var = tk.StringVar(value="Listo")
         self._summary_generation_in_progress = False
+        self._entities_window: KnowledgeEntitiesWindow | None = None
 
         self._build_layout()
         logger.info("KNOWLEDGE: ayuda contextual cargada")
@@ -202,6 +204,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
         ttk.Button(buttons, text="Eliminar", command=self.delete_item).pack(side="left", padx=(0, 6))
         ttk.Button(buttons, text="Refrescar", command=self.refresh_items).pack(side="left", padx=(0, 6))
         ttk.Button(buttons, text="Preguntar a Knowledge", command=self.open_query_dialog).pack(side="left", padx=(0, 6))
+        ttk.Button(buttons, text="Entidades", command=self.open_entities_window).pack(side="left", padx=(0, 6))
         ttk.Button(buttons, text="Reindexar Knowledge", command=self.reindex_knowledge).pack(side="left")
 
         ttk.Label(right, text="Título").grid(row=0, column=0, sticky="w", pady=(0, 4))
@@ -243,9 +246,11 @@ class KnowledgeManagerWindow(tk.Toplevel):
         content_tab = ttk.Frame(notebook, padding=6)
         summary_tab = ttk.Frame(notebook, padding=6)
         attachments_tab = ttk.Frame(notebook, padding=6)
+        entities_tab = ttk.Frame(notebook, padding=6)
         notebook.add(content_tab, text="Contenido")
         notebook.add(summary_tab, text="Resumen")
         notebook.add(attachments_tab, text="Adjuntos")
+        notebook.add(entities_tab, text="Entidades")
 
         content_tab.columnconfigure(0, weight=1)
         content_tab.rowconfigure(1, weight=1)
@@ -306,6 +311,28 @@ class KnowledgeManagerWindow(tk.Toplevel):
         preview_frame = ttk.LabelFrame(self.attachments_paned, text="Vista previa")
         self.attachments_paned.add(attachments_list_frame, weight=1)
         self.attachments_paned.add(preview_frame, weight=3)
+        attachments_list_frame.columnconfigure(0, weight=1)
+
+        entities_tab.columnconfigure(0, weight=1)
+        entities_tab.rowconfigure(1, weight=1)
+        entities_buttons = ttk.Frame(entities_tab)
+        entities_buttons.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        ttk.Button(entities_buttons, text="Recalcular entidades de esta nota", command=self.rebuild_current_note_entities).pack(side="left", padx=(0, 6))
+        ttk.Button(entities_buttons, text="Abrir ventana global", command=self.open_entities_window).pack(side="left")
+        entity_columns = ("value", "type", "source", "confidence")
+        self.note_entities_tree = ttk.Treeview(entities_tab, columns=entity_columns, show="headings", selectmode="browse")
+        for column, label, width in (
+            ("value", "Valor", 260),
+            ("type", "Tipo", 120),
+            ("source", "Origen", 100),
+            ("confidence", "Confianza", 90),
+        ):
+            self.note_entities_tree.heading(column, text=label)
+            self.note_entities_tree.column(column, width=width, anchor="w")
+        self.note_entities_tree.grid(row=1, column=0, sticky="nsew")
+        note_entities_scroll = ttk.Scrollbar(entities_tab, orient="vertical", command=self.note_entities_tree.yview)
+        note_entities_scroll.grid(row=1, column=1, sticky="ns")
+        self.note_entities_tree.configure(yscrollcommand=note_entities_scroll.set)
         attachments_list_frame.columnconfigure(0, weight=1)
         attachments_list_frame.rowconfigure(0, weight=1)
 
@@ -457,6 +484,52 @@ class KnowledgeManagerWindow(tk.Toplevel):
             self.topic_var.set("")
 
 
+
+    def open_entities_window(self) -> None:
+        if self._entities_window is not None and self._entities_window.winfo_exists():
+            self._entities_window.deiconify()
+            self._entities_window.lift()
+            self._entities_window.focus_force()
+            self._entities_window.refresh_all()
+            return
+        self._entities_window = KnowledgeEntitiesWindow(self, self.repo.conn, on_open_note=self.select_note_by_id)
+
+    def refresh_note_entities(self) -> None:
+        if not hasattr(self, "note_entities_tree"):
+            return
+        for child in self.note_entities_tree.get_children():
+            self.note_entities_tree.delete(child)
+        if self.current_item_id is None:
+            return
+        try:
+            rows = self.repo.list_entities_for_item(self.current_item_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("KNOWLEDGE_ENTITY: error note_id=%s reason=%s", self.current_item_id, exc)
+            return
+        for row in rows:
+            confidence = float(row["confidence"] or 0.0)
+            self.note_entities_tree.insert(
+                "",
+                "end",
+                iid=f"entity-link:{row['id']}:{row['source']}",
+                values=(row["value"] or "", row["entity_type"] or "", row["source"] or "", f"{confidence:.2f}"),
+            )
+
+    def rebuild_current_note_entities(self) -> None:
+        if self.current_item_id is None:
+            messagebox.showwarning("Entidades", "Selecciona una nota guardada para recalcular sus entidades.", parent=self)
+            return
+        try:
+            self.repo.rebuild_entities_for_item(self.current_item_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("KNOWLEDGE_ENTITY: error note_id=%s reason=%s", self.current_item_id, exc)
+            messagebox.showerror("Entidades", "No se pudieron recalcular las entidades de la nota.", parent=self)
+            return
+        self.refresh_note_entities()
+        if self._entities_window is not None and self._entities_window.winfo_exists():
+            self._entities_window.refresh_all()
+        self.status_var.set(f"Entidades recalculadas id={self.current_item_id}")
+
     def open_query_dialog(self) -> None:
         """Open the local Knowledge question dialog from the manager."""
         KnowledgeQueryDialog(self, self.repo.conn, on_open_note=self.select_note_by_id)
@@ -606,6 +679,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self._update_summary_controls()
         self.title_var.set("")
         self.refresh_attachments()
+        self.refresh_note_entities()
         self.status_var.set("Nueva nota")
 
     def _on_item_selected(self, _event: tk.Event | None = None) -> None:
@@ -633,6 +707,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self.summary_text.insert("1.0", str(row["summary"] or ""))
         self._update_summary_controls()
         self.refresh_attachments()
+        self.refresh_note_entities()
         self.status_var.set(f"Nota seleccionada id={item_id}")
 
     def _current_summary(self) -> str:
@@ -791,6 +866,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
                 if self.tree.exists(current_iid):
                     self.tree.selection_set(current_iid)
                 self.refresh_attachments()
+                self.refresh_note_entities()
             return self.current_item_id
         except Exception as exc:  # noqa: BLE001
             logger.exception("No se pudo guardar la nota de conocimiento")

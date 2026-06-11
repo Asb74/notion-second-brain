@@ -604,6 +604,7 @@ class KnowledgeRepository:
         return row is not None
 
     def delete_item(self, item_id: int) -> None:
+        self.conn.execute("DELETE FROM knowledge_entity_links WHERE note_id = ?", (item_id,))
         self.conn.execute("DELETE FROM knowledge_item_tags WHERE item_id = ?", (item_id,))
         self.conn.execute("DELETE FROM knowledge_items WHERE id = ?", (item_id,))
         self.conn.commit()
@@ -735,6 +736,12 @@ class KnowledgeRepository:
         self.conn.commit()
         chars = int(payload.get("chars") or len(indexed_text))
         logger.info("KNOWLEDGE_INDEX: note_id=%s ok chars=%s", item_id, chars)
+        try:
+            from app.services.knowledge_entity_service import rebuild_entities_for_note
+
+            rebuild_entities_for_note(item_id, self.conn)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("KNOWLEDGE_ENTITY: error note_id=%s reason=%s", item_id, exc)
         return {"ok": True, "chars": chars}
 
     def reindex_all(self) -> dict[str, int | float]:
@@ -760,6 +767,173 @@ class KnowledgeRepository:
         elapsed = time.monotonic() - started
         logger.info("KNOWLEDGE_INDEX: reindex finished ok=%s errors=%s", ok, errors)
         return {"total": total, "ok": ok, "errors": errors, "seconds": elapsed}
+
+
+    def replace_entities_for_item(self, item_id: int, entities: list[dict[str, object]]) -> dict[str, int]:
+        """Replace all detected entity links for a Knowledge item."""
+        now = self._now()
+        self.conn.execute("DELETE FROM knowledge_entity_links WHERE note_id = ?", (item_id,))
+        entity_count = 0
+        link_count = 0
+        seen_links: set[tuple[int, str]] = set()
+        for entity in entities:
+            entity_type = str(entity.get("type") or entity.get("entity_type") or "other").strip().lower() or "other"
+            value = str(entity.get("value") or "").strip()
+            normalized_value = str(entity.get("normalized_value") or "").strip()
+            source = str(entity.get("source") or "indexed_text").strip() or "indexed_text"
+            snippet = str(entity.get("snippet") or "").strip()[:500]
+            try:
+                confidence = float(entity.get("confidence") or 0.0)
+            except (TypeError, ValueError):
+                confidence = 0.0
+            if not value or not normalized_value:
+                continue
+            self.conn.execute(
+                """
+                INSERT INTO knowledge_entities(entity_type, value, normalized_value, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(entity_type, normalized_value) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                (entity_type, value, normalized_value, now, now),
+            )
+            row = self.conn.execute(
+                "SELECT id FROM knowledge_entities WHERE entity_type = ? AND normalized_value = ?",
+                (entity_type, normalized_value),
+            ).fetchone()
+            if row is None:
+                continue
+            entity_id = int(row["id"])
+            entity_count += 1
+            link_key = (entity_id, source)
+            if link_key in seen_links:
+                continue
+            seen_links.add(link_key)
+            self.conn.execute(
+                """
+                INSERT INTO knowledge_entity_links(entity_id, note_id, source, snippet, confidence, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(entity_id, note_id, source) DO UPDATE SET
+                    snippet = excluded.snippet,
+                    confidence = excluded.confidence
+                """,
+                (entity_id, item_id, source, snippet, confidence, now),
+            )
+            link_count += 1
+            logger.info("KNOWLEDGE_ENTITY: saved entity type=%s value=%s", entity_type, value)
+        self.conn.commit()
+        return {"entities": entity_count, "links": link_count}
+
+    def rebuild_entities_for_item(self, item_id: int) -> dict[str, int | bool]:
+        from app.services.knowledge_entity_service import rebuild_entities_for_note
+
+        return rebuild_entities_for_note(item_id, self.conn)
+
+    def rebuild_all_entities(self) -> dict[str, int | float]:
+        from app.services.knowledge_entity_service import rebuild_all_entities
+
+        return rebuild_all_entities(self.conn)
+
+    def list_entity_types(self) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            """
+            SELECT entity_type, COUNT(*) AS entity_count
+            FROM knowledge_entities
+            GROUP BY entity_type
+            ORDER BY entity_type COLLATE NOCASE ASC
+            """
+        ).fetchall()
+
+    def list_entities(self, entity_type: str | None = None) -> list[sqlite3.Row]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if entity_type:
+            clauses.append("ke.entity_type = ?")
+            params.append(entity_type)
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
+        return self.conn.execute(
+            f"""
+            SELECT ke.id, ke.entity_type, ke.value, ke.normalized_value,
+                   COUNT(DISTINCT kel.note_id) AS note_count,
+                   AVG(kel.confidence) AS avg_confidence,
+                   MAX(kel.created_at) AS last_linked_at
+            FROM knowledge_entities ke
+            LEFT JOIN knowledge_entity_links kel ON kel.entity_id = ke.id
+            {where}
+            GROUP BY ke.id
+            ORDER BY note_count DESC, ke.value COLLATE NOCASE ASC
+            """,
+            tuple(params),
+        ).fetchall()
+
+    def list_notes_for_entity(self, entity_id: int) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            """
+            SELECT ki.id, ki.title, COALESCE(NULLIF(ki.area, ''), ka.name) AS area_name,
+                   kt.name AS topic_name, COALESCE(NULLIF(ki.tipo, ''), kit.name) AS item_type_name,
+                   GROUP_CONCAT(DISTINCT kel.source) AS source,
+                   COALESCE(
+                       (SELECT kel2.snippet
+                        FROM knowledge_entity_links kel2
+                        WHERE kel2.entity_id = kel.entity_id AND kel2.note_id = kel.note_id
+                        ORDER BY kel2.confidence DESC, kel2.id ASC
+                        LIMIT 1),
+                       ''
+                   ) AS snippet,
+                   MAX(kel.confidence) AS confidence
+            FROM knowledge_entity_links kel
+            JOIN knowledge_items ki ON ki.id = kel.note_id
+            LEFT JOIN knowledge_areas ka ON ka.id = ki.area_id
+            LEFT JOIN knowledge_topics kt ON kt.id = ki.topic_id
+            LEFT JOIN knowledge_item_types kit ON kit.id = ki.item_type_id
+            WHERE kel.entity_id = ? AND ki.status != 'deleted'
+            GROUP BY ki.id
+            ORDER BY MAX(kel.confidence) DESC, COALESCE(ki.updated_at, ki.created_at) DESC
+            """,
+            (entity_id,),
+        ).fetchall()
+
+    def list_entities_for_item(self, item_id: int) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            """
+            SELECT ke.id, ke.entity_type, ke.value, kel.source, kel.snippet, kel.confidence
+            FROM knowledge_entity_links kel
+            JOIN knowledge_entities ke ON ke.id = kel.entity_id
+            WHERE kel.note_id = ?
+            ORDER BY ke.entity_type COLLATE NOCASE ASC, ke.value COLLATE NOCASE ASC
+            """,
+            (item_id,),
+        ).fetchall()
+
+    def delete_entity(self, entity_id: int) -> None:
+        self.conn.execute("DELETE FROM knowledge_entity_links WHERE entity_id = ?", (entity_id,))
+        self.conn.execute("DELETE FROM knowledge_entities WHERE id = ?", (entity_id,))
+        self.conn.commit()
+
+    def merge_entities(self, target_entity_id: int, source_entity_ids: list[int]) -> None:
+        source_ids = [int(entity_id) for entity_id in source_entity_ids if int(entity_id) != int(target_entity_id)]
+        if not source_ids:
+            return
+        for source_id in source_ids:
+            rows = self.conn.execute(
+                "SELECT note_id, source, snippet, confidence, created_at FROM knowledge_entity_links WHERE entity_id = ?",
+                (source_id,),
+            ).fetchall()
+            for row in rows:
+                self.conn.execute(
+                    """
+                    INSERT INTO knowledge_entity_links(entity_id, note_id, source, snippet, confidence, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(entity_id, note_id, source) DO UPDATE SET
+                        snippet = excluded.snippet,
+                        confidence = MAX(knowledge_entity_links.confidence, excluded.confidence)
+                    """,
+                    (target_entity_id, row["note_id"], row["source"], row["snippet"], row["confidence"], row["created_at"]),
+                )
+            self.conn.execute("DELETE FROM knowledge_entity_links WHERE entity_id = ?", (source_id,))
+            self.conn.execute("DELETE FROM knowledge_entities WHERE id = ?", (source_id,))
+        self.conn.commit()
 
     def list_tags(self) -> list[str]:
         rows = self.conn.execute(
