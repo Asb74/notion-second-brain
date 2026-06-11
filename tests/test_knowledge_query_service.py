@@ -87,7 +87,7 @@ def test_query_prioritizes_quoted_exact_phrases_and_reports_match_source() -> No
         area="Compras",
         tipo="Nota",
     )
-    split_id = repo.create_item(
+    repo.create_item(
         title="Mercadona general",
         content="Notas de supermercado. Canarias aparece en otra sección sin relación directa.",
         area="Compras",
@@ -100,3 +100,18 @@ def test_query_prioritizes_quoted_exact_phrases_and_reports_match_source() -> No
     assert results[0]["score"] > results[1]["score"]
     assert results[0]["match_source"] == "contenido"
     assert "Mercadona Canarias" in results[0]["snippet"]
+
+
+def test_query_candidate_search_is_accent_insensitive() -> None:
+    repo = _repo()
+    cafe_id = repo.create_item(
+        title="Café favorito",
+        content="Notas de cafetería local.",
+        area="Ocio",
+        tipo="Nota",
+    )
+
+    results = query_knowledge("cafe", repository=repo)
+
+    assert [result["note_id"] for result in results] == [cafe_id]
+    assert results[0]["match_source"] == "título"
