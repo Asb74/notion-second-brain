@@ -193,7 +193,8 @@ class KnowledgeManagerWindow(tk.Toplevel):
         ttk.Button(buttons, text="Nueva nota", command=self.new_item).pack(side="left", padx=(0, 6))
         ttk.Button(buttons, text="Guardar", command=self.save_item).pack(side="left", padx=(0, 6))
         ttk.Button(buttons, text="Eliminar", command=self.delete_item).pack(side="left", padx=(0, 6))
-        ttk.Button(buttons, text="Refrescar", command=self.refresh_items).pack(side="left")
+        ttk.Button(buttons, text="Refrescar", command=self.refresh_items).pack(side="left", padx=(0, 6))
+        ttk.Button(buttons, text="Reindexar Knowledge", command=self.reindex_knowledge).pack(side="left")
 
         ttk.Label(right, text="Título").grid(row=0, column=0, sticky="w", pady=(0, 4))
         ttk.Entry(right, textvariable=self.title_var).grid(row=0, column=1, sticky="ew", pady=(0, 4))
@@ -509,8 +510,32 @@ class KnowledgeManagerWindow(tk.Toplevel):
                     row["updated_at"] or row["created_at"] or "",
                 ),
             )
-        self.status_var.set(f"{len(rows)} notas cargadas")
+        search = self.search_var.get().strip()
+        if search and rows:
+            snippet = self._search_match_snippet(rows[0], search)
+            if snippet:
+                self.status_var.set(f"{len(rows)} notas cargadas. Coincidencia: {snippet}")
+            else:
+                self.status_var.set(f"{len(rows)} notas cargadas")
+        else:
+            self.status_var.set(f"{len(rows)} notas cargadas")
         logger.info("KNOWLEDGE_TREE: árbol reconstruido items=%s", len(rows))
+
+    @staticmethod
+    def _search_match_snippet(row: sqlite3.Row, search: str, context: int = 70) -> str:
+        haystack = str(row["indexed_text"] or "") if "indexed_text" in row.keys() else ""
+        needle = search.strip().casefold()
+        if not haystack or not needle:
+            return ""
+        index = haystack.casefold().find(needle)
+        if index < 0:
+            return ""
+        start = max(index - context, 0)
+        end = min(index + len(search) + context, len(haystack))
+        prefix = "..." if start else ""
+        suffix = "..." if end < len(haystack) else ""
+        snippet = " ".join(haystack[start:end].split())
+        return f"{prefix}{snippet}{suffix}"
 
     @staticmethod
     def _tree_note_text(title: object) -> str:
@@ -623,6 +648,48 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self.new_item()
         self.refresh_items()
         self.status_var.set(f"Nota eliminada id={item_id}")
+
+    def reindex_knowledge(self) -> None:
+        if getattr(self, "_reindexing", False):
+            return
+        self._reindexing = True
+        self.status_var.set("Reindexando Knowledge...")
+        self.configure(cursor="watch")
+        threading.Thread(target=self._reindex_knowledge_worker, daemon=True).start()
+
+    def _reindex_knowledge_worker(self) -> None:
+        try:
+            result = self.repo.reindex_all()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("KNOWLEDGE_INDEX: reindex failed")
+            try:
+                self.after(0, self._finish_reindex_knowledge, None, exc)
+            except tk.TclError:
+                pass
+            return
+        try:
+            self.after(0, self._finish_reindex_knowledge, result, None)
+        except tk.TclError:
+            logger.info("KNOWLEDGE_INDEX: ventana cerrada antes de mostrar resultado")
+
+    def _finish_reindex_knowledge(self, result: dict[str, int | float] | None, error: Exception | None) -> None:
+        self._reindexing = False
+        self.configure(cursor="")
+        if error is not None or result is None:
+            message = f"No se pudo reindexar Knowledge. {error}"
+            self.status_var.set(message)
+            messagebox.showerror("Reindexar Knowledge", message, parent=self)
+            return
+        seconds = float(result.get("seconds") or 0.0)
+        message = (
+            "Reindexación finalizada: "
+            f"{int(result.get('ok') or 0)} notas indexadas, "
+            f"{int(result.get('errors') or 0)} errores, "
+            f"{seconds:.1f}s."
+        )
+        self.refresh_items()
+        self.status_var.set(message)
+        messagebox.showinfo("Reindexar Knowledge", message, parent=self)
 
 
     @staticmethod

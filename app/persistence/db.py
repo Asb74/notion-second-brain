@@ -180,6 +180,7 @@ def ensure_knowledge_schema(conn: sqlite3.Connection) -> None:
             source_type TEXT NOT NULL DEFAULT 'manual',
             source_id TEXT,
             source_path TEXT,
+            indexed_text TEXT,
             status TEXT NOT NULL DEFAULT 'active',
             created_at TEXT NOT NULL,
             updated_at TEXT,
@@ -196,6 +197,8 @@ def ensure_knowledge_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE knowledge_items ADD COLUMN area TEXT")
     if "tipo" not in knowledge_item_columns:
         conn.execute("ALTER TABLE knowledge_items ADD COLUMN tipo TEXT")
+    if "indexed_text" not in knowledge_item_columns:
+        conn.execute("ALTER TABLE knowledge_items ADD COLUMN indexed_text TEXT")
     knowledge_topic_columns = _table_columns(conn, "knowledge_topics")
     if "area" not in knowledge_topic_columns:
         conn.execute("ALTER TABLE knowledge_topics ADD COLUMN area TEXT")
@@ -281,6 +284,7 @@ def ensure_knowledge_schema(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_topics_area_text ON knowledge_topics(area)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_items_source ON knowledge_items(source_type, source_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_items_title ON knowledge_items(title)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_items_indexed_text ON knowledge_items(indexed_text)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_attachments_item ON knowledge_attachments(item_id)")
 
     conn.commit()
