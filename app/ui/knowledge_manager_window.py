@@ -502,7 +502,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
                 topic_iid,
                 "end",
                 iid=f"note:{row['id']}",
-                text=f"[{item_type}] {row['title'] or ''}",
+                text=self._tree_note_text(row["title"]),
                 values=(
                     item_type,
                     row["source_type"] or "",
@@ -511,6 +511,11 @@ class KnowledgeManagerWindow(tk.Toplevel):
             )
         self.status_var.set(f"{len(rows)} notas cargadas")
         logger.info("KNOWLEDGE_TREE: árbol reconstruido items=%s", len(rows))
+
+    @staticmethod
+    def _tree_note_text(title: object) -> str:
+        """Return the display text for a note node without duplicating its type."""
+        return str(title or "")
 
     def new_item(self) -> None:
         self.current_item_id = None
