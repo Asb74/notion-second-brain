@@ -12,6 +12,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import tkinter as tk
 from collections.abc import Callable
 from datetime import datetime
@@ -771,7 +772,12 @@ class KnowledgeManagerWindow(tk.Toplevel):
             if self._show_word_attachment_preview(path):
                 return
             logger.info("KNOWLEDGE_PREVIEW: word fallback path=%s", path)
-            self._show_file_info_preview(row, path, type_label="Word")
+            self._show_file_info_preview(
+                row,
+                path,
+                type_label="Word",
+                extra_message="Vista previa Word no disponible. Haz clic para abrir el archivo.",
+            )
             return
         if preview_type == "audio":
             self._show_file_info_preview(row, path, type_label="Audio")
@@ -923,44 +929,97 @@ class KnowledgeManagerWindow(tk.Toplevel):
         return name
 
     def _show_word_attachment_preview(self, path: Path) -> bool:
-        if path.suffix.lower() != ".docx":
+        if path.suffix.lower() not in {".doc", ".docx"}:
+            logger.info("KNOWLEDGE_PREVIEW: word visual no aplica suffix=%s path=%s", path.suffix.lower(), path)
             return False
 
-        logger.info("KNOWLEDGE_PREVIEW: word docx preview intentando path=%s", path)
-        try:
-            docx_module = importlib.import_module("docx")
-            Document = getattr(docx_module, "Document", None)
-            if Document is None:
-                logger.warning("KNOWLEDGE_PREVIEW: word docx preview error=Document no disponible path=%s", path)
+        logger.info("KNOWLEDGE_PREVIEW: word visual intentando path=%s", path)
+        with tempfile.TemporaryDirectory(prefix="knowledge_word_preview_") as temp_dir_name:
+            temp_dir = Path(temp_dir_name)
+            pdf_path, reason = self._convert_word_to_pdf(path, temp_dir)
+            if pdf_path is None:
+                logger.info("KNOWLEDGE_PREVIEW: word visual no disponible motivo=%s path=%s", reason, path)
                 return False
-            document = Document(str(path))
-            lines = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
+            if self._show_pdf_attachment_preview(pdf_path):
+                logger.info("KNOWLEDGE_PREVIEW: word visual renderizado pdf=%s path=%s", pdf_path, path)
+                return True
+
+        logger.info("KNOWLEDGE_PREVIEW: word visual no disponible motivo=render_pdf path=%s", path)
+        return False
+
+    def _convert_word_to_pdf(self, path: Path, temp_dir: Path) -> tuple[Path | None, str]:
+        pdf_path, reason = self._convert_word_to_pdf_with_libreoffice(path, temp_dir)
+        if pdf_path is not None:
+            return pdf_path, reason
+        logger.info("KNOWLEDGE_PREVIEW: word libreoffice no disponible motivo=%s path=%s", reason, path)
+        if sys.platform.startswith("win"):
+            return self._convert_word_to_pdf_with_com(path, temp_dir)
+        return None, reason
+
+    def _convert_word_to_pdf_with_libreoffice(self, path: Path, temp_dir: Path) -> tuple[Path | None, str]:
+        soffice_path = shutil.which("soffice") or shutil.which("libreoffice")
+        if soffice_path is None:
+            return None, "libreoffice_no_encontrado"
+
+        command = [
+            soffice_path,
+            "--headless",
+            "--convert-to",
+            "pdf",
+            "--outdir",
+            str(temp_dir),
+            str(path),
+        ]
+        try:
+            completed = subprocess.run(command, capture_output=True, text=True, timeout=60, check=False)
+        except subprocess.TimeoutExpired:
+            return None, "libreoffice_timeout"
+        except OSError as exc:
+            return None, f"libreoffice_error:{exc}"
+
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "sin_detalle").strip().splitlines()[:1]
+            return None, f"libreoffice_rc_{completed.returncode}:{detail[0] if detail else 'sin_detalle'}"
+
+        expected_pdf = temp_dir / f"{path.stem}.pdf"
+        if expected_pdf.exists():
+            return expected_pdf, "libreoffice"
+        pdf_candidates = sorted(temp_dir.glob("*.pdf"))
+        if pdf_candidates:
+            return pdf_candidates[0], "libreoffice"
+        return None, "libreoffice_sin_pdf"
+
+    def _convert_word_to_pdf_with_com(self, path: Path, temp_dir: Path) -> tuple[Path | None, str]:
+        try:
+            win32com_client = importlib.import_module("win32com.client")
         except Exception as exc:  # noqa: BLE001
-            logger.warning("KNOWLEDGE_PREVIEW: word docx preview error=%s path=%s", exc, path)
-            return False
+            return None, f"word_com_no_disponible:{exc}"
 
-        if not lines:
-            logger.info("KNOWLEDGE_PREVIEW: word docx preview sin texto path=%s", path)
-            message = "El documento DOCX no contiene texto previsualizable. Haz clic para abrir."
-            label = self._reset_attachment_preview_area(message)
-            self._bind_preview_open(label)
-            return True
+        pdf_path = temp_dir / f"{path.stem}.pdf"
+        word_app = None
+        document = None
+        try:
+            word_app = win32com_client.DispatchEx("Word.Application")
+            word_app.Visible = False
+            document = word_app.Documents.Open(str(path), ReadOnly=True, AddToRecentFiles=False)
+            document.ExportAsFixedFormat(str(pdf_path), 17)
+        except Exception as exc:  # noqa: BLE001
+            return None, f"word_com_error:{exc}"
+        finally:
+            if document is not None:
+                try:
+                    document.Close(False)
+                except Exception:  # noqa: BLE001
+                    logger.debug("No se pudo cerrar documento Word COM", exc_info=True)
+            if word_app is not None:
+                try:
+                    word_app.Quit()
+                except Exception:  # noqa: BLE001
+                    logger.debug("No se pudo cerrar Word COM", exc_info=True)
 
-        self._reset_attachment_preview_area()
-        parent = self.attachment_preview_content
-        ttk.Label(parent, text="📝 Word · Primeras líneas", anchor="w").grid(
-            row=0, column=0, sticky="ew", pady=(0, 6)
-        )
-        text = ScrolledText(parent, wrap="word", height=12, cursor="hand2")
-        text.grid(row=1, column=0, sticky="nsew")
-        parent.rowconfigure(1, weight=1)
-        preview_text = "\n".join(lines[:30])[:3000]
-        text.insert("1.0", preview_text)
-        text.configure(state="disabled")
-        self._bind_preview_open(text)
-        self._bind_preview_open(parent)
-        logger.info("KNOWLEDGE_PREVIEW: word docx preview ok lineas=%s path=%s", len(lines), path)
-        return True
+        if pdf_path.exists():
+            return pdf_path, "word_com"
+        return None, "word_com_sin_pdf"
 
     def _display_pil_preview(self, image: object, image_tk_module: object) -> None:
         label = self._reset_attachment_preview_area()
@@ -1002,9 +1061,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
             "Archivo": "📎",
         }
         icon = icon_by_type.get(type_label, "📎")
-        preview_message = "Vista previa no disponible. Haz clic para abrir el archivo."
-        if extra_message:
-            preview_message = f"{extra_message}\n\n{preview_message}"
+        preview_message = extra_message or "Vista previa no disponible. Haz clic para abrir el archivo."
         card_text = (
             f"{icon}  {type_label}\n\n"
             f"{filename}\n\n"
