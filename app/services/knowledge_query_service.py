@@ -142,10 +142,18 @@ _MATCH_SOURCE_BY_FIELD = {
 }
 _SOURCE_PRIORITY = {"título": 0, "etiquetas": 1, "adjunto": 2, "contenido": 3, "metadatos": 4}
 _STRONG_MATCH_FIELDS = ("title", "tags", "attachment_names", "content", "indexed_text")
+_EXACT_PHRASE_FIELDS = ("title", "tags", "attachment_names", "content", "indexed_text")
+_EXACT_PHRASE_WEIGHTS = {
+    "title": 20.0,
+    "tags": 15.0,
+    "attachment_names": 15.0,
+    "content": 10.0,
+    "indexed_text": 10.0,
+}
 _SNIPPET_FIELDS = ("content", "indexed_text", "attachment_names", "title", "tags", "area", "topic")
 _MIN_SCORE = 1.5
 _PARTIAL_MATCH_SCORE = 0.5
-_QUOTED_PHRASE_RE = re.compile(r'\"([^\"\\]*(?:\\.[^\"\\]*)*)\"|“([^”]+)”|‘([^’]+)’')
+_QUOTED_PHRASE_RE = re.compile(r'\"([^\"\\]*(?:\\.[^\"\\]*)*)\"|\'([^\'\\]*(?:\\.[^\'\\]*)*)\'|“([^”]+)”|‘([^’]+)’')
 
 
 def _fold(text: str) -> str:
@@ -273,12 +281,16 @@ def _best_source(current: str, candidate: str) -> str:
     return min((current, candidate), key=lambda source: _SOURCE_PRIORITY.get(source, 99))
 
 
-def _has_relevant_literal_match(row: sqlite3.Row | dict[str, Any], terms: Sequence[str], phrases: Sequence[str]) -> bool:
-    if any(
+def _has_exact_phrase_match(row: sqlite3.Row | dict[str, Any], phrases: Sequence[str]) -> bool:
+    return any(
         _contains_exact_phrase(_row_value(row, field), phrase)
         for phrase in phrases
-        for field in _FIELD_WEIGHTS
-    ):
+        for field in _EXACT_PHRASE_FIELDS
+    )
+
+
+def _has_relevant_literal_match(row: sqlite3.Row | dict[str, Any], terms: Sequence[str], phrases: Sequence[str]) -> bool:
+    if _has_exact_phrase_match(row, phrases):
         return True
     return any(
         _literal_count(_row_value(row, field), term)
@@ -290,8 +302,9 @@ def _has_relevant_literal_match(row: sqlite3.Row | dict[str, Any], terms: Sequen
 def _find_best_snippet_text(
     row: sqlite3.Row | dict[str, Any], terms: Sequence[str], phrases: Sequence[str] = ()
 ) -> tuple[str, str, str]:
+    exact_phrase_snippet_fields = ("title", "tags", "attachment_names", "content", "indexed_text")
     for phrase in phrases:
-        for field in _SNIPPET_FIELDS:
+        for field in exact_phrase_snippet_fields:
             text = _row_value(row, field)
             if _contains_exact_phrase(text, phrase):
                 return text, phrase, field
@@ -312,6 +325,13 @@ def make_snippet(
     source = _MATCH_SOURCE_BY_FIELD.get(field, "contenido")
     if not text or not needle:
         return ""
+    exact_phrase_match = bool(phrases and needle in phrases)
+    if exact_phrase_match and field == "title":
+        return "Coincidencia exacta en título"
+    if exact_phrase_match and field == "attachment_names":
+        return f"Coincidencia exacta en adjunto: {text[:120]}"
+    if exact_phrase_match and field == "tags":
+        return "Coincidencia exacta en etiquetas"
     folded_text = normalize_text(text)
     folded_needle = normalize_text(needle)
     index = folded_text.find(folded_needle)
@@ -352,15 +372,22 @@ def _score_row(
 
     for phrase in phrases:
         phrase_matched = False
-        for field, weight in _FIELD_WEIGHTS.items():
+        matched_outside_index = False
+        for field in _EXACT_PHRASE_FIELDS:
+            if field == "indexed_text" and matched_outside_index:
+                continue
             if _contains_exact_phrase(_row_value(row, field), phrase):
-                # Quoted phrases are exact user intent, so exact phrase matches outrank split-term fallbacks.
-                score += weight * 2
+                score += _EXACT_PHRASE_WEIGHTS[field]
                 phrase_match_source = _best_source(phrase_match_source, _MATCH_SOURCE_BY_FIELD[field])
                 match_source = _best_source(match_source, _MATCH_SOURCE_BY_FIELD[field])
                 phrase_matched = True
+                if field != "indexed_text":
+                    matched_outside_index = True
         if phrase_matched:
             matched_literals += 1
+
+    if phrases and not matched_literals:
+        return 0.0, ""
 
     for term in terms:
         term_matched = False
@@ -443,12 +470,13 @@ def query_knowledge(
     logger.info('KNOWLEDGE_QUERY: question="%s"', cleaned_question)
     raw_terms = extract_raw_terms(cleaned_question)
     phrases = extract_phrases(cleaned_question)
-    terms = extract_terms(cleaned_question)
-    phrase_fallback_terms = extract_terms(" ".join(phrases))
-    normalized_terms = list(dict.fromkeys([*terms, *phrase_fallback_terms]))
+    exact_phrase_mode = bool(phrases)
+    terms = [] if exact_phrase_mode else extract_terms(cleaned_question)
+    normalized_terms = list(dict.fromkeys(terms))
     logger.info("KNOWLEDGE_QUERY: raw_terms=%s", raw_terms)
     logger.info("KNOWLEDGE_QUERY: normalized_terms=%s", normalized_terms)
-    logger.info("KNOWLEDGE_QUERY: phrases=%s", phrases)
+    logger.info("KNOWLEDGE_QUERY: exact_phrases=%s", phrases)
+    logger.info("KNOWLEDGE_QUERY: exact_phrase_mode=%s", exact_phrase_mode)
     logger.info("KNOWLEDGE_QUERY: min_score=%s", _MIN_SCORE)
     if not normalized_terms and not phrases:
         logger.info("KNOWLEDGE_QUERY: filtered_results=0")
