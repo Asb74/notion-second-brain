@@ -164,3 +164,74 @@ def test_manual_knowledge_summary_can_be_saved_by_user() -> None:
     )
 
     assert repo.get_item(item_id)["summary"] == "Resumen escrito manualmente"
+
+
+def test_knowledge_index_includes_note_metadata_and_search_combines_filters() -> None:
+    repo = _repo()
+    repo.create_topic("Tema A", area="General")
+    matching_id = repo.create_item(
+        title="Manual interno",
+        content="El procedimiento contiene la palabra ultravioleta.",
+        area="General",
+        tipo="Procedimiento",
+        tags=["operaciones"],
+        source_type="manual",
+        summary="Resumen manual",
+    )
+    repo.create_item(
+        title="Otra nota",
+        content="ultravioleta pero en otra área",
+        area="Archivo",
+        tipo="Nota",
+    )
+
+    indexed_text = repo.get_item(matching_id)["indexed_text"]
+
+    assert "ultravioleta" in indexed_text
+    assert "operaciones" in indexed_text
+    assert [row["id"] for row in repo.list_items(search="ultravioleta", area="General", tipo="Procedimiento")] == [
+        matching_id
+    ]
+    assert repo.list_items(search="ultravioleta", area="General", tipo="Nota") == []
+
+
+def test_knowledge_index_includes_attachment_text_and_filename(tmp_path) -> None:
+    repo = _repo()
+    item_id = repo.create_item(title="Nota con texto adjunto", content="Contenido base")
+    attachment_path = tmp_path / "contrato_busqueda.txt"
+    attachment_path.write_text("Cláusula con palabra magnetar para búsqueda", encoding="utf-8")
+
+    repo.add_attachment(
+        item_id=item_id,
+        original_filename="contrato_busqueda.txt",
+        stored_filename="contrato_busqueda.txt",
+        stored_path=str(attachment_path),
+        mime_type="text/plain",
+        file_size=attachment_path.stat().st_size,
+    )
+
+    assert [row["id"] for row in repo.list_items(search="magnetar")] == [item_id]
+    assert [row["id"] for row in repo.list_items(search="contrato_busqueda")]
+
+
+def test_knowledge_reindex_all_rebuilds_existing_empty_index(tmp_path) -> None:
+    repo = _repo()
+    item_id = repo.create_item(title="Nota antigua", content="Contenido sin índice")
+    attachment_path = tmp_path / "archivo_antiguo.txt"
+    attachment_path.write_text("Texto recuperado con palabra sincrotron", encoding="utf-8")
+    repo.add_attachment(
+        item_id=item_id,
+        original_filename="archivo_antiguo.txt",
+        stored_filename="archivo_antiguo.txt",
+        stored_path=str(attachment_path),
+        mime_type="text/plain",
+        file_size=attachment_path.stat().st_size,
+    )
+    repo.update_indexed_text(item_id, "")
+
+    assert repo.list_items(search="sincrotron") == []
+
+    result = repo.reindex_all()
+
+    assert result["ok"] >= 1
+    assert [row["id"] for row in repo.list_items(search="sincrotron")] == [item_id]

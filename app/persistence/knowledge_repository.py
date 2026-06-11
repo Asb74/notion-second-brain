@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
+import time
 from datetime import datetime, timezone
+
+from app.services.knowledge_indexer_service import index_note
+
+logger = logging.getLogger(__name__)
 
 
 class KnowledgeRepository:
@@ -258,6 +264,7 @@ class KnowledgeRepository:
         item_id = int(cursor.lastrowid)
         self.set_tags_for_item(item_id, tags or [])
         self.conn.commit()
+        self.reindex_item(item_id)
         return item_id
 
     @staticmethod
@@ -329,6 +336,7 @@ class KnowledgeRepository:
         )
         self.set_tags_for_item(item_id, tags or [])
         self.conn.commit()
+        self.reindex_item(item_id)
 
     def get_item(self, item_id: int) -> sqlite3.Row | None:
         return self.conn.execute(
@@ -363,11 +371,16 @@ class KnowledgeRepository:
             like = f"%{cleaned_search}%"
             clauses.append(
                 "(ki.title LIKE ? OR ki.content LIKE ? OR ki.summary LIKE ? OR "
+                "COALESCE(NULLIF(ki.area, ''), ka.name) LIKE ? OR "
+                "kt.name LIKE ? OR "
+                "COALESCE(NULLIF(ki.tipo, ''), kit.name) LIKE ? OR "
+                "ki.source_type LIKE ? OR ki.source_id LIKE ? OR ki.source_path LIKE ? OR "
+                "ki.indexed_text LIKE ? OR "
                 "EXISTS (SELECT 1 FROM knowledge_item_tags kit2 "
-                "JOIN knowledge_tags kt ON kt.id = kit2.tag_id "
-                "WHERE kit2.item_id = ki.id AND kt.name LIKE ?))"
+                "JOIN knowledge_tags kt2 ON kt2.id = kit2.tag_id "
+                "WHERE kit2.item_id = ki.id AND kt2.name LIKE ?))"
             )
-            params.extend([like, like, like, like])
+            params.extend([like, like, like, like, like, like, like, like, like, like, like])
         cleaned_area = (area or "").strip()
         cleaned_tipo = (tipo or "").strip()
         if cleaned_area:
@@ -391,7 +404,8 @@ class KnowledgeRepository:
             SELECT ki.id, ki.title, ki.source_type, ki.updated_at, ki.created_at,
                    COALESCE(NULLIF(ki.area, ''), ka.name) AS area_name,
                    kt.name AS topic_name,
-                   COALESCE(NULLIF(ki.tipo, ''), kit.name) AS item_type_name
+                   COALESCE(NULLIF(ki.tipo, ''), kit.name) AS item_type_name,
+                   ki.indexed_text
             FROM knowledge_items ki
             LEFT JOIN knowledge_areas ka ON ka.id = ki.area_id
             LEFT JOIN knowledge_topics kt ON kt.id = ki.topic_id
@@ -497,7 +511,9 @@ class KnowledgeRepository:
             ),
         )
         self.conn.commit()
-        return int(cursor.lastrowid)
+        attachment_id = int(cursor.lastrowid)
+        self.reindex_item(item_id)
+        return attachment_id
 
     def list_attachments(self, item_id: int) -> list[sqlite3.Row]:
         return self.conn.execute(
@@ -517,8 +533,68 @@ class KnowledgeRepository:
         ).fetchone()
 
     def delete_attachment(self, attachment_id: int) -> None:
+        row = self.get_attachment(attachment_id)
+        item_id = int(row["item_id"]) if row is not None else None
         self.conn.execute("DELETE FROM knowledge_attachments WHERE id = ?", (attachment_id,))
         self.conn.commit()
+        if item_id is not None:
+            self.reindex_item(item_id)
+
+    def update_indexed_text(self, item_id: int, indexed_text: str) -> None:
+        self.conn.execute(
+            """
+            UPDATE knowledge_items
+            SET indexed_text = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (indexed_text, self._now(), item_id),
+        )
+        self.conn.commit()
+
+    def _item_for_index(self, item_id: int) -> dict[str, object] | None:
+        row = self.get_item(item_id)
+        if row is None:
+            return None
+        note = dict(row)
+        note["tags"] = self.get_tags_for_item(item_id)
+        return note
+
+    def reindex_item(self, item_id: int) -> dict[str, int | bool]:
+        note = self._item_for_index(item_id)
+        if note is None:
+            return {"ok": False, "chars": 0}
+        attachments = [dict(row) for row in self.list_attachments(item_id)]
+        payload = index_note(note, attachments)
+        indexed_text = str(payload.get("indexed_text") or "")
+        self.conn.execute("UPDATE knowledge_items SET indexed_text = ? WHERE id = ?", (indexed_text, item_id))
+        self.conn.commit()
+        chars = int(payload.get("chars") or len(indexed_text))
+        logger.info("KNOWLEDGE_INDEX: note_id=%s ok chars=%s", item_id, chars)
+        return {"ok": True, "chars": chars}
+
+    def reindex_all(self) -> dict[str, int | float]:
+        rows = self.conn.execute(
+            "SELECT id FROM knowledge_items WHERE status != 'deleted' ORDER BY id ASC"
+        ).fetchall()
+        total = len(rows)
+        logger.info("KNOWLEDGE_INDEX: reindex started total=%s", total)
+        started = time.monotonic()
+        ok = 0
+        errors = 0
+        for row in rows:
+            item_id = int(row["id"])
+            try:
+                result = self.reindex_item(item_id)
+                if result.get("ok"):
+                    ok += 1
+                else:
+                    errors += 1
+            except Exception as exc:  # noqa: BLE001
+                errors += 1
+                logger.warning("KNOWLEDGE_INDEX: note_id=%s error=%s", item_id, exc)
+        elapsed = time.monotonic() - started
+        logger.info("KNOWLEDGE_INDEX: reindex finished ok=%s errors=%s", ok, errors)
+        return {"total": total, "ok": ok, "errors": errors, "seconds": elapsed}
 
     def list_tags(self) -> list[str]:
         rows = self.conn.execute(

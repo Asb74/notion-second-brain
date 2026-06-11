@@ -124,7 +124,7 @@ def test_run_migrations_crea_schema_knowledge_manager() -> None:
         str(row[1])
         for row in conn.execute("PRAGMA table_info(knowledge_items)").fetchall()
     }
-    assert {"topic_id", "area", "tipo"}.issubset(item_columns)
+    assert {"topic_id", "area", "tipo", "indexed_text"}.issubset(item_columns)
     topic_columns = {
         str(row[1])
         for row in conn.execute("PRAGMA table_info(knowledge_topics)").fetchall()
@@ -142,6 +142,7 @@ def test_run_migrations_crea_schema_knowledge_manager() -> None:
         "idx_knowledge_items_tipo_text",
         "idx_knowledge_items_source",
         "idx_knowledge_items_title",
+        "idx_knowledge_items_indexed_text",
     }.issubset(indexes)
     topic_indexes = {
         str(row[1])
