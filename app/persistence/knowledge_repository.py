@@ -452,6 +452,7 @@ class KnowledgeRepository:
                    ki.content,
                    ki.summary,
                    ki.indexed_text,
+                   ki.source_type,
                    COALESCE(NULLIF(ki.area, ''), ka.name) AS area,
                    kt.name AS topic,
                    COALESCE(NULLIF(ki.tipo, ''), kit.name) AS type,

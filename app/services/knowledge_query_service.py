@@ -23,6 +23,7 @@ _TOKEN_RE = re.compile(r"\b[\wáéíóúüñÁÉÍÓÚÜÑ]+\b", re.UNICODE)
 
 _STOPWORDS = {
     "a",
+    "acerca",
     "al",
     "algo",
     "ante",
@@ -32,14 +33,19 @@ _STOPWORDS = {
     "aqui",
     "as",
     "asi",
+    "busca",
     "con",
     "contra",
     "cuando",
     "cual",
     "cuales",
+    "dame",
     "de",
     "del",
     "desde",
+    "dige",
+    "dije",
+    "dime",
     "donde",
     "el",
     "ella",
@@ -59,6 +65,7 @@ _STOPWORDS = {
     "guarde",
     "habla",
     "hablan",
+    "hay",
     "hice",
     "la",
     "las",
@@ -67,6 +74,7 @@ _STOPWORDS = {
     "me",
     "mi",
     "mis",
+    "o",
     "para",
     "por",
     "que",
@@ -78,6 +86,7 @@ _STOPWORDS = {
     "sus",
     "tengo",
     "tiene",
+    "tienes",
     "tienen",
     "un",
     "una",
@@ -88,17 +97,19 @@ _STOPWORDS = {
 
 _FIELD_WEIGHTS = {
     "title": 5.0,
-    "tags": 5.0,
+    "tags": 4.0,
     "attachment_names": 4.0,
-    "content": 2.5,
-    "indexed_text": 2.5,
-    "summary": 2.0,
+    "content": 2.0,
+    "indexed_text": 2.0,
     "area": 1.0,
     "topic": 1.0,
     "type": 1.0,
+    "source_type": 1.0,
 }
 
-_SNIPPET_FIELDS = ("content", "indexed_text", "summary", "attachment_names", "title")
+_STRONG_MATCH_FIELDS = ("title", "tags", "attachment_names", "content", "indexed_text")
+_SNIPPET_FIELDS = ("content", "indexed_text", "attachment_names", "title", "tags")
+_MIN_RAW_SCORE = 2.0
 
 
 def _fold(text: str) -> str:
@@ -114,13 +125,17 @@ def normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
+def extract_raw_terms(question: str) -> list[str]:
+    """Return normalized query tokens before stopword filtering."""
+    normalized = normalize_text(question)
+    return [match.group(0).strip() for match in _TOKEN_RE.finditer(normalized) if match.group(0).strip()]
+
+
 def extract_terms(question: str) -> list[str]:
     """Extract relevant search terms from a natural-language question."""
-    normalized = normalize_text(question)
     terms: list[str] = []
     seen: set[str] = set()
-    for match in _TOKEN_RE.finditer(normalized):
-        raw = match.group(0).strip()
+    for raw in extract_raw_terms(question):
         folded = _fold(raw)
         if not folded or folded in _STOPWORDS:
             continue
@@ -150,19 +165,23 @@ def _count_term(text: str, term: str) -> int:
     return haystack.count(needle)
 
 
-def _find_best_snippet_text(row: sqlite3.Row | dict[str, Any], terms: Sequence[str]) -> tuple[str, str]:
+def _has_strong_match(row: sqlite3.Row | dict[str, Any], terms: Sequence[str]) -> bool:
+    return any(_count_term(_row_value(row, field), term) for field in _STRONG_MATCH_FIELDS for term in terms)
+
+
+def _find_best_snippet_text(row: sqlite3.Row | dict[str, Any], terms: Sequence[str]) -> tuple[str, str, str]:
     for field in _SNIPPET_FIELDS:
         text = _row_value(row, field)
         folded = _fold(text)
         for term in terms:
             if _fold(term) in folded:
-                return text, term
-    return _row_value(row, "indexed_text") or _row_value(row, "content") or _row_value(row, "summary"), ""
+                return text, term, field
+    return _row_value(row, "indexed_text") or _row_value(row, "content"), "", ""
 
 
 def make_snippet(row: sqlite3.Row | dict[str, Any], terms: Sequence[str], context: int = 80) -> str:
     """Return a compact snippet around the best matching term."""
-    text, term = _find_best_snippet_text(row, terms)
+    text, term, field = _find_best_snippet_text(row, terms)
     text = re.sub(r"\s+", " ", text).strip()
     if not text:
         return ""
@@ -178,20 +197,35 @@ def make_snippet(row: sqlite3.Row | dict[str, Any], terms: Sequence[str], contex
     snippet = text[start:end].strip()
     prefix = "..." if start > 0 else ""
     suffix = "..." if end < len(text) else ""
-    return f"{prefix}{snippet}{suffix}"
+    snippet = f"{prefix}{snippet}{suffix}"
+    if field == "attachment_names":
+        return f"Coincidencia en adjunto: {snippet}"
+    return snippet
 
 
 def _score_row(row: sqlite3.Row | dict[str, Any], terms: Sequence[str]) -> float:
     raw_score = 0.0
     matched_terms: set[str] = set()
-    for field, weight in _FIELD_WEIGHTS.items():
-        text = _row_value(row, field)
-        for term in terms:
-            count = _count_term(text, term)
-            if count:
-                raw_score += weight * count
-                matched_terms.add(_fold(term))
-    if not raw_score:
+    for term in terms:
+        term_matched = False
+        matched_outside_index = False
+        for field, weight in _FIELD_WEIGHTS.items():
+            if field == "indexed_text" and matched_outside_index:
+                # indexed_text is a denormalized search payload containing title, tags,
+                # content and attachment names. Avoid double-counting those stronger
+                # fields; use it as the source of truth only for attachment body text
+                # or other text that is not already represented elsewhere.
+                continue
+            count = _count_term(_row_value(row, field), term)
+            if not count:
+                continue
+            raw_score += weight
+            term_matched = True
+            if field != "indexed_text":
+                matched_outside_index = True
+        if term_matched:
+            matched_terms.add(_fold(term))
+    if raw_score < _MIN_RAW_SCORE or not _has_strong_match(row, terms):
         return 0.0
     coverage_bonus = len(matched_terms) / max(len(terms), 1)
     # Keep scores readable in the UI while preserving ordering by raw relevance.
@@ -225,8 +259,12 @@ def query_knowledge(
     """
     cleaned_question = str(question or "").strip()
     logger.info('KNOWLEDGE_QUERY: question="%s"', cleaned_question)
+    raw_terms = extract_raw_terms(cleaned_question)
     terms = extract_terms(cleaned_question)
+    logger.info("KNOWLEDGE_QUERY: raw_terms=%s", raw_terms)
+    logger.info("KNOWLEDGE_QUERY: relevant_terms=%s", terms)
     if not terms:
+        logger.info("KNOWLEDGE_QUERY: filtered_results=0")
         logger.info("KNOWLEDGE_QUERY: results=0")
         return []
 
@@ -245,5 +283,6 @@ def query_knowledge(
 
     scored.sort(key=lambda item: (-float(item["score"]), str(item["title"]).casefold(), int(item["note_id"])))
     results = scored[: max(1, int(limit or 20))]
+    logger.info("KNOWLEDGE_QUERY: filtered_results=%s", len(scored))
     logger.info("KNOWLEDGE_QUERY: results=%s", len(results))
     return results
