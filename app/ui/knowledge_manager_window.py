@@ -31,6 +31,7 @@ from app.config.config_paths import app_data_dir, knowledge_attachments_dir
 from app.persistence.knowledge_repository import KnowledgeRepository
 from app.persistence.masters_repository import MastersRepository
 from app.ui.app_icons import apply_app_icon
+from app.ui.knowledge_query_dialog import KnowledgeQueryDialog
 from app.ui.dictation_widgets import attach_dictation
 from app.ui.tooltips import add_tooltip
 
@@ -194,6 +195,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
         ttk.Button(buttons, text="Guardar", command=self.save_item).pack(side="left", padx=(0, 6))
         ttk.Button(buttons, text="Eliminar", command=self.delete_item).pack(side="left", padx=(0, 6))
         ttk.Button(buttons, text="Refrescar", command=self.refresh_items).pack(side="left", padx=(0, 6))
+        ttk.Button(buttons, text="Preguntar a Knowledge", command=self.open_query_dialog).pack(side="left", padx=(0, 6))
         ttk.Button(buttons, text="Reindexar Knowledge", command=self.reindex_knowledge).pack(side="left")
 
         ttk.Label(right, text="Título").grid(row=0, column=0, sticky="w", pady=(0, 4))
@@ -439,6 +441,34 @@ class KnowledgeManagerWindow(tk.Toplevel):
             self.topic_var.set(keep_value)
         else:
             self.topic_var.set("")
+
+
+    def open_query_dialog(self) -> None:
+        """Open the local Knowledge question dialog from the manager."""
+        KnowledgeQueryDialog(self, self.repo.conn, on_open_note=self.select_note_by_id)
+
+    def select_note_by_id(self, note_id: int) -> None:
+        """Select and display a note, clearing filters if necessary."""
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+        self.search_var.set("")
+        self.area_filter_var.set("Todas")
+        self.topic_filter_var.set("Todos")
+        self.type_filter_var.set("Todos")
+        self.refresh_items()
+        note_iid = f"note:{int(note_id)}"
+        if not self.tree.exists(note_iid):
+            messagebox.showwarning("Knowledge Manager", "No se encontró la nota seleccionada.", parent=self)
+            return
+        parent_iid = self.tree.parent(note_iid)
+        while parent_iid:
+            self.tree.item(parent_iid, open=True)
+            parent_iid = self.tree.parent(parent_iid)
+        self.tree.selection_set(note_iid)
+        self.tree.focus(note_iid)
+        self.tree.see(note_iid)
+        self._on_item_selected()
 
     def _on_area_filter_changed(self, _event: tk.Event | None = None) -> None:
         self._refresh_topic_filter_values()
