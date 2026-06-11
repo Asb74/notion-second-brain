@@ -9,6 +9,11 @@ import tkinter as tk
 from collections.abc import Callable
 from tkinter import messagebox, ttk
 
+from app.services.knowledge_answer_service import (
+    KnowledgeAnswerConfigError,
+    KnowledgeAnswerGenerationError,
+    answer_question_from_knowledge,
+)
 from app.services.knowledge_query_service import query_knowledge
 from app.ui.app_icons import apply_app_icon
 
@@ -16,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 class KnowledgeQueryDialog(tk.Toplevel):
-    """Ask Knowledge without external AI and open matching notes."""
+    """Ask Knowledge with local search and optional grounded AI answers."""
 
     def __init__(
         self,
@@ -28,12 +33,14 @@ class KnowledgeQueryDialog(tk.Toplevel):
         self.db_connection = db_connection
         self.on_open_note = on_open_note
         self.results_by_iid: dict[str, dict[str, object]] = {}
+        self.current_results: list[dict[str, object]] = []
         self._searching = False
+        self._answering = False
 
         self.title("Preguntar a Knowledge")
         apply_app_icon(self)
-        self.geometry("980x560")
-        self.minsize(760, 460)
+        self.geometry("1120x720")
+        self.minsize(820, 560)
         self.transient(parent.winfo_toplevel())
 
         self.question_var = tk.StringVar()
@@ -55,6 +62,8 @@ class KnowledgeQueryDialog(tk.Toplevel):
         self.question_entry.bind("<Return>", lambda _event: self.search())
         self.search_button = ttk.Button(form, text="Buscar", command=self.search)
         self.search_button.grid(row=0, column=2, padx=(8, 0))
+        self.answer_button = ttk.Button(form, text="Responder con IA", command=self.answer_with_ai, state="disabled")
+        self.answer_button.grid(row=0, column=3, padx=(8, 0))
 
         ttk.Label(
             self,
@@ -63,10 +72,13 @@ class KnowledgeQueryDialog(tk.Toplevel):
             font=("TkDefaultFont", 10, "bold"),
         ).grid(row=1, column=0, sticky="w")
 
-        results_frame = ttk.Frame(self, padding=(12, 0, 12, 8))
-        results_frame.grid(row=2, column=0, sticky="nsew")
+        body = ttk.PanedWindow(self, orient="vertical")
+        body.grid(row=2, column=0, sticky="nsew", padx=12, pady=(0, 8))
+
+        results_frame = ttk.Frame(body)
         results_frame.columnconfigure(0, weight=1)
         results_frame.rowconfigure(0, weight=1)
+        body.add(results_frame, weight=3)
 
         columns = ("area", "topic", "type", "match_source", "score", "snippet")
         self.results_tree = ttk.Treeview(results_frame, columns=columns, show="tree headings", selectmode="browse")
@@ -90,6 +102,19 @@ class KnowledgeQueryDialog(tk.Toplevel):
         scrollbar.grid(row=0, column=1, sticky="ns")
         self.results_tree.configure(yscrollcommand=scrollbar.set)
 
+        answer_frame = ttk.Frame(body)
+        answer_frame.columnconfigure(0, weight=1)
+        answer_frame.rowconfigure(1, weight=1)
+        body.add(answer_frame, weight=2)
+        ttk.Label(answer_frame, text="Respuesta IA:", font=("TkDefaultFont", 10, "bold")).grid(
+            row=0, column=0, sticky="w", pady=(6, 4)
+        )
+        self.answer_text = tk.Text(answer_frame, height=9, wrap="word", state="disabled")
+        self.answer_text.grid(row=1, column=0, sticky="nsew")
+        answer_scrollbar = ttk.Scrollbar(answer_frame, orient="vertical", command=self.answer_text.yview)
+        answer_scrollbar.grid(row=1, column=1, sticky="ns")
+        self.answer_text.configure(yscrollcommand=answer_scrollbar.set)
+
         ttk.Label(self, textvariable=self.status_var, padding=(12, 0, 12, 12)).grid(row=3, column=0, sticky="ew")
 
     def search(self) -> None:
@@ -102,6 +127,7 @@ class KnowledgeQueryDialog(tk.Toplevel):
         self._set_searching(True)
         self.status_var.set("Buscando en Knowledge local...")
         self._clear_results()
+        self._set_answer_text("")
         database_path = self._database_path()
         threading.Thread(target=self._query_worker, args=(question, database_path), daemon=True).start()
 
@@ -109,12 +135,31 @@ class KnowledgeQueryDialog(tk.Toplevel):
         self._searching = searching
         self.search_button.configure(state="disabled" if searching else "normal")
         self.question_entry.configure(state="disabled" if searching else "normal")
-        self.configure(cursor="watch" if searching else "")
+        self._update_answer_button_state()
+        self.configure(cursor="watch" if searching or self._answering else "")
 
     def _clear_results(self) -> None:
         self.results_by_iid.clear()
+        self.current_results = []
         for item_id in self.results_tree.get_children():
             self.results_tree.delete(item_id)
+        self._update_answer_button_state()
+
+    def _set_answer_text(self, text: str) -> None:
+        self.answer_text.configure(state="normal")
+        self.answer_text.delete("1.0", "end")
+        self.answer_text.insert("1.0", text)
+        self.answer_text.configure(state="disabled")
+
+    def _set_answering(self, answering: bool) -> None:
+        self._answering = answering
+        self._update_answer_button_state()
+        self.configure(cursor="watch" if answering or self._searching else "")
+
+    def _update_answer_button_state(self) -> None:
+        enabled = bool(self.current_results) and not self._searching and not self._answering
+        if hasattr(self, "answer_button"):
+            self.answer_button.configure(state="normal" if enabled else "disabled")
 
     def _database_path(self) -> str:
         try:
@@ -155,8 +200,10 @@ class KnowledgeQueryDialog(tk.Toplevel):
 
     def _show_results(self, results: list[dict[str, object]]) -> None:
         self._clear_results()
+        self.current_results = list(results)
         if not results:
             self.status_var.set("No se encontraron coincidencias.")
+            self._update_answer_button_state()
             return
         for index, result in enumerate(results, start=1):
             iid = f"result:{index}"
@@ -179,7 +226,57 @@ class KnowledgeQueryDialog(tk.Toplevel):
         first = self.results_tree.get_children()[0]
         self.results_tree.selection_set(first)
         self.results_tree.focus(first)
-        self.status_var.set(f"{len(results)} coincidencias encontradas. Doble clic para abrir la nota.")
+        self.status_var.set(
+            f"{len(results)} coincidencias encontradas. Doble clic para abrir la nota o pulsa Responder con IA."
+        )
+        self._update_answer_button_state()
+
+    def answer_with_ai(self) -> None:
+        if self._answering or self._searching:
+            return
+        question = self.question_var.get().strip()
+        if not question:
+            messagebox.showwarning("Preguntar a Knowledge", "Escribe una pregunta para responder.", parent=self)
+            return
+        if not self.current_results:
+            self._set_answer_text("No he encontrado información suficiente en Knowledge para responder con seguridad.")
+            self.status_var.set("No hay resultados locales para responder con IA.")
+            return
+        self._set_answering(True)
+        self.status_var.set("Generando respuesta IA usando solo resultados locales...")
+        self._set_answer_text("Generando respuesta IA...")
+        results_snapshot = [dict(result) for result in self.current_results]
+        threading.Thread(target=self._answer_worker, args=(question, results_snapshot), daemon=True).start()
+
+    def _answer_worker(self, question: str, results: list[dict[str, object]]) -> None:
+        try:
+            payload = answer_question_from_knowledge(question, results)
+        except KnowledgeAnswerConfigError as exc:
+            self.after(0, self._finish_answer, None, exc)
+            return
+        except KnowledgeAnswerGenerationError as exc:
+            logger.exception("KNOWLEDGE_ANSWER: generation failed")
+            self.after(0, self._finish_answer, None, exc)
+            return
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("KNOWLEDGE_ANSWER: unexpected UI worker error")
+            self.after(0, self._finish_answer, None, exc)
+            return
+        self.after(0, self._finish_answer, payload, None)
+
+    def _finish_answer(self, payload: dict[str, object] | None, error: Exception | None) -> None:
+        self._set_answering(False)
+        if error is not None or payload is None:
+            if isinstance(error, KnowledgeAnswerConfigError):
+                message = "No hay configuración IA disponible."
+            else:
+                message = f"No se pudo generar la respuesta IA.\n\n{error}"
+            self._set_answer_text(message)
+            self.status_var.set(message.split("\n", maxsplit=1)[0])
+            return
+        answer = str(payload.get("answer") or "").strip()
+        self._set_answer_text(answer)
+        self.status_var.set("Respuesta IA generada usando solo Knowledge local.")
 
     @staticmethod
     def _format_match_source(match_source: object) -> str:
