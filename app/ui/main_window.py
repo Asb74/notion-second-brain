@@ -36,6 +36,7 @@ from app.ui.email_manager_window import EmailManagerWindow
 from app.ui.calendar_manager_window import CalendarManagerWindow
 from app.ui.ml_manager_window import MLManagerWindow
 from app.ui.ml_quality_metrics_window import MLQualityMetricsWindow
+from app.ui.knowledge_entities_window import KnowledgeEntitiesWindow
 from app.ui.knowledge_manager_window import KnowledgeManagerWindow
 from app.ui.knowledge_query_dialog import KnowledgeQueryDialog
 from app.services.evernote_enex_importer import parse_enex_file
@@ -124,6 +125,7 @@ class MainWindow(ttk.Frame):
         self._ml_manager_window: MLManagerWindow | None = None
         self._ml_quality_window: MLQualityMetricsWindow | None = None
         self._knowledge_window: KnowledgeManagerWindow | None = None
+        self._knowledge_entities_window: KnowledgeEntitiesWindow | None = None
         self._calendar_client: GoogleCalendarClient | None = None
         self.calendar_repo = CalendarRepository(db_connection) if db_connection is not None else None
         self.calendar_name_to_id: dict[str, str] = {}
@@ -194,6 +196,7 @@ class MainWindow(ttk.Frame):
 
         conocimiento = tk.Menu(menubar, tearoff=0)
         conocimiento.add_command(label="Knowledge Manager", command=self._open_knowledge_manager)
+        conocimiento.add_command(label="Entidades de Knowledge", command=self._open_knowledge_entities_window)
         conocimiento.add_command(label="Preguntar a Knowledge", command=self._open_knowledge_query_dialog)
         conocimiento.add_command(label="Importar Evernote (.enex)", command=self._import_evernote_enex)
         menubar.add_cascade(label="Conocimiento", menu=conocimiento)
@@ -367,6 +370,27 @@ class MainWindow(ttk.Frame):
             logger.exception("No se pudo abrir Knowledge Manager")
             messagebox.showerror("Error", f"No se pudo abrir Knowledge Manager.\n\n{exc}")
             return None
+
+
+    def _open_knowledge_entities_window(self) -> None:
+        if self.db_connection is None:
+            messagebox.showerror("Error", "No hay conexión de base de datos disponible para entidades de Knowledge.")
+            return
+        if self._knowledge_entities_window is not None and self._knowledge_entities_window.winfo_exists():
+            self._knowledge_entities_window.deiconify()
+            self._knowledge_entities_window.lift()
+            self._knowledge_entities_window.focus_force()
+            self._knowledge_entities_window.refresh_all()
+            return
+        try:
+            self._knowledge_entities_window = KnowledgeEntitiesWindow(
+                self.master,
+                self.db_connection,
+                on_open_note=self._open_knowledge_note,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("No se pudo abrir entidades de Knowledge")
+            messagebox.showerror("Error", f"No se pudo abrir entidades de Knowledge.\n\n{exc}")
 
     def _open_knowledge_query_dialog(self) -> None:
         if self.db_connection is None:
