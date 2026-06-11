@@ -22,6 +22,11 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
+try:
+    from tkinterdnd2 import DND_FILES
+except Exception:  # noqa: BLE001
+    DND_FILES = None
+
 from app.config.config_paths import app_data_dir, knowledge_attachments_dir
 from app.persistence.knowledge_repository import KnowledgeRepository
 from app.persistence.masters_repository import MastersRepository
@@ -334,7 +339,16 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self._preview_after_id: str | None = None
         self._preview_generation_tokens: set[str] = set()
 
-        dnd_available = self._setup_drag_and_drop((self, attachments_tab, self.attachments_tree, preview_frame))
+        dnd_available = self._setup_drag_and_drop(
+            (
+                self.attachments_tree,
+                attachments_list_frame,
+                attachments_tab,
+                preview_frame,
+                self.attachment_preview_content,
+                self.attachment_preview_label,
+            )
+        )
         if dnd_available:
             dnd_message = "Arrastra archivos aquí para adjuntarlos."
             add_tooltip(
@@ -342,7 +356,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
                 "Arrastra archivos aquí para adjuntarlos. También acepta audios mp3, wav, m4a y ogg.",
             )
         else:
-            dnd_message = "Arrastrar y soltar no está disponible en este entorno. Usa Añadir archivo."
+            dnd_message = "Arrastrar y soltar no está disponible en esta ventana. Usa Añadir archivo."
         ttk.Label(attachments_tab, text=dnd_message, foreground="#555555").grid(row=2, column=0, sticky="ew", pady=(6, 0))
 
         ttk.Label(self, textvariable=self.status_var).grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 8))
@@ -1134,12 +1148,12 @@ class KnowledgeManagerWindow(tk.Toplevel):
         *,
         mime_type: str | None = None,
         source_type: str = "manual",
-    ) -> None:
+    ) -> int:
         detected_mime_type = mime_type
         if detected_mime_type is None:
             detected_mime_type, _encoding = mimetypes.guess_type(str(destination))
         file_size = destination.stat().st_size
-        self.repo.add_attachment(
+        return self.repo.add_attachment(
             item_id=item_id,
             original_filename=original_filename,
             stored_filename=destination.name,
@@ -1153,6 +1167,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
         target_dir = self._attachment_item_dir(item_id)
         target_dir.mkdir(parents=True, exist_ok=True)
         added = 0
+        first_added_attachment_id: int | None = None
         for selected_path in selected_paths:
             source_path = Path(selected_path)
             if not source_path.exists() or not source_path.is_file():
@@ -1164,7 +1179,11 @@ class KnowledgeManagerWindow(tk.Toplevel):
             destination = self._unique_attachment_path(target_dir, stored_filename)
             try:
                 shutil.copy2(source_path, destination)
-                self._register_attachment_record(item_id, source_path.name, destination, source_type="manual")
+                attachment_id = self._register_attachment_record(
+                    item_id, source_path.name, destination, source_type="manual"
+                )
+                if first_added_attachment_id is None:
+                    first_added_attachment_id = attachment_id
             except Exception as exc:  # noqa: BLE001
                 logger.exception("No se pudo añadir el adjunto de Knowledge")
                 messagebox.showerror(
@@ -1180,48 +1199,40 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self.refresh_attachments()
         if added:
             self.status_var.set(f"{added} adjunto(s) añadido(s)")
+            if first_added_attachment_id is not None:
+                self._select_attachment(first_added_attachment_id)
         return added
 
     def _setup_drag_and_drop(self, widgets: tuple[tk.Misc, ...]) -> bool:
-        if importlib.util.find_spec("tkinterdnd2") is not None:
-            tkinterdnd2 = importlib.import_module("tkinterdnd2")
-            dnd_files = getattr(tkinterdnd2, "DROP_FILES", getattr(tkinterdnd2, "DND_FILES", "DND_Files"))
-            registered = 0
-            for widget in widgets:
-                if not hasattr(widget, "drop_target_register") or not hasattr(widget, "dnd_bind"):
-                    continue
-                try:
-                    widget.drop_target_register(dnd_files)
-                    widget.dnd_bind("<<Drop>>", self._handle_files_dropped)
-                except Exception:  # noqa: BLE001
-                    logger.debug("No se pudo registrar drag&drop para %s", widget, exc_info=True)
-                    continue
-                registered += 1
-            if registered:
-                logger.info("KNOWLEDGE_DND: tkinterdnd activo widgets=%s", registered)
-                return True
-
-        tkdnd_version = ""
-        try:
-            tkdnd_version = str(self.tk.call("package", "require", "tkdnd"))
-        except Exception:  # noqa: BLE001
-            logger.info("KNOWLEDGE_DND: tkinterdnd no disponible")
+        if DND_FILES is None:
+            logger.info("KNOWLEDGE_DND: no habilitado reason=DND_FILES no disponible")
             return False
 
         registered = 0
-        drop_command = self.register(self._handle_drop_data)
         for widget in widgets:
+            if not hasattr(widget, "drop_target_register"):
+                logger.info(
+                    "KNOWLEDGE_DND: registro fallido reason=widget sin drop_target_register widget=%s",
+                    widget,
+                )
+                continue
+            if not hasattr(widget, "dnd_bind"):
+                logger.info("KNOWLEDGE_DND: registro fallido reason=widget sin dnd_bind widget=%s", widget)
+                continue
             try:
-                self.tk.call("tkdnd::drop_target", "register", str(widget), "DND_Files")
-                self.tk.call("bind", str(widget), "<<Drop:DND_Files>>", f"{drop_command} %D")
-            except Exception:  # noqa: BLE001
-                logger.debug("No se pudo registrar tkdnd nativo para %s", widget, exc_info=True)
+                widget.drop_target_register(DND_FILES)
+                widget.dnd_bind("<<Drop>>", self._handle_files_dropped)
+            except Exception as exc:  # noqa: BLE001
+                logger.info("KNOWLEDGE_DND: registro fallido reason=%s widget=%s", exc, widget)
+                logger.debug("Detalle de fallo registrando drag&drop", exc_info=True)
                 continue
             registered += 1
+
         if registered:
-            logger.info("KNOWLEDGE_DND: tkdnd activo version=%s widgets=%s", tkdnd_version, registered)
+            logger.info("KNOWLEDGE_DND: registrado correctamente widgets=%s", registered)
             return True
-        logger.info("KNOWLEDGE_DND: tkinterdnd no disponible")
+
+        logger.info("KNOWLEDGE_DND: no habilitado reason=ningún widget aceptó registro")
         return False
 
     def _handle_files_dropped(self, event: tk.Event) -> None:
@@ -1230,10 +1241,11 @@ class KnowledgeManagerWindow(tk.Toplevel):
     def _handle_drop_data(self, dropped_data: str) -> None:
         try:
             raw_paths = self.tk.splitlist(dropped_data)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            logger.info("KNOWLEDGE_DND: splitlist falló reason=%s", exc)
             raw_paths = tuple(dropped_data.split())
-        logger.info("KNOWLEDGE_DND: drop recibido paths=%s", list(raw_paths))
         file_paths = [path for path in raw_paths if Path(path).is_file()]
+        logger.info("KNOWLEDGE_DND: archivos recibidos=%s", len(file_paths))
         if not file_paths:
             self.status_var.set("No se encontraron archivos para adjuntar")
             return
@@ -1335,6 +1347,17 @@ class KnowledgeManagerWindow(tk.Toplevel):
             filename,
             log_message="KNOWLEDGE_CAPTURE: pantalla capturada",
         )
+
+    def _select_attachment(self, attachment_id: int) -> None:
+        if not hasattr(self, "attachments_tree"):
+            return
+        item_id = str(attachment_id)
+        if not self.attachments_tree.exists(item_id):
+            return
+        self.attachments_tree.selection_set(item_id)
+        self.attachments_tree.focus(item_id)
+        self.attachments_tree.see(item_id)
+        self._show_attachment_preview(attachment_id)
 
     def refresh_attachments(self) -> None:
         if not hasattr(self, "attachments_tree"):

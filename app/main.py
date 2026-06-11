@@ -5,6 +5,11 @@ from __future__ import annotations
 import logging
 import tkinter as tk
 
+try:
+    from tkinterdnd2 import TkinterDnD
+except Exception:  # noqa: BLE001
+    TkinterDnD = None
+
 from app.config.app_branding import APP_NAME
 from app.core.service import NoteService
 from app.persistence.db import Database, default_data_dir
@@ -27,7 +32,12 @@ def main() -> None:
 
     service = NoteService(NoteRepository(conn), SettingsRepository(conn), masters_repo, ActionsRepository(conn))
 
-    root = tk.Tk()
+    if TkinterDnD is not None:
+        root = TkinterDnD.Tk()
+        logging.getLogger(__name__).info("APP_DND: TkinterDnD disponible, root creada con TkinterDnD.Tk")
+    else:
+        root = tk.Tk()
+        logging.getLogger(__name__).info("APP_DND: TkinterDnD no disponible, root creada con tk.Tk")
     root.title(APP_NAME)
     root.geometry("980x720")
     apply_app_icon(root)
