@@ -47,6 +47,22 @@ def _safe_filename(filename: str) -> str:
     return cleaned or "adjunto"
 
 
+def suggest_topic_from_enex_path(path: str | Path) -> str:
+    """Return a human-friendly topic suggestion from an ENEX filename."""
+    stem = Path(path).stem
+    cleaned = re.sub(r"[-_]+", " ", stem)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned:
+        return ""
+
+    def normalize_word(word: str) -> str:
+        if word.islower():
+            return word[:1].upper() + word[1:]
+        return word
+
+    return " ".join(normalize_word(word) for word in cleaned.split(" "))
+
+
 def _extension_for_mime(mime_type: str) -> str:
     return _EXTENSION_BY_MIME.get(mime_type.strip().lower()) or mimetypes.guess_extension(mime_type) or ".bin"
 
@@ -92,7 +108,7 @@ def _parse_resource(resource: ET.Element, index: int) -> dict[str, object]:
     }
 
 
-def _parse_note(note: ET.Element) -> dict[str, object]:
+def _parse_note(note: ET.Element, suggested_topic: str = "") -> dict[str, object]:
     title = _child_text(note, "title") or "Nota sin título"
     created = _child_text(note, "created")
     updated = _child_text(note, "updated")
@@ -100,6 +116,8 @@ def _parse_note(note: ET.Element) -> dict[str, object]:
     tags = [_child_text(tag, "", "") or (tag.text or "").strip() for tag in _children(note, "tag")]
     tags = [tag for tag in tags if tag]
     notebook = _child_text(note, "notebook") or None
+    if notebook:
+        logger.info("EVERNOTE_IMPORT: tema evernote detectado tema=%s", notebook)
     resources = [_parse_resource(resource, index + 1) for index, resource in enumerate(_children(note, "resource"))]
     return {
         "title": title,
@@ -109,6 +127,7 @@ def _parse_note(note: ET.Element) -> dict[str, object]:
         "content_text": _html_to_text(content_html),
         "tags": tags,
         "notebook": notebook,
+        "suggested_topic": "" if notebook else suggested_topic,
         "resources": resources,
     }
 
@@ -117,12 +136,15 @@ def parse_enex_file(path: str | Path) -> list[dict[str, object]]:
     """Parse an Evernote .enex file into normalized note dictionaries."""
     enex_path = Path(path)
     notes: list[dict[str, object]] = []
+    suggested_topic = suggest_topic_from_enex_path(enex_path)
+    if suggested_topic:
+        logger.info("EVERNOTE_IMPORT: tema sugerido desde archivo tema=%s", suggested_topic)
     logger.info("EVERNOTE_IMPORT: archivo seleccionado path=%s", enex_path)
     for _event, elem in ET.iterparse(enex_path, events=("end",)):
         if _local_name(elem.tag) != "note":
             continue
         try:
-            notes.append(_parse_note(elem))
+            notes.append(_parse_note(elem, suggested_topic=suggested_topic))
         except Exception as exc:  # noqa: BLE001
             logger.info("EVERNOTE_IMPORT: error title=%s reason=%s", _child_text(elem, "title") or "", exc)
         finally:

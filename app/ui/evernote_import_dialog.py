@@ -16,6 +16,7 @@ from tkinter import messagebox, ttk
 from app.config.config_paths import knowledge_attachments_dir
 from app.persistence.knowledge_repository import KnowledgeRepository
 from app.persistence.masters_repository import MastersRepository
+from app.services.evernote_enex_importer import suggest_topic_from_enex_path
 from app.services.knowledge_suggestion_service import suggest_knowledge_metadata
 from app.ui.app_icons import apply_app_icon
 
@@ -57,6 +58,7 @@ class EvernoteImportDialog(tk.Toplevel):
         self.status_var = tk.StringVar(value="Listo")
         self._importing = False
         self._import_options: dict[str, str] = {}
+        self._prepared_topic_ids: dict[int, int | None] = {}
 
         self.title("Importar Evernote (.enex) a Knowledge")
         apply_app_icon(self)
@@ -118,22 +120,23 @@ class EvernoteImportDialog(tk.Toplevel):
         list_frame.grid(row=2, column=0, sticky="nsew")
         list_frame.columnconfigure(0, weight=1)
         list_frame.rowconfigure(0, weight=1)
-        columns = ("import", "title", "date", "tags", "attachments")
+        columns = ("import", "title", "date", "topic", "tags", "attachments")
         self.tree = ttk.Treeview(list_frame, columns=columns, show="headings", selectmode="browse")
         headings = {
             "import": "Importar",
             "title": "Título",
             "date": "Fecha",
+            "topic": "Tema Evernote / sugerido",
             "tags": "Etiquetas originales",
             "attachments": "Adjuntos",
         }
-        widths = {"import": 80, "title": 360, "date": 150, "tags": 340, "attachments": 80}
+        widths = {"import": 80, "title": 300, "date": 140, "topic": 190, "tags": 300, "attachments": 80}
         for column in columns:
             self.tree.heading(column, text=headings[column])
             self.tree.column(
                 column,
                 width=widths[column],
-                stretch=column in {"title", "tags"},
+                stretch=column in {"title", "topic", "tags"},
                 anchor="center" if column in {"import", "attachments"} else "w",
             )
         self.tree.grid(row=0, column=0, sticky="nsew")
@@ -181,12 +184,13 @@ class EvernoteImportDialog(tk.Toplevel):
             self.tree.insert("", "end", iid=iid, values=self._row_values(index))
         self._update_status()
 
-    def _row_values(self, index: int) -> tuple[str, str, str, str, str]:
+    def _row_values(self, index: int) -> tuple[str, str, str, str, str, str]:
         note = self.notes[index]
         return (
             "☑" if self.selected_vars[index].get() else "☐",
             str(note.get("title") or "Nota sin título"),
             str(note.get("created") or note.get("updated") or ""),
+            self._note_topic_label(note),
             ", ".join(str(tag) for tag in note.get("tags") or []),
             str(len(note.get("resources") or [])),
         )
@@ -254,6 +258,157 @@ class EvernoteImportDialog(tk.Toplevel):
                 break
         return result
 
+
+    def _file_suggested_topic(self) -> str:
+        return suggest_topic_from_enex_path(self.enex_path)
+
+    def _note_topic_label(self, note: dict[str, object]) -> str:
+        notebook = str(note.get("notebook") or "").strip()
+        if notebook:
+            return notebook
+        suggested = str(note.get("suggested_topic") or "").strip() or self._file_suggested_topic()
+        return suggested or "(sin tema)"
+
+    def _topic_name_exists(self, area: str, topic_name: str) -> bool:
+        return self._existing_topic_id(area, topic_name) is not None
+
+    def _existing_topic_id(self, area: str, topic_name: str) -> int | None:
+        cleaned = topic_name.strip()
+        if not cleaned:
+            return None
+        for row in self.repo.list_topics(area=area, active_only=True):
+            if str(row["name"] or "").casefold() == cleaned.casefold():
+                return int(row["id"])
+        return None
+
+    def _topic_name_from_fixed_value(self, fixed_topic: str) -> str:
+        value = fixed_topic.strip()
+        return value.split(" / ", 1)[-1].strip() if value else ""
+
+    def _candidate_topic_name(
+        self,
+        note: dict[str, object],
+        suggestions: dict[str, object],
+        topic_mode: str,
+        fixed_topic: str,
+    ) -> str:
+        if topic_mode == TOPIC_MODE_FIXED:
+            return self._topic_name_from_fixed_value(fixed_topic)
+        if topic_mode == TOPIC_MODE_NOTEBOOK:
+            notebook = str(note.get("notebook") or "").strip()
+            if notebook:
+                return notebook
+            suggested = str(note.get("suggested_topic") or "").strip() or self._file_suggested_topic()
+            if suggested:
+                return suggested
+            fixed = self._topic_name_from_fixed_value(fixed_topic)
+            if fixed:
+                return fixed
+            return ""
+        return str(suggestions.get("topic") or "").strip()
+
+    def _ask_missing_topic_action(self, area: str, topic_names: list[str]) -> str:
+        if len(topic_names) == 1:
+            message = f"El tema '{topic_names[0]}' no existe en el área '{area}'. ¿Quieres crearlo?"
+            create_text = "Crear tema"
+        else:
+            joined = "\n".join(f"• {topic}" for topic in topic_names)
+            message = f"Estos temas no existen en el área '{area}':\n\n{joined}\n\n¿Quieres crearlos?"
+            create_text = "Crear temas"
+        dialog = tk.Toplevel(self)
+        dialog.title("Tema no existente")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+        result = tk.StringVar(value="cancel")
+        frame = ttk.Frame(dialog, padding=14)
+        frame.grid(row=0, column=0, sticky="nsew")
+        ttk.Label(frame, text=message, wraplength=460, justify="left").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 12))
+        ttk.Button(frame, text=create_text, command=lambda: (result.set("create"), dialog.destroy())).grid(row=1, column=0, padx=(0, 6))
+        ttk.Button(frame, text="Elegir otro tema", command=lambda: (result.set("choose"), dialog.destroy())).grid(row=1, column=1, padx=6)
+        ttk.Button(frame, text="Cancelar importación", command=lambda: (result.set("cancel"), dialog.destroy())).grid(row=1, column=2, padx=(6, 0))
+        dialog.protocol("WM_DELETE_WINDOW", lambda: (result.set("cancel"), dialog.destroy()))
+        dialog.wait_window()
+        return result.get()
+
+    def _ask_existing_topic(self, area: str) -> str:
+        topics = [str(row["name"] or "") for row in self.repo.list_topics(area=area, active_only=True)]
+        topics = [topic for topic in topics if topic.strip()]
+        if not topics:
+            messagebox.showwarning("Importar Evernote", f"No hay temas existentes para el área '{area}'.", parent=self)
+            return ""
+        dialog = tk.Toplevel(self)
+        dialog.title("Elegir tema")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+        selected = tk.StringVar(value=topics[0])
+        result = tk.StringVar(value="")
+        frame = ttk.Frame(dialog, padding=14)
+        frame.grid(row=0, column=0, sticky="nsew")
+        ttk.Label(frame, text=f"Elige un tema existente para el área '{area}':").grid(row=0, column=0, sticky="w", pady=(0, 8))
+        combo = ttk.Combobox(frame, textvariable=selected, values=topics, state="readonly", width=42)
+        combo.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 12))
+        ttk.Button(frame, text="Usar tema", command=lambda: (result.set(selected.get()), dialog.destroy())).grid(row=2, column=0, padx=(0, 6))
+        ttk.Button(frame, text="Cancelar", command=lambda: (result.set(""), dialog.destroy())).grid(row=2, column=1, padx=(6, 0))
+        combo.focus_set()
+        dialog.protocol("WM_DELETE_WINDOW", lambda: (result.set(""), dialog.destroy()))
+        dialog.wait_window()
+        chosen = result.get().strip()
+        if chosen:
+            logger.info("EVERNOTE_IMPORT: usuario eligió tema alternativo tema=%s", chosen)
+        return chosen
+
+    def _prepare_topic_ids(self, selected_indexes: list[int], options: dict[str, str]) -> dict[int, int | None] | None:
+        area = options.get("area", "").strip() or "Archivo"
+        topic_mode = options.get("topic_mode", TOPIC_MODE_NOTEBOOK)
+        fixed_topic = options.get("fixed_topic", "")
+        candidates: dict[int, str] = {}
+        missing: list[str] = []
+        seen_missing: set[str] = set()
+        for index in selected_indexes:
+            note = self.notes[index]
+            suggestions: dict[str, object] = {}
+            if topic_mode == TOPIC_MODE_AUTO:
+                suggestions = suggest_knowledge_metadata(
+                    str(note.get("title") or ""),
+                    str(note.get("content_text") or ""),
+                    source="evernote",
+                )
+            topic_name = self._candidate_topic_name(note, suggestions, topic_mode, fixed_topic)
+            if not topic_name:
+                topic_name = self._ask_existing_topic(area)
+                if not topic_name:
+                    logger.info("EVERNOTE_IMPORT: importación cancelada por tema no válido")
+                    return None
+            candidates[index] = topic_name
+            if not self._topic_name_exists(area, topic_name):
+                key = topic_name.casefold()
+                if key not in seen_missing:
+                    missing.append(topic_name)
+                    seen_missing.add(key)
+                    logger.info("EVERNOTE_IMPORT: tema no existe area=%s tema=%s", area, topic_name)
+        if missing:
+            action = self._ask_missing_topic_action(area, missing)
+            if action == "choose":
+                alternative = self._ask_existing_topic(area)
+                if not alternative:
+                    logger.info("EVERNOTE_IMPORT: importación cancelada por tema no válido")
+                    return None
+                candidates = {index: alternative for index in selected_indexes}
+            elif action == "create":
+                for topic_name in missing:
+                    self.repo.create_topic(topic_name, area=area)
+                    logger.info("EVERNOTE_IMPORT: tema creado area=%s tema=%s", area, topic_name)
+                self.fixed_topic_combo.configure(values=["", *self._topic_values()])
+            else:
+                logger.info("EVERNOTE_IMPORT: importación cancelada por tema no válido")
+                return None
+        prepared: dict[int, int | None] = {}
+        for index, topic_name in candidates.items():
+            prepared[index] = self._existing_topic_id(area, topic_name)
+        return prepared
+
     def _resolve_tags(self, note: dict[str, object], suggestions: dict[str, object], tag_mode: str) -> list[str]:
         evernote_tags = self._normalize_tags(list(note.get("tags") or []), limit=10)
         suggested_tags = self._normalize_tags(list(suggestions.get("tags") or []), limit=10)
@@ -270,10 +425,7 @@ class EvernoteImportDialog(tk.Toplevel):
         cleaned = topic_name.strip()
         if not cleaned:
             return None
-        for row in self.repo.list_topics(area=area, active_only=True):
-            if str(row["name"] or "").casefold() == cleaned.casefold():
-                return int(row["id"])
-        return self.repo.create_topic(cleaned, area=area)
+        return self._existing_topic_id(area, cleaned)
 
     def _fixed_topic_id(self, area: str, fixed_topic: str) -> int | None:
         value = fixed_topic.strip()
@@ -290,14 +442,8 @@ class EvernoteImportDialog(tk.Toplevel):
         topic_mode: str,
         fixed_topic: str,
     ) -> int | None:
-        mode = topic_mode
-        if mode == TOPIC_MODE_FIXED:
-            return self._fixed_topic_id(area, fixed_topic)
-        if mode == TOPIC_MODE_NOTEBOOK:
-            notebook = str(note.get("notebook") or "").strip()
-            return self._find_topic_id(area, notebook) if notebook else None
-        suggested_topic = str(suggestions.get("topic") or "").strip()
-        return self._find_topic_id(area, suggested_topic) if suggested_topic else None
+        topic_name = self._candidate_topic_name(note, suggestions, topic_mode, fixed_topic)
+        return self._find_topic_id(area, topic_name) if topic_name else None
 
     def _summary_for_note(self, note: dict[str, object]) -> str:
         text = str(note.get("content_text") or "").strip()
@@ -374,8 +520,12 @@ class EvernoteImportDialog(tk.Toplevel):
             "fixed_topic": self.fixed_topic_var.get().strip(),
             "tag_mode": self.tag_mode_var.get().strip(),
         }
+        prepared_topic_ids = self._prepare_topic_ids(selected_indexes, options)
+        if prepared_topic_ids is None:
+            return
         self._importing = True
         self._import_options = options
+        self._prepared_topic_ids = prepared_topic_ids
         self.status_var.set("Importando notas seleccionadas...")
         self.configure(cursor="watch")
         threading.Thread(target=self._import_worker, args=(selected_indexes, options), daemon=True).start()
@@ -395,13 +545,15 @@ class EvernoteImportDialog(tk.Toplevel):
                 suggestions = suggest_knowledge_metadata(title, str(note.get("content_text") or ""), source="evernote")
                 area = options.get("area", "").strip() or str(suggestions.get("area") or "Archivo")
                 tipo = options.get("tipo", "").strip() or str(suggestions.get("type") or "Nota")
-                topic_id = self._resolve_topic_id(
-                    note,
-                    suggestions,
-                    area,
-                    options.get("topic_mode", TOPIC_MODE_NOTEBOOK),
-                    options.get("fixed_topic", ""),
-                )
+                topic_id = self._prepared_topic_ids.get(index)
+                if topic_id is None:
+                    topic_id = self._resolve_topic_id(
+                        note,
+                        suggestions,
+                        area,
+                        options.get("topic_mode", TOPIC_MODE_NOTEBOOK),
+                        options.get("fixed_topic", ""),
+                    )
                 tags = self._resolve_tags(note, suggestions, options.get("tag_mode", TAG_MODE_KEEP_ADD))
                 item_id = self.repo.create_item(
                     title=title,

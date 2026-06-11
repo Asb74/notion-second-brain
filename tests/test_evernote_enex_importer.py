@@ -60,3 +60,44 @@ def test_parse_enex_generates_safe_resource_filename(tmp_path: Path) -> None:
 
     assert resource["filename"] == "evernote_adjunto_1.pdf"
     assert resource["size"] == 2
+
+
+def test_parse_enex_suggests_topic_from_filename_when_notebook_missing(tmp_path: Path) -> None:
+    enex_path = tmp_path / "viajes_familia.enex"
+    enex_path.write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<en-export>
+  <note>
+    <title>Ruta</title>
+    <content><![CDATA[<en-note>Contenido</en-note>]]></content>
+  </note>
+</en-export>
+""",
+        encoding="utf-8",
+    )
+
+    note = parse_enex_file(enex_path)[0]
+
+    assert note["notebook"] is None
+    assert note["suggested_topic"] == "Viajes Familia"
+
+
+def test_parse_enex_preserves_notebook_over_filename_suggestion(tmp_path: Path) -> None:
+    enex_path = tmp_path / "viajes.enex"
+    enex_path.write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<en-export>
+  <note>
+    <title>Ruta</title>
+    <notebook>Archivo Personal</notebook>
+    <content><![CDATA[<en-note>Contenido</en-note>]]></content>
+  </note>
+</en-export>
+""",
+        encoding="utf-8",
+    )
+
+    note = parse_enex_file(enex_path)[0]
+
+    assert note["notebook"] == "Archivo Personal"
+    assert note["suggested_topic"] == ""
