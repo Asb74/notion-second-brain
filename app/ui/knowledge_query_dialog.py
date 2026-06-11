@@ -32,7 +32,7 @@ class KnowledgeQueryDialog(tk.Toplevel):
 
         self.title("Preguntar a Knowledge")
         apply_app_icon(self)
-        self.geometry("900x560")
+        self.geometry("980x560")
         self.minsize(760, 460)
         self.transient(parent.winfo_toplevel())
 
@@ -68,7 +68,7 @@ class KnowledgeQueryDialog(tk.Toplevel):
         results_frame.columnconfigure(0, weight=1)
         results_frame.rowconfigure(0, weight=1)
 
-        columns = ("area", "topic", "type", "score", "snippet")
+        columns = ("area", "topic", "type", "match_source", "score", "snippet")
         self.results_tree = ttk.Treeview(results_frame, columns=columns, show="tree headings", selectmode="browse")
         self.results_tree.heading("#0", text="Nota")
         self.results_tree.column("#0", width=230, minwidth=160, anchor="w", stretch=True)
@@ -76,10 +76,11 @@ class KnowledgeQueryDialog(tk.Toplevel):
             "area": "Área",
             "topic": "Tema",
             "type": "Tipo",
+            "match_source": "Coincidencia",
             "score": "Score",
             "snippet": "Snippet",
         }
-        widths = {"area": 110, "topic": 120, "type": 95, "score": 70, "snippet": 320}
+        widths = {"area": 105, "topic": 110, "type": 90, "match_source": 105, "score": 65, "snippet": 320}
         for column in columns:
             self.results_tree.heading(column, text=headings[column])
             self.results_tree.column(column, width=widths[column], anchor="w", stretch=column == "snippet")
@@ -170,6 +171,7 @@ class KnowledgeQueryDialog(tk.Toplevel):
                     str(result.get("area") or ""),
                     str(result.get("topic") or ""),
                     str(result.get("type") or ""),
+                    self._format_match_source(result.get("match_source")),
                     f"{score:.2f}",
                     str(result.get("snippet") or ""),
                 ),
@@ -178,6 +180,17 @@ class KnowledgeQueryDialog(tk.Toplevel):
         self.results_tree.selection_set(first)
         self.results_tree.focus(first)
         self.status_var.set(f"{len(results)} coincidencias encontradas. Doble clic para abrir la nota.")
+
+    @staticmethod
+    def _format_match_source(match_source: object) -> str:
+        labels = {
+            "título": "Título",
+            "etiquetas": "Etiquetas",
+            "adjunto": "Adjunto",
+            "contenido": "Contenido",
+            "metadatos": "Metadatos",
+        }
+        return labels.get(str(match_source or ""), str(match_source or ""))
 
     def _on_result_double_click(self, _event: tk.Event | None = None) -> None:
         selection = self.results_tree.selection()
