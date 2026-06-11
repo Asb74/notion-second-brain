@@ -7,6 +7,7 @@ import importlib
 import importlib.util
 import json
 import logging
+import mimetypes
 import os
 import re
 import base64
@@ -29,6 +30,7 @@ from app.config.config_manager import (
     ORDER_VALIDATION_FIELDS_BY_GROUP,
     ConfigManager,
 )
+from app.config.config_paths import knowledge_attachments_dir
 from app.config.email_runtime_config import load_config, save_config
 from app.core.config.user_context import get_user_email
 from app.core.email.category_manager import CategoryManager
@@ -1937,6 +1939,103 @@ class EmailManagerWindow(tk.Toplevel):
                 return int(row["id"])
         return int(item_types[0]["id"]) if item_types else None
 
+    @staticmethod
+    def _safe_knowledge_attachment_filename(filename: str) -> str:
+        cleaned = re.sub(r"[^A-Za-z0-9._ -]+", "_", Path(filename).name).strip(" ._")
+        return cleaned or "adjunto"
+
+    @staticmethod
+    def _unique_knowledge_attachment_path(directory: Path, filename: str) -> Path:
+        candidate = directory / filename
+        if not candidate.exists():
+            return candidate
+        stem = candidate.stem
+        suffix = candidate.suffix
+        counter = 1
+        while True:
+            candidate = directory / f"{stem}_{counter}{suffix}"
+            if not candidate.exists():
+                return candidate
+            counter += 1
+
+    @staticmethod
+    def _knowledge_attachment_item_dir(item_id: int) -> Path:
+        now = datetime.now()
+        return knowledge_attachments_dir() / f"{now:%Y}" / f"{now:%m}" / str(item_id)
+
+    @staticmethod
+    def _attachment_filename(attachment: dict[str, object]) -> str:
+        return str(attachment.get("filename") or attachment.get("name") or "adjunto").strip() or "adjunto"
+
+    @staticmethod
+    def _attachment_mime(attachment: dict[str, object]) -> str:
+        return str(
+            attachment.get("mime")
+            or attachment.get("mime_type")
+            or attachment.get("mimeType")
+            or "application/octet-stream"
+        ).strip()
+
+    @staticmethod
+    def _attachment_size(attachment: dict[str, object]) -> int:
+        try:
+            return int(attachment.get("size") or attachment.get("file_size") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _import_email_attachments_to_knowledge(
+        self,
+        *,
+        gmail_id: str,
+        item_id: int,
+        attachments: list[dict[str, object]],
+    ) -> tuple[int, int]:
+        imported = 0
+        errors = 0
+        if not attachments:
+            return imported, errors
+
+        target_dir = self._knowledge_attachment_item_dir(item_id)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        for attachment in attachments:
+            filename = self._attachment_filename(attachment)
+            mime_type = self._attachment_mime(attachment)
+            try:
+                local_path = self.attachment_cache.ensure_downloaded(gmail_id, attachment)
+                source_path = Path(local_path)
+                if not source_path.exists() or not source_path.is_file():
+                    raise FileNotFoundError(f"Archivo no disponible: {source_path}")
+
+                timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
+                safe_name = self._safe_knowledge_attachment_filename(filename)
+                destination = self._unique_knowledge_attachment_path(target_dir, f"{timestamp}_{safe_name}")
+                shutil.copy2(source_path, destination)
+                detected_mime_type = mime_type or mimetypes.guess_type(str(destination))[0] or ""
+                self.knowledge_repo.add_attachment(
+                    item_id=item_id,
+                    original_filename=filename,
+                    stored_filename=destination.name,
+                    stored_path=str(destination),
+                    mime_type=detected_mime_type,
+                    file_size=destination.stat().st_size,
+                    source_type="email",
+                )
+                imported += 1
+                logger.info("KNOWLEDGE_EMAIL_NOTE: attachment imported name=%s", filename)
+                self.system_log(f"KNOWLEDGE_EMAIL_NOTE: attachment imported name={filename}")
+            except Exception as exc:  # noqa: BLE001
+                errors += 1
+                logger.warning(
+                    "KNOWLEDGE_EMAIL_NOTE: attachment import error name=%s reason=%s",
+                    filename,
+                    exc,
+                )
+                self.system_log(
+                    f"KNOWLEDGE_EMAIL_NOTE: attachment import error name={filename} reason={exc}",
+                    level="ERROR",
+                )
+        return imported, errors
+
     def _save_selected_emails_as_knowledge(self) -> None:
         selected_ids = self._selected_ids()
         if not selected_ids:
@@ -1945,6 +2044,8 @@ class EmailManagerWindow(tk.Toplevel):
 
         created_count = 0
         skipped_count = 0
+        imported_attachments_total = 0
+        attachment_errors_total = 0
         for gmail_id in selected_ids:
             row = self.email_repo.get_email_content(gmail_id)
             if row is None:
@@ -1981,6 +2082,9 @@ class EmailManagerWindow(tk.Toplevel):
                 }
 
             try:
+                email_attachments = self._build_email_attachments(gmail_id)
+                logger.info("KNOWLEDGE_EMAIL_NOTE: attachments detected=%s", len(email_attachments))
+                self.system_log(f"KNOWLEDGE_EMAIL_NOTE: attachments detected={len(email_attachments)}")
                 logger.info("KNOWLEDGE_EMAIL_NOTE: dialog opened")
                 self.system_log("KNOWLEDGE_EMAIL_NOTE: dialog opened")
                 dialog = KnowledgeMetadataDialog(
@@ -1990,6 +2094,7 @@ class EmailManagerWindow(tk.Toplevel):
                     content=content,
                     source="email",
                     suggestions=suggestions,
+                    attachments=email_attachments,
                 )
                 metadata = dialog.result
                 if metadata is None:
@@ -1998,6 +2103,31 @@ class EmailManagerWindow(tk.Toplevel):
                     skipped_count += 1
                     continue
 
+                selected_attachments_raw = metadata.get("attachments", [])
+                selected_attachments = (
+                    [item for item in selected_attachments_raw if isinstance(item, dict)]
+                    if isinstance(selected_attachments_raw, list)
+                    else []
+                )
+                logger.info("KNOWLEDGE_EMAIL_NOTE: attachments selected=%s", len(selected_attachments))
+                self.system_log(f"KNOWLEDGE_EMAIL_NOTE: attachments selected={len(selected_attachments)}")
+                selected_indexes = {attachment.get("_dialog_index") for attachment in selected_attachments}
+                selected_names = {self._attachment_filename(attachment) for attachment in selected_attachments}
+                for index, attachment in enumerate(email_attachments):
+                    name = self._attachment_filename(attachment)
+                    selected_by_index = attachment.get("_dialog_index", index) in selected_indexes
+                    selected_by_name = name in selected_names and not selected_indexes
+                    if not selected_by_index and not selected_by_name:
+                        logger.info("KNOWLEDGE_EMAIL_NOTE: attachment skipped name=%s", name)
+                        self.system_log(f"KNOWLEDGE_EMAIL_NOTE: attachment skipped name={name}")
+
+                omitted_count = max(len(email_attachments) - len(selected_attachments), 0)
+                summary_parts = [
+                    f"Email origen: {str(row['sender'] or row['real_sender'] or '').strip()}",
+                    f"Asunto: {subject}",
+                    f"Adjuntos seleccionados: {len(selected_attachments)}",
+                    f"Adjuntos omitidos: {omitted_count}",
+                ]
                 item_id = self.knowledge_repo.create_item(
                     title=str(metadata.get("title") or title),
                     content=str(metadata.get("content") or content),
@@ -2011,8 +2141,15 @@ class EmailManagerWindow(tk.Toplevel):
                     ),
                     source_type=str(metadata.get("source") or "email"),
                     source_id=str(row["gmail_id"] or gmail_id),
-                    summary="",
+                    summary="\n".join(part for part in summary_parts if part.strip()),
                 )
+                imported_attachments, attachment_errors = self._import_email_attachments_to_knowledge(
+                    gmail_id=gmail_id,
+                    item_id=item_id,
+                    attachments=selected_attachments,
+                )
+                imported_attachments_total += imported_attachments
+                attachment_errors_total += attachment_errors
                 logger.info("KNOWLEDGE_EMAIL_NOTE: saved with metadata gmail_id=%s item_id=%s", gmail_id, item_id)
                 self.system_log(f"KNOWLEDGE_EMAIL_NOTE: saved with metadata gmail_id={gmail_id} item_id={item_id}")
                 created_count += 1
@@ -2023,9 +2160,12 @@ class EmailManagerWindow(tk.Toplevel):
 
         messagebox.showinfo(
             "Guardar como conocimiento",
-            f"Notas de conocimiento creadas: {created_count}\nOmitidos: {skipped_count}",
+            "Nota guardada. "
+            f"Adjuntos importados: {imported_attachments_total}. "
+            f"Errores: {attachment_errors_total}\n"
+            f"Notas de conocimiento creadas: {created_count}\n"
+            f"Omitidos: {skipped_count}",
         )
-
 
     def _create_events_from_selected_emails(self) -> None:
         selected_ids = self._selected_ids()
@@ -2772,6 +2912,9 @@ class EmailManagerWindow(tk.Toplevel):
 
     def _build_email_attachments(self, gmail_id: str) -> list[dict[str, str]]:
         row = self._rows_by_id.get(str(gmail_id), {})
+        if not row:
+            persisted_row = self.email_repo.get_email_content(gmail_id)
+            row = dict(persisted_row) if persisted_row is not None else {}
         attachments: list[dict[str, str]] = []
         raw_json = str(row.get("attachments_json", "") or "").strip()
         if raw_json:
@@ -2799,10 +2942,16 @@ class EmailManagerWindow(tk.Toplevel):
             name = str(attachment["filename"] or "")
             current = by_name.get(name)
             if current is None:
-                current = {"filename": name, "mime": str(attachment["mime_type"] or "application/octet-stream")}
+                current = {
+                    "filename": name,
+                    "mime": str(attachment["mime_type"] or "application/octet-stream"),
+                    "size": str(attachment["size"] or 0),
+                }
                 attachments.append(current)
                 by_name[name] = current
             current["local_path"] = str(attachment["local_path"] or "")
+            current["mime"] = str(current.get("mime") or attachment["mime_type"] or "application/octet-stream")
+            current["size"] = str(current.get("size") or attachment["size"] or 0)
         return attachments
 
     def _render_attachments(self, attachments: list[dict[str, str]]) -> None:
