@@ -1,0 +1,194 @@
+"""Tkinter dialog for local natural-language Knowledge queries."""
+
+from __future__ import annotations
+
+import logging
+import sqlite3
+import threading
+import tkinter as tk
+from collections.abc import Callable
+from tkinter import messagebox, ttk
+
+from app.services.knowledge_query_service import query_knowledge
+from app.ui.app_icons import apply_app_icon
+
+logger = logging.getLogger(__name__)
+
+
+class KnowledgeQueryDialog(tk.Toplevel):
+    """Ask Knowledge without external AI and open matching notes."""
+
+    def __init__(
+        self,
+        parent: tk.Misc,
+        db_connection: sqlite3.Connection,
+        on_open_note: Callable[[int], None] | None = None,
+    ):
+        super().__init__(parent)
+        self.db_connection = db_connection
+        self.on_open_note = on_open_note
+        self.results_by_iid: dict[str, dict[str, object]] = {}
+        self._searching = False
+
+        self.title("Preguntar a Knowledge")
+        apply_app_icon(self)
+        self.geometry("900x560")
+        self.minsize(760, 460)
+        self.transient(parent.winfo_toplevel())
+
+        self.question_var = tk.StringVar()
+        self.status_var = tk.StringVar(value="Escribe una pregunta para localizar notas relevantes.")
+
+        self._build_layout()
+        self.question_entry.focus_set()
+
+    def _build_layout(self) -> None:
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(2, weight=1)
+
+        form = ttk.Frame(self, padding=(12, 12, 12, 8))
+        form.grid(row=0, column=0, sticky="ew")
+        form.columnconfigure(1, weight=1)
+        ttk.Label(form, text="Pregunta:").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self.question_entry = ttk.Entry(form, textvariable=self.question_var)
+        self.question_entry.grid(row=0, column=1, sticky="ew")
+        self.question_entry.bind("<Return>", lambda _event: self.search())
+        self.search_button = ttk.Button(form, text="Buscar", command=self.search)
+        self.search_button.grid(row=0, column=2, padx=(8, 0))
+
+        ttk.Label(
+            self,
+            text="Resultados:",
+            padding=(12, 0, 12, 4),
+            font=("TkDefaultFont", 10, "bold"),
+        ).grid(row=1, column=0, sticky="w")
+
+        results_frame = ttk.Frame(self, padding=(12, 0, 12, 8))
+        results_frame.grid(row=2, column=0, sticky="nsew")
+        results_frame.columnconfigure(0, weight=1)
+        results_frame.rowconfigure(0, weight=1)
+
+        columns = ("area", "topic", "type", "score", "snippet")
+        self.results_tree = ttk.Treeview(results_frame, columns=columns, show="tree headings", selectmode="browse")
+        self.results_tree.heading("#0", text="Nota")
+        self.results_tree.column("#0", width=230, minwidth=160, anchor="w", stretch=True)
+        headings = {
+            "area": "Área",
+            "topic": "Tema",
+            "type": "Tipo",
+            "score": "Score",
+            "snippet": "Snippet",
+        }
+        widths = {"area": 110, "topic": 120, "type": 95, "score": 70, "snippet": 320}
+        for column in columns:
+            self.results_tree.heading(column, text=headings[column])
+            self.results_tree.column(column, width=widths[column], anchor="w", stretch=column == "snippet")
+        self.results_tree.grid(row=0, column=0, sticky="nsew")
+        self.results_tree.bind("<Double-1>", self._on_result_double_click)
+        scrollbar = ttk.Scrollbar(results_frame, orient="vertical", command=self.results_tree.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.results_tree.configure(yscrollcommand=scrollbar.set)
+
+        ttk.Label(self, textvariable=self.status_var, padding=(12, 0, 12, 12)).grid(row=3, column=0, sticky="ew")
+
+    def search(self) -> None:
+        if self._searching:
+            return
+        question = self.question_var.get().strip()
+        if not question:
+            messagebox.showwarning("Preguntar a Knowledge", "Escribe una pregunta para buscar.", parent=self)
+            return
+        self._set_searching(True)
+        self.status_var.set("Buscando en Knowledge local...")
+        self._clear_results()
+        database_path = self._database_path()
+        threading.Thread(target=self._query_worker, args=(question, database_path), daemon=True).start()
+
+    def _set_searching(self, searching: bool) -> None:
+        self._searching = searching
+        self.search_button.configure(state="disabled" if searching else "normal")
+        self.question_entry.configure(state="disabled" if searching else "normal")
+        self.configure(cursor="watch" if searching else "")
+
+    def _clear_results(self) -> None:
+        self.results_by_iid.clear()
+        for item_id in self.results_tree.get_children():
+            self.results_tree.delete(item_id)
+
+    def _database_path(self) -> str:
+        try:
+            row = self.db_connection.execute("PRAGMA database_list").fetchone()
+        except sqlite3.Error:
+            return ""
+        if row is None:
+            return ""
+        return str(row[2] if len(row) > 2 else "")
+
+    def _query_worker(self, question: str, database_path: str) -> None:
+        conn: sqlite3.Connection | None = None
+        try:
+            if database_path and database_path != ":memory":
+                conn = sqlite3.connect(database_path)
+                conn.row_factory = sqlite3.Row
+                results = query_knowledge(question, conn=conn)
+            else:
+                # Fallback for tests or in-memory databases. Real app databases use
+                # the file-backed branch above so the UI remains responsive.
+                results = query_knowledge(question, conn=self.db_connection)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("KNOWLEDGE_QUERY: search failed")
+            self.after(0, self._finish_search, None, exc)
+            return
+        finally:
+            if conn is not None:
+                conn.close()
+        self.after(0, self._finish_search, results, None)
+
+    def _finish_search(self, results: list[dict[str, object]] | None, error: Exception | None) -> None:
+        self._set_searching(False)
+        if error is not None or results is None:
+            self.status_var.set("No se pudo consultar Knowledge.")
+            messagebox.showerror("Preguntar a Knowledge", f"No se pudo consultar Knowledge.\n\n{error}", parent=self)
+            return
+        self._show_results(results)
+
+    def _show_results(self, results: list[dict[str, object]]) -> None:
+        self._clear_results()
+        if not results:
+            self.status_var.set("No se encontraron coincidencias.")
+            return
+        for index, result in enumerate(results, start=1):
+            iid = f"result:{index}"
+            self.results_by_iid[iid] = result
+            score = float(result.get("score") or 0.0)
+            self.results_tree.insert(
+                "",
+                "end",
+                iid=iid,
+                text=str(result.get("title") or "Sin título"),
+                values=(
+                    str(result.get("area") or ""),
+                    str(result.get("topic") or ""),
+                    str(result.get("type") or ""),
+                    f"{score:.2f}",
+                    str(result.get("snippet") or ""),
+                ),
+            )
+        first = self.results_tree.get_children()[0]
+        self.results_tree.selection_set(first)
+        self.results_tree.focus(first)
+        self.status_var.set(f"{len(results)} coincidencias encontradas. Doble clic para abrir la nota.")
+
+    def _on_result_double_click(self, _event: tk.Event | None = None) -> None:
+        selection = self.results_tree.selection()
+        if not selection:
+            return
+        result = self.results_by_iid.get(str(selection[0]))
+        if not result:
+            return
+        note_id = int(result.get("note_id") or 0)
+        if note_id <= 0:
+            return
+        logger.info("KNOWLEDGE_QUERY: open note_id=%s", note_id)
+        if self.on_open_note is not None:
+            self.on_open_note(note_id)

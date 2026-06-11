@@ -37,6 +37,7 @@ from app.ui.calendar_manager_window import CalendarManagerWindow
 from app.ui.ml_manager_window import MLManagerWindow
 from app.ui.ml_quality_metrics_window import MLQualityMetricsWindow
 from app.ui.knowledge_manager_window import KnowledgeManagerWindow
+from app.ui.knowledge_query_dialog import KnowledgeQueryDialog
 from app.services.evernote_enex_importer import parse_enex_file
 from app.ui.evernote_import_dialog import EvernoteImportDialog
 from app.ui.settings_dialog import SettingsDialog
@@ -193,6 +194,7 @@ class MainWindow(ttk.Frame):
 
         conocimiento = tk.Menu(menubar, tearoff=0)
         conocimiento.add_command(label="Knowledge Manager", command=self._open_knowledge_manager)
+        conocimiento.add_command(label="Preguntar a Knowledge", command=self._open_knowledge_query_dialog)
         conocimiento.add_command(label="Importar Evernote (.enex)", command=self._import_evernote_enex)
         menubar.add_cascade(label="Conocimiento", menu=conocimiento)
 
@@ -346,23 +348,36 @@ class MainWindow(ttk.Frame):
             self._knowledge_window.refresh_items()
 
 
-    def _open_knowledge_manager(self) -> None:
+    def _open_knowledge_manager(self) -> KnowledgeManagerWindow | None:
         if self.db_connection is None:
             messagebox.showerror("Error", "No hay conexión de base de datos disponible para Knowledge Manager.")
-            return
+            return None
 
         if self._knowledge_window is not None and self._knowledge_window.winfo_exists():
             self._knowledge_window.deiconify()
             self._knowledge_window.lift()
             self._knowledge_window.focus_force()
             self._knowledge_window.refresh_items()
-            return
+            return self._knowledge_window
 
         try:
             self._knowledge_window = KnowledgeManagerWindow(self.master, self.db_connection)
+            return self._knowledge_window
         except Exception as exc:  # noqa: BLE001
             logger.exception("No se pudo abrir Knowledge Manager")
             messagebox.showerror("Error", f"No se pudo abrir Knowledge Manager.\n\n{exc}")
+            return None
+
+    def _open_knowledge_query_dialog(self) -> None:
+        if self.db_connection is None:
+            messagebox.showerror("Error", "No hay conexión de base de datos disponible para preguntar a Knowledge.")
+            return
+        KnowledgeQueryDialog(self.master, self.db_connection, on_open_note=self._open_knowledge_note)
+
+    def _open_knowledge_note(self, note_id: int) -> None:
+        window = self._open_knowledge_manager()
+        if window is not None:
+            window.select_note_by_id(note_id)
 
 
     def _open_ml_manager(self) -> None:

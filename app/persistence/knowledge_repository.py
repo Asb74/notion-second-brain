@@ -417,6 +417,72 @@ class KnowledgeRepository:
             tuple(params),
         ).fetchall()
 
+    def search_query_candidates(self, terms: list[str], limit: int = 200) -> list[sqlite3.Row]:
+        """Return Knowledge notes that may match natural-language local queries."""
+        cleaned_terms = [str(term or "").strip() for term in terms if str(term or "").strip()]
+        if not cleaned_terms:
+            return []
+
+        clauses = ["ki.status != 'deleted'"]
+        params: list[object] = []
+        term_clauses: list[str] = []
+        for term in cleaned_terms:
+            like = f"%{term}%"
+            term_clauses.append(
+                "("
+                "ki.title LIKE ? OR ki.content LIKE ? OR ki.summary LIKE ? OR ki.indexed_text LIKE ? OR "
+                "COALESCE(NULLIF(ki.area, ''), ka.name) LIKE ? OR kt.name LIKE ? OR "
+                "COALESCE(NULLIF(ki.tipo, ''), kit.name) LIKE ? OR "
+                "EXISTS (SELECT 1 FROM knowledge_item_tags ktag_link "
+                "JOIN knowledge_tags ktag ON ktag.id = ktag_link.tag_id "
+                "WHERE ktag_link.item_id = ki.id AND ktag.name LIKE ?) OR "
+                "EXISTS (SELECT 1 FROM knowledge_attachments katt "
+                "WHERE katt.item_id = ki.id AND "
+                "(katt.original_filename LIKE ? OR katt.stored_filename LIKE ? OR katt.stored_path LIKE ?))"
+                ")"
+            )
+            params.extend([like, like, like, like, like, like, like, like, like, like, like])
+        clauses.append("(" + " OR ".join(term_clauses) + ")")
+        params.append(max(1, int(limit)))
+        return self.conn.execute(
+            f"""
+            SELECT
+                   ki.id AS note_id,
+                   ki.title,
+                   ki.content,
+                   ki.summary,
+                   ki.indexed_text,
+                   COALESCE(NULLIF(ki.area, ''), ka.name) AS area,
+                   kt.name AS topic,
+                   COALESCE(NULLIF(ki.tipo, ''), kit.name) AS type,
+                   COALESCE((
+                       SELECT GROUP_CONCAT(ktag.name, ', ')
+                       FROM knowledge_item_tags ktag_link
+                       JOIN knowledge_tags ktag ON ktag.id = ktag_link.tag_id
+                       WHERE ktag_link.item_id = ki.id
+                   ), '') AS tags,
+                   COALESCE((
+                       SELECT GROUP_CONCAT(
+                           katt.original_filename || ' ' || katt.stored_filename || ' ' || katt.stored_path,
+                           ' '
+                       )
+                       FROM knowledge_attachments katt
+                       WHERE katt.item_id = ki.id
+                   ), '') AS attachment_names,
+                   ki.updated_at,
+                   ki.created_at
+            FROM knowledge_items ki
+            LEFT JOIN knowledge_areas ka ON ka.id = ki.area_id
+            LEFT JOIN knowledge_topics kt ON kt.id = ki.topic_id
+            LEFT JOIN knowledge_item_types kit ON kit.id = ki.item_type_id
+            WHERE {' AND '.join(clauses)}
+            ORDER BY COALESCE(ki.updated_at, ki.created_at) DESC, ki.id DESC
+            LIMIT ?
+            """,
+            tuple(params),
+        ).fetchall()
+
+
 
     def exists_evernote_duplicate(self, title: str, created: str = "") -> bool:
         """Return True for the pilot Evernote duplicate rule: source + title + created date."""
