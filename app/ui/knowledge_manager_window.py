@@ -329,6 +329,8 @@ class KnowledgeManagerWindow(tk.Toplevel):
             text="Abrir archivo",
             command=self.open_attachment,
         )
+        self._preview_zoom = 1.0
+        self._preview_original_pil_image = None
         self._preview_image = None
         self.attachment_preview_image = None
         self._preview_attachment_path: Path | None = None
@@ -361,6 +363,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
 
         ttk.Label(self, textvariable=self.status_var).grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 8))
         self.after_idle(self._apply_initial_sash_positions)
+        self.after(350, self._apply_initial_sash_positions)
 
     def _apply_initial_sash_positions(self) -> None:
         self.update_idletasks()
@@ -375,8 +378,8 @@ class KnowledgeManagerWindow(tk.Toplevel):
             total_height = self.attachments_paned.winfo_height()
             if total_height > 0:
                 try:
-                    self.attachments_paned.sashpos(0, max(int(total_height * 0.25), 120))
-                    logger.info("KNOWLEDGE_UI: adjuntos sash 25/75 aplicado")
+                    self.attachments_paned.sashpos(0, max(int(total_height * 0.50), 160))
+                    logger.info("KNOWLEDGE_UI: adjuntos sash 50/50 aplicado")
                 except Exception:  # noqa: BLE001
                     logger.debug("No se pudo aplicar sash inicial de adjuntos", exc_info=True)
 
@@ -668,6 +671,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
             parent = self.attachment_preview_content
         else:
             parent = self
+        self._preview_original_pil_image = None
         self._preview_image = None
         self.attachment_preview_image = None
         self.attachment_preview_label = ttk.Label(
@@ -700,6 +704,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self._current_preview_path = None
         self._current_preview_type = None
         self._current_preview_bounds = None
+        self._preview_zoom = 1.0
         self._reset_attachment_preview_area(message, clickable=False)
 
     def _on_attachment_selected(self, _event: tk.Event | None = None) -> None:
@@ -758,7 +763,10 @@ class KnowledgeManagerWindow(tk.Toplevel):
             self._clear_attachment_preview(f"El archivo no existe:\n{path}")
             return
         preview_type = self._attachment_preview_type(path, mime_type)
-        if not force and self._current_preview_path == path and self._current_preview_type == preview_type:
+        is_new_preview_file = self._current_preview_path != path or self._current_preview_type != preview_type
+        if is_new_preview_file:
+            self._preview_zoom = 1.0
+        if not force and not is_new_preview_file:
             logger.info("KNOWLEDGE_PREVIEW: omitido mismo archivo path=%s", path)
             return
         self._activate_preview_click(attachment_id, path)
@@ -815,13 +823,19 @@ class KnowledgeManagerWindow(tk.Toplevel):
     def _show_cached_visual_attachment_preview(self, row: sqlite3.Row, path: Path, preview_type: str) -> None:
         cache_path = self._preview_cache_path(path)
         if cache_path.exists():
+            if preview_type == "excel":
+                logger.info("KNOWLEDGE_PREVIEW: excel visual cache hit path=%s cache=%s", path, cache_path)
             logger.info("KNOWLEDGE_PREVIEW: preview cache hit path=%s cache=%s", path, cache_path)
             if self._display_cached_preview_png(cache_path):
                 return
+            if preview_type == "excel":
+                logger.info("KNOWLEDGE_PREVIEW: excel visual fallback reason=cache_no_mostrable path=%s", path)
             logger.info("KNOWLEDGE_PREVIEW: preview fallback reason=cache_no_mostrable path=%s", path)
             self._show_file_info_preview(row, path, type_label=self._preview_type_label(preview_type))
             return
 
+        if preview_type == "excel":
+            logger.info("KNOWLEDGE_PREVIEW: excel visual generating path=%s cache=%s", path, cache_path)
         logger.info("KNOWLEDGE_PREVIEW: preview cache miss path=%s cache=%s", path, cache_path)
         token = str(cache_path)
         self._reset_attachment_preview_area("Generando vista previa...\n\nHaz clic para abrir el archivo.")
@@ -884,9 +898,17 @@ class KnowledgeManagerWindow(tk.Toplevel):
         if self._preview_attachment_path != path or self._current_preview_type != preview_type:
             return
         if success and cache_path.exists() and self._display_cached_preview_png(cache_path):
+            if preview_type == "excel":
+                logger.info("KNOWLEDGE_PREVIEW: excel visual ok path=%s cache=%s", path, cache_path)
             return
+        if preview_type == "excel":
+            logger.info("KNOWLEDGE_PREVIEW: excel visual fallback reason=%s path=%s", reason, path)
         logger.info("KNOWLEDGE_PREVIEW: preview fallback reason=%s path=%s", reason, path)
-        message = "Vista previa visual no disponible. Haz clic para abrir el archivo."
+        message = (
+            "Vista previa Excel no disponible. Haz clic para abrir el archivo."
+            if preview_type == "excel"
+            else "Vista previa visual no disponible. Haz clic para abrir el archivo."
+        )
         self._show_file_info_preview(row, path, type_label=self._preview_type_label(preview_type), extra_message=message)
 
     def _display_cached_preview_png(self, cache_path: Path) -> bool:
@@ -957,7 +979,15 @@ class KnowledgeManagerWindow(tk.Toplevel):
                 rendered, render_reason = self._render_pdf_first_page_to_png(pdf_path, cache_path)
                 return (True, f"{reason}+{render_reason}") if rendered else (False, render_reason)
         if preview_type == "excel":
-            return self._generate_excel_grid_image(path, cache_path)
+            if sys.platform.startswith("win"):
+                with tempfile.TemporaryDirectory(prefix="knowledge_preview_excel_com_") as temp_dir_name:
+                    temp_dir = Path(temp_dir_name)
+                    pdf_path, excel_reason = self._convert_excel_to_pdf_with_com(path, temp_dir)
+                    if pdf_path is not None:
+                        rendered, render_reason = self._render_pdf_first_page_to_png(pdf_path, cache_path)
+                        return (True, f"{excel_reason}+{render_reason}") if rendered else (False, render_reason)
+                    reason = f"{reason};{excel_reason}"
+            return False, reason
         return False, reason
 
     def _convert_document_to_pdf(
@@ -972,39 +1002,19 @@ class KnowledgeManagerWindow(tk.Toplevel):
             return pdf_path, reason
         return self._convert_word_to_pdf_with_com(path, temp_dir)
 
-    def _generate_excel_grid_image(self, path: Path, cache_path: Path) -> tuple[bool, str]:
-        if path.suffix.lower() not in {".xlsx", ".xlsm", ".xltx"}:
-            return False, "excel_sin_conversor"
-        if not self._module_available("openpyxl"):
-            return False, "openpyxl_no_disponible"
-        return self._generate_tabular_text_image(path, cache_path, is_excel=True)
-
     def _generate_text_preview(self, path: Path, cache_path: Path) -> tuple[bool, str]:
-        return self._generate_tabular_text_image(path, cache_path, is_excel=False)
+        return self._generate_tabular_text_image(path, cache_path)
 
-    def _generate_tabular_text_image(self, path: Path, cache_path: Path, *, is_excel: bool) -> tuple[bool, str]:
+    def _generate_tabular_text_image(self, path: Path, cache_path: Path) -> tuple[bool, str]:
         if not self._module_available("PIL"):
             return False, "pillow_no_disponible"
         image_module = importlib.import_module("PIL.Image")
         image_draw_module = importlib.import_module("PIL.ImageDraw")
         image_font_module = importlib.import_module("PIL.ImageFont")
-        openpyxl = importlib.import_module("openpyxl") if is_excel else None
         try:
-            lines: list[str]
             title = path.name
-            if is_excel:
-                workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
-                try:
-                    sheet = workbook.worksheets[0]
-                    title = f"{path.name} · {sheet.title}"
-                    lines = []
-                    for row in sheet.iter_rows(max_row=28, max_col=8, values_only=True):
-                        lines.append("  |  ".join("" if value is None else str(value) for value in row))
-                finally:
-                    workbook.close()
-            else:
-                with path.open("r", encoding="utf-8", errors="replace") as handle:
-                    lines = [line.rstrip("\n") for _, line in zip(range(32), handle)]
+            with path.open("r", encoding="utf-8", errors="replace") as handle:
+                lines = [line.rstrip("\n") for _, line in zip(range(32), handle)]
 
             width, height = 1200, 900
             image = image_module.new("RGB", (width, height), "white")
@@ -1019,7 +1029,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
                 draw.text((24, y), line[:180], fill="#1f2937", font=font)
                 y += 26
             image.save(cache_path, "PNG")
-            return True, "openpyxl_visual" if is_excel else "text_visual"
+            return True, "text_visual"
         except Exception as exc:  # noqa: BLE001
             return False, f"visual_text_error:{exc}"
 
@@ -1087,17 +1097,114 @@ class KnowledgeManagerWindow(tk.Toplevel):
             return pdf_path, "word_com"
         return None, "word_com_sin_pdf"
 
+    def _convert_excel_to_pdf_with_com(self, path: Path, temp_dir: Path) -> tuple[Path | None, str]:
+        if not self._module_available("win32com.client"):
+            return None, "excel_com_no_disponible"
+        win32com_client = importlib.import_module("win32com.client")
+
+        pdf_path = temp_dir / f"{path.stem}.pdf"
+        excel_app = None
+        workbook = None
+        try:
+            excel_app = win32com_client.DispatchEx("Excel.Application")
+            excel_app.Visible = False
+            excel_app.DisplayAlerts = False
+            workbook = excel_app.Workbooks.Open(str(path), ReadOnly=True)
+            worksheet = workbook.Worksheets(1)
+            worksheet.ExportAsFixedFormat(0, str(pdf_path))
+        except Exception as exc:  # noqa: BLE001
+            return None, f"excel_com_error:{exc}"
+        finally:
+            if workbook is not None:
+                try:
+                    workbook.Close(False)
+                except Exception:  # noqa: BLE001
+                    logger.debug("No se pudo cerrar workbook Excel COM", exc_info=True)
+            if excel_app is not None:
+                try:
+                    excel_app.Quit()
+                except Exception:  # noqa: BLE001
+                    logger.debug("No se pudo cerrar Excel COM", exc_info=True)
+
+        if pdf_path.exists():
+            return pdf_path, "excel_com"
+        return None, "excel_com_sin_pdf"
+
     def _display_pil_preview(self, image: object, image_tk_module: object) -> None:
-        label = self._reset_attachment_preview_area()
+        self._reset_attachment_preview_area()
         width, height = self._attachment_preview_bounds()
         self._current_preview_bounds = (width, height)
         if hasattr(image, "copy"):
             image = image.copy()
-        if hasattr(image, "thumbnail"):
-            image.thumbnail((width, height))
+        self._preview_original_pil_image = image
+        self._render_preview_image_from_original(image_tk_module)
+
+    def _render_preview_image_from_original(self, image_tk_module: object | None = None) -> None:
+        original = self._preview_original_pil_image
+        if original is None:
+            return
+        if image_tk_module is None:
+            if not self._module_available("PIL.ImageTk"):
+                return
+            image_tk_module = importlib.import_module("PIL.ImageTk")
+
+        width, height = self._attachment_preview_bounds()
+        original_width = max(int(getattr(original, "width", 1)), 1)
+        original_height = max(int(getattr(original, "height", 1)), 1)
+        fit_ratio = min(width / original_width, height / original_height, 1.0)
+        scale = max(0.3, min(3.0, self._preview_zoom)) * fit_ratio
+        target_size = (max(int(original_width * scale), 1), max(int(original_height * scale), 1))
+
+        image = original.copy() if hasattr(original, "copy") else original
+        if hasattr(image, "resize"):
+            resampling_module = importlib.import_module("PIL.Image")
+            resampling = getattr(getattr(resampling_module, "Resampling", resampling_module), "LANCZOS", 1)
+            image = image.resize(target_size, resampling)
         self._preview_image = image_tk_module.PhotoImage(image)
         self.attachment_preview_image = self._preview_image
-        label.configure(image=self._preview_image, text="")
+        self._show_preview_image_on_canvas(target_size)
+
+    def _show_preview_image_on_canvas(self, image_size: tuple[int, int]) -> None:
+        for child in self.attachment_preview_content.winfo_children():
+            child.destroy()
+        self.attachment_preview_content.columnconfigure(0, weight=1)
+        self.attachment_preview_content.rowconfigure(0, weight=1)
+
+        canvas = tk.Canvas(self.attachment_preview_content, highlightthickness=0, cursor="hand2")
+        vertical_scrollbar = ttk.Scrollbar(self.attachment_preview_content, orient="vertical", command=canvas.yview)
+        horizontal_scrollbar = ttk.Scrollbar(self.attachment_preview_content, orient="horizontal", command=canvas.xview)
+        canvas.configure(yscrollcommand=vertical_scrollbar.set, xscrollcommand=horizontal_scrollbar.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        vertical_scrollbar.grid(row=0, column=1, sticky="ns")
+        horizontal_scrollbar.grid(row=1, column=0, sticky="ew")
+
+        bounds_width, bounds_height = self._attachment_preview_bounds()
+        x = max((bounds_width - image_size[0]) // 2, 0)
+        y = max((bounds_height - image_size[1]) // 2, 0)
+        canvas.create_image(x, y, anchor="nw", image=self._preview_image)
+        canvas.configure(scrollregion=(0, 0, max(image_size[0], bounds_width), max(image_size[1], bounds_height)))
+        self.attachment_preview_label = canvas
+        self._bind_preview_open(canvas)
+        self._bind_preview_zoom(canvas)
+        canvas.focus_set()
+
+    def _bind_preview_zoom(self, widget: tk.Misc) -> None:
+        widget.bind("<MouseWheel>", self._on_preview_mousewheel)
+        widget.bind("<Button-4>", self._on_preview_mousewheel)
+        widget.bind("<Button-5>", self._on_preview_mousewheel)
+
+    def _on_preview_mousewheel(self, event: tk.Event) -> str:
+        if self._preview_original_pil_image is None:
+            return "break"
+        delta = getattr(event, "delta", 0)
+        button_number = getattr(event, "num", None)
+        zoom_factor = 1.1 if delta > 0 or button_number == 4 else 0.9
+        next_zoom = max(0.3, min(3.0, self._preview_zoom * zoom_factor))
+        if next_zoom == self._preview_zoom:
+            return "break"
+        self._preview_zoom = next_zoom
+        self._render_preview_image_from_original()
+        return "break"
 
     def _attachment_preview_bounds(self) -> tuple[int, int]:
         self.update_idletasks()
