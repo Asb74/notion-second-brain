@@ -111,3 +111,23 @@ def test_knowledge_attachment_crud() -> None:
 
     assert repo.get_attachment(attachment_id) is None
     assert repo.list_attachments(item_id) == []
+
+
+def test_exists_evernote_duplicate_uses_title_created_and_source() -> None:
+    repo = _repo()
+    repo.create_item(
+        title="Nota Evernote",
+        content="Contenido",
+        source_type="evernote",
+        source_id="20240101T120000Z",
+    )
+    repo.create_item(
+        title="Nota manual",
+        content="Contenido",
+        source_type="manual",
+        source_id="20240101T120000Z",
+    )
+
+    assert repo.exists_evernote_duplicate("Nota Evernote", "20240101T120000Z") is True
+    assert repo.exists_evernote_duplicate("Nota Evernote", "20240102T120000Z") is False
+    assert repo.exists_evernote_duplicate("Nota manual", "20240101T120000Z") is False
