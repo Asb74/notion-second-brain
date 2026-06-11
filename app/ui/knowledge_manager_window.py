@@ -554,14 +554,22 @@ class KnowledgeManagerWindow(tk.Toplevel):
     @staticmethod
     def _search_match_snippet(row: sqlite3.Row, search: str, context: int = 70) -> str:
         haystack = str(row["indexed_text"] or "") if "indexed_text" in row.keys() else ""
-        needle = search.strip().casefold()
-        if not haystack or not needle:
+        if not haystack or not search.strip():
             return ""
-        index = haystack.casefold().find(needle)
-        if index < 0:
+        try:
+            from app.services.knowledge_query_service import extract_phrases, extract_terms, normalize_text
+
+            needles = [*extract_phrases(search), *extract_terms(search)] or [normalize_text(search)]
+            normalized_haystack = normalize_text(haystack)
+        except Exception:  # noqa: BLE001
+            needles = [search.strip().casefold()]
+            normalized_haystack = haystack.casefold()
+        needle = next((candidate for candidate in needles if candidate and candidate in normalized_haystack), "")
+        if not needle:
             return ""
+        index = normalized_haystack.find(needle)
         start = max(index - context, 0)
-        end = min(index + len(search) + context, len(haystack))
+        end = min(index + len(needle) + context, len(haystack))
         prefix = "..." if start else ""
         suffix = "..." if end < len(haystack) else ""
         snippet = " ".join(haystack[start:end].split())

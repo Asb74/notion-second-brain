@@ -368,19 +368,31 @@ class KnowledgeRepository:
         params: list[object] = []
         cleaned_search = search.strip()
         if cleaned_search:
-            like = f"%{cleaned_search}%"
-            clauses.append(
-                "(ki.title LIKE ? OR ki.content LIKE ? OR ki.summary LIKE ? OR "
-                "COALESCE(NULLIF(ki.area, ''), ka.name) LIKE ? OR "
-                "kt.name LIKE ? OR "
-                "COALESCE(NULLIF(ki.tipo, ''), kit.name) LIKE ? OR "
-                "ki.source_type LIKE ? OR ki.source_id LIKE ? OR ki.source_path LIKE ? OR "
-                "ki.indexed_text LIKE ? OR "
-                "EXISTS (SELECT 1 FROM knowledge_item_tags kit2 "
-                "JOIN knowledge_tags kt2 ON kt2.id = kit2.tag_id "
-                "WHERE kit2.item_id = ki.id AND kt2.name LIKE ?))"
-            )
-            params.extend([like, like, like, like, like, like, like, like, like, like, like])
+            try:
+                from app.services.knowledge_query_service import extract_phrases, extract_terms
+
+                search_terms = [*extract_phrases(cleaned_search), *extract_terms(cleaned_search)]
+            except Exception:  # noqa: BLE001
+                logger.debug("No se pudo normalizar la búsqueda de Knowledge Manager", exc_info=True)
+                search_terms = []
+            if not search_terms:
+                search_terms = [cleaned_search]
+            normalized_clauses: list[str] = []
+            for term in search_terms:
+                like = f"%{term}%"
+                normalized_clauses.append(
+                    "(ki.title LIKE ? OR ki.content LIKE ? OR ki.summary LIKE ? OR "
+                    "COALESCE(NULLIF(ki.area, ''), ka.name) LIKE ? OR "
+                    "kt.name LIKE ? OR "
+                    "COALESCE(NULLIF(ki.tipo, ''), kit.name) LIKE ? OR "
+                    "ki.source_type LIKE ? OR ki.source_id LIKE ? OR ki.source_path LIKE ? OR "
+                    "ki.indexed_text LIKE ? OR "
+                    "EXISTS (SELECT 1 FROM knowledge_item_tags kit2 "
+                    "JOIN knowledge_tags kt2 ON kt2.id = kit2.tag_id "
+                    "WHERE kit2.item_id = ki.id AND kt2.name LIKE ?))"
+                )
+                params.extend([like, like, like, like, like, like, like, like, like, like, like])
+            clauses.append("(" + " OR ".join(normalized_clauses) + ")")
         cleaned_area = (area or "").strip()
         cleaned_tipo = (tipo or "").strip()
         if cleaned_area:
