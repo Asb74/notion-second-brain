@@ -229,6 +229,8 @@ class KnowledgeRepository:
             raise ValueError("El título no puede estar vacío")
         cleaned_area = area.strip() or self._legacy_area_name(area_id)
         cleaned_tipo = tipo.strip() or self._legacy_type_name(item_type_id)
+        cleaned_source_type = source_type.strip() or "manual"
+        cleaned_summary = self._summary_for_new_item(cleaned_source_type, summary)
         now = self._now()
         cursor = self.conn.execute(
             """
@@ -240,13 +242,13 @@ class KnowledgeRepository:
             (
                 cleaned_title,
                 content,
-                summary,
+                cleaned_summary,
                 area_id,
                 cleaned_area,
                 topic_id,
                 item_type_id,
                 cleaned_tipo,
-                source_type.strip() or "manual",
+                cleaned_source_type,
                 source_id.strip(),
                 source_path.strip(),
                 now,
@@ -257,6 +259,33 @@ class KnowledgeRepository:
         self.set_tags_for_item(item_id, tags or [])
         self.conn.commit()
         return item_id
+
+    @staticmethod
+    def _summary_for_new_item(source_type: str, summary: str) -> str:
+        """Normalize summaries for newly created Knowledge items.
+
+        Automatic ingestion sources must leave ``summary`` empty. Existing
+        rows are not modified, and later user edits still go through
+        ``update_item`` unchanged.
+        """
+        automatic_sources = {
+            "evernote",
+            "email",
+            "document",
+            "documents",
+            "documento",
+            "documentos",
+            "pdf",
+            "docx",
+            "file",
+            "archivo",
+            "attachment",
+            "adjunto",
+            "import",
+        }
+        if source_type.strip().lower() in automatic_sources:
+            return ""
+        return summary
 
     def update_item(
         self,

@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from app.services.evernote_enex_importer import parse_enex_file
+from app.ui.evernote_import_dialog import EvernoteImportDialog
 
 
 def test_parse_enex_notes_tags_text_and_resources(tmp_path: Path) -> None:
@@ -101,3 +102,9 @@ def test_parse_enex_preserves_notebook_over_filename_suggestion(tmp_path: Path) 
 
     assert note["notebook"] == "Archivo Personal"
     assert note["suggested_topic"] == ""
+
+
+def test_evernote_import_dialog_never_generates_summary_from_content() -> None:
+    note = {"content_text": "migas (por persona)\nPan ...\nPimiento ..."}
+
+    assert EvernoteImportDialog._summary_for_note(note) == ""
