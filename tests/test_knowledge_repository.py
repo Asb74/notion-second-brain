@@ -166,6 +166,18 @@ def test_manual_knowledge_summary_can_be_saved_by_user() -> None:
     assert repo.get_item(item_id)["summary"] == "Resumen escrito manualmente"
 
 
+def test_update_item_summary_persists_summary_without_changing_content() -> None:
+    repo = _repo()
+    item_id = repo.create_item(title="Nota", content="Contenido original", source_type="manual")
+
+    repo.update_item_summary(item_id, "Resumen IA bajo demanda")
+
+    item = repo.get_item(item_id)
+    assert item["summary"] == "Resumen IA bajo demanda"
+    assert item["content"] == "Contenido original"
+    assert "Resumen IA bajo demanda" in item["indexed_text"]
+
+
 def test_knowledge_index_includes_note_metadata_and_search_combines_filters() -> None:
     repo = _repo()
     repo.create_topic("Tema A", area="General")

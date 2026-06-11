@@ -30,6 +30,11 @@ except Exception:  # noqa: BLE001
 from app.config.config_paths import app_data_dir, knowledge_attachments_dir
 from app.persistence.knowledge_repository import KnowledgeRepository
 from app.persistence.masters_repository import MastersRepository
+from app.services.knowledge_summary_service import (
+    KnowledgeSummaryConfigError,
+    KnowledgeSummaryGenerationError,
+    generate_knowledge_summary,
+)
 from app.ui.app_icons import apply_app_icon
 from app.ui.knowledge_query_dialog import KnowledgeQueryDialog
 from app.ui.dictation_widgets import attach_dictation
@@ -94,6 +99,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self.tags_var = tk.StringVar()
         self.source_var = tk.StringVar(value="manual")
         self.status_var = tk.StringVar(value="Listo")
+        self._summary_generation_in_progress = False
 
         self._build_layout()
         logger.info("KNOWLEDGE: ayuda contextual cargada")
@@ -266,9 +272,17 @@ class KnowledgeManagerWindow(tk.Toplevel):
         summary_header = ttk.Frame(summary_tab)
         summary_header.grid(row=0, column=0, sticky="ew", pady=(0, 6))
         ttk.Label(summary_header, text="Resumen").pack(side="left")
-        ttk.Button(summary_header, text="Generar resumen", state="disabled").pack(side="right")
+        self.summary_status_label = ttk.Label(summary_header, text="No existe resumen generado.", foreground="#666666")
+        self.summary_status_label.pack(side="left", padx=(12, 0))
+        self.summary_ai_button = ttk.Button(
+            summary_header,
+            text="Generar resumen IA",
+            command=self.generate_ai_summary,
+        )
+        self.summary_ai_button.pack(side="right")
         self.summary_text = ScrolledText(summary_tab, wrap="word", height=24)
         self.summary_text.grid(row=1, column=0, sticky="nsew")
+        self.summary_text.bind("<KeyRelease>", lambda _event: self._update_summary_controls())
 
         attachments_tab.columnconfigure(0, weight=1)
         attachments_tab.rowconfigure(1, weight=1)
@@ -589,6 +603,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self.source_var.set("manual")
         self.content_text.delete("1.0", "end")
         self.summary_text.delete("1.0", "end")
+        self._update_summary_controls()
         self.title_var.set("")
         self.refresh_attachments()
         self.status_var.set("Nueva nota")
@@ -616,8 +631,116 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self.content_text.insert("1.0", str(row["content"] or ""))
         self.summary_text.delete("1.0", "end")
         self.summary_text.insert("1.0", str(row["summary"] or ""))
+        self._update_summary_controls()
         self.refresh_attachments()
         self.status_var.set(f"Nota seleccionada id={item_id}")
+
+    def _current_summary(self) -> str:
+        return self.summary_text.get("1.0", "end").strip()
+
+    def _update_summary_controls(self) -> None:
+        summary = self._current_summary() if hasattr(self, "summary_text") else ""
+        if hasattr(self, "summary_status_label"):
+            self.summary_status_label.configure(text="" if summary else "No existe resumen generado.")
+        if hasattr(self, "summary_ai_button"):
+            text = "Regenerar resumen IA" if summary else "Generar resumen IA"
+            state = "disabled" if self._summary_generation_in_progress else "normal"
+            self.summary_ai_button.configure(text=text, state=state)
+
+    def generate_ai_summary(self) -> None:
+        if self._summary_generation_in_progress:
+            return
+        if self.current_item_id is None:
+            messagebox.showwarning("Resumen IA", "Selecciona una nota guardada para generar el resumen.", parent=self)
+            return
+        existing_summary = self._current_summary()
+        if existing_summary and not messagebox.askyesno(
+            "Regenerar resumen IA",
+            "La nota ya tiene un resumen. ¿Deseas sobrescribirlo con un nuevo resumen IA?",
+            parent=self,
+        ):
+            return
+
+        note_id = self.current_item_id
+        row = self.repo.get_item(note_id)
+        if row is None:
+            messagebox.showwarning("Resumen IA", "No se encontró la nota seleccionada.", parent=self)
+            return
+        note = dict(row)
+        note["tags"] = self.repo.get_tags_for_item(note_id)
+        self._summary_generation_in_progress = True
+        self._update_summary_controls()
+        self.status_var.set("Generando resumen IA...")
+        self.configure(cursor="watch")
+        threading.Thread(target=self._generate_ai_summary_worker, args=(note_id, note), daemon=True).start()
+
+    def _generate_ai_summary_worker(self, note_id: int, note: dict[str, object]) -> None:
+        try:
+            summary = generate_knowledge_summary(note)
+        except KnowledgeSummaryConfigError as exc:
+            try:
+                self.after(0, self._finish_ai_summary_generation, note_id, None, exc)
+            except tk.TclError:
+                pass
+        except KnowledgeSummaryGenerationError as exc:
+            try:
+                self.after(0, self._finish_ai_summary_generation, note_id, None, exc)
+            except tk.TclError:
+                pass
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("KNOWLEDGE_SUMMARY: error reason=%s", exc)
+            try:
+                self.after(0, self._finish_ai_summary_generation, note_id, None, exc)
+            except tk.TclError:
+                pass
+        else:
+            try:
+                self.after(0, self._finish_ai_summary_generation, note_id, summary, None)
+            except tk.TclError:
+                logger.info("KNOWLEDGE_SUMMARY: ventana cerrada antes de guardar resultado")
+
+    def _finish_ai_summary_generation(self, note_id: int, summary: str | None, error: Exception | None) -> None:
+        self._summary_generation_in_progress = False
+        self.configure(cursor="")
+        self._update_summary_controls()
+        if error is not None or summary is None:
+            message = str(error) if error else "No se pudo generar el resumen IA."
+            if "No hay configuración IA disponible" in message:
+                logger.info("KNOWLEDGE_SUMMARY: skipped no_ai_config")
+                messagebox.showwarning("Resumen IA", "No hay configuración IA disponible para generar resumen.", parent=self)
+                self.status_var.set("No hay configuración IA disponible para generar resumen.")
+            else:
+                logger.error("KNOWLEDGE_SUMMARY: error reason=%s", message)
+                messagebox.showerror(
+                    "Resumen IA",
+                    "No se pudo generar el resumen IA. El resumen anterior no se ha modificado.",
+                    parent=self,
+                )
+                self.status_var.set("Error al generar resumen IA")
+            return
+        try:
+            self.repo.update_item_summary(note_id, summary)
+            logger.info("KNOWLEDGE_SUMMARY: saved note_id=%s", note_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("KNOWLEDGE_SUMMARY: error reason=%s", exc)
+            messagebox.showerror(
+                "Resumen IA",
+                "Se generó el resumen, pero no se pudo guardar en SQLite.",
+                parent=self,
+            )
+            self.status_var.set("Error al guardar resumen IA")
+            return
+
+        if self.current_item_id == note_id:
+            self.summary_text.delete("1.0", "end")
+            self.summary_text.insert("1.0", summary)
+        self.refresh_items()
+        current_iid = f"note:{note_id}"
+        if self.tree.exists(current_iid):
+            self.tree.selection_set(current_iid)
+            self.tree.see(current_iid)
+        self._update_summary_controls()
+        self.status_var.set(f"Resumen IA guardado id={note_id}")
 
     def _tags_from_entry(self) -> list[str]:
         return [tag.strip() for tag in self.tags_var.get().split(",") if tag.strip()]
@@ -661,6 +784,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
                 )
                 logger.info("KNOWLEDGE: nota actualizada id=%s", self.current_item_id)
                 self.status_var.set(f"Nota actualizada id={self.current_item_id}")
+            self._update_summary_controls()
             self.refresh_items()
             if self.current_item_id is not None:
                 current_iid = f"note:{self.current_item_id}"

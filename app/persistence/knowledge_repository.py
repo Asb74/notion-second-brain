@@ -309,6 +309,19 @@ class KnowledgeRepository:
             return ""
         return summary
 
+    def update_item_summary(self, item_id: int, summary: str) -> None:
+        """Persist only the Knowledge summary for on-demand AI generation or user action."""
+        self.conn.execute(
+            """
+            UPDATE knowledge_items
+            SET summary = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (summary, self._now(), item_id),
+        )
+        self.conn.commit()
+        self.reindex_item(item_id)
+
     def update_item(
         self,
         item_id: int,
