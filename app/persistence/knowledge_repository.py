@@ -12,6 +12,10 @@ from app.services.knowledge_indexer_service import index_note
 logger = logging.getLogger(__name__)
 
 
+def _fallback_normalize_search_value(value: object) -> str:
+    return str(value or "").casefold()
+
+
 class KnowledgeRepository:
     """Data access layer for generic knowledge items, areas, types, and tags."""
 
@@ -21,6 +25,17 @@ class KnowledgeRepository:
     @staticmethod
     def _now() -> str:
         return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    def _ensure_normalized_search_function(self) -> bool:
+        """Register a SQLite helper for accent-insensitive local Knowledge search."""
+        try:
+            from app.services.knowledge_query_service import normalize_text
+
+            self.conn.create_function("KNOWLEDGE_NORMALIZE", 1, normalize_text)
+        except Exception:  # noqa: BLE001
+            logger.debug("No se pudo registrar normalización SQL de Knowledge", exc_info=True)
+            return False
+        return True
 
     @staticmethod
     def _normalize_tags(tags: list[str] | None) -> list[str]:
@@ -369,29 +384,54 @@ class KnowledgeRepository:
         cleaned_search = search.strip()
         if cleaned_search:
             try:
-                from app.services.knowledge_query_service import extract_phrases, extract_terms
+                from app.services.knowledge_query_service import extract_phrases, extract_terms, normalize_text
 
                 search_terms = [*extract_phrases(cleaned_search), *extract_terms(cleaned_search)]
+                normalize_search_value = normalize_text
             except Exception:  # noqa: BLE001
                 logger.debug("No se pudo normalizar la búsqueda de Knowledge Manager", exc_info=True)
                 search_terms = []
+                normalize_search_value = _fallback_normalize_search_value
             if not search_terms:
                 search_terms = [cleaned_search]
+            use_normalized_sql = self._ensure_normalized_search_function()
             normalized_clauses: list[str] = []
             for term in search_terms:
                 like = f"%{term}%"
-                normalized_clauses.append(
-                    "(ki.title LIKE ? OR ki.content LIKE ? OR ki.summary LIKE ? OR "
-                    "COALESCE(NULLIF(ki.area, ''), ka.name) LIKE ? OR "
-                    "kt.name LIKE ? OR "
-                    "COALESCE(NULLIF(ki.tipo, ''), kit.name) LIKE ? OR "
-                    "ki.source_type LIKE ? OR ki.source_id LIKE ? OR ki.source_path LIKE ? OR "
-                    "ki.indexed_text LIKE ? OR "
-                    "EXISTS (SELECT 1 FROM knowledge_item_tags kit2 "
-                    "JOIN knowledge_tags kt2 ON kt2.id = kit2.tag_id "
-                    "WHERE kit2.item_id = ki.id AND kt2.name LIKE ?))"
-                )
-                params.extend([like, like, like, like, like, like, like, like, like, like, like])
+                if use_normalized_sql:
+                    normalized_like = f"%{normalize_search_value(term)}%"
+                    normalized_clauses.append(
+                        "(ki.title LIKE ? OR KNOWLEDGE_NORMALIZE(ki.title) LIKE ? OR "
+                        "ki.content LIKE ? OR KNOWLEDGE_NORMALIZE(ki.content) LIKE ? OR "
+                        "ki.summary LIKE ? OR KNOWLEDGE_NORMALIZE(ki.summary) LIKE ? OR "
+                        "COALESCE(NULLIF(ki.area, ''), ka.name) LIKE ? OR "
+                        "KNOWLEDGE_NORMALIZE(COALESCE(NULLIF(ki.area, ''), ka.name)) LIKE ? OR "
+                        "kt.name LIKE ? OR KNOWLEDGE_NORMALIZE(kt.name) LIKE ? OR "
+                        "COALESCE(NULLIF(ki.tipo, ''), kit.name) LIKE ? OR "
+                        "KNOWLEDGE_NORMALIZE(COALESCE(NULLIF(ki.tipo, ''), kit.name)) LIKE ? OR "
+                        "ki.source_type LIKE ? OR KNOWLEDGE_NORMALIZE(ki.source_type) LIKE ? OR "
+                        "ki.source_id LIKE ? OR KNOWLEDGE_NORMALIZE(ki.source_id) LIKE ? OR "
+                        "ki.source_path LIKE ? OR KNOWLEDGE_NORMALIZE(ki.source_path) LIKE ? OR "
+                        "ki.indexed_text LIKE ? OR KNOWLEDGE_NORMALIZE(ki.indexed_text) LIKE ? OR "
+                        "EXISTS (SELECT 1 FROM knowledge_item_tags kit2 "
+                        "JOIN knowledge_tags kt2 ON kt2.id = kit2.tag_id "
+                        "WHERE kit2.item_id = ki.id AND "
+                        "(kt2.name LIKE ? OR KNOWLEDGE_NORMALIZE(kt2.name) LIKE ?)))"
+                    )
+                    params.extend([like, normalized_like] * 11)
+                else:
+                    normalized_clauses.append(
+                        "(ki.title LIKE ? OR ki.content LIKE ? OR ki.summary LIKE ? OR "
+                        "COALESCE(NULLIF(ki.area, ''), ka.name) LIKE ? OR "
+                        "kt.name LIKE ? OR "
+                        "COALESCE(NULLIF(ki.tipo, ''), kit.name) LIKE ? OR "
+                        "ki.source_type LIKE ? OR ki.source_id LIKE ? OR ki.source_path LIKE ? OR "
+                        "ki.indexed_text LIKE ? OR "
+                        "EXISTS (SELECT 1 FROM knowledge_item_tags kit2 "
+                        "JOIN knowledge_tags kt2 ON kt2.id = kit2.tag_id "
+                        "WHERE kit2.item_id = ki.id AND kt2.name LIKE ?))"
+                    )
+                    params.extend([like, like, like, like, like, like, like, like, like, like, like])
             clauses.append("(" + " OR ".join(normalized_clauses) + ")")
         cleaned_area = (area or "").strip()
         cleaned_tipo = (tipo or "").strip()
@@ -435,25 +475,58 @@ class KnowledgeRepository:
         if not cleaned_terms:
             return []
 
+        try:
+            from app.services.knowledge_query_service import normalize_text
+        except Exception:  # noqa: BLE001
+            logger.debug("No se pudo normalizar candidatos de consulta Knowledge", exc_info=True)
+            normalize_text = _fallback_normalize_search_value
+        use_normalized_sql = self._ensure_normalized_search_function()
+
         clauses = ["ki.status != 'deleted'"]
         params: list[object] = []
         term_clauses: list[str] = []
         for term in cleaned_terms:
             like = f"%{term}%"
-            term_clauses.append(
-                "("
-                "ki.title LIKE ? OR ki.content LIKE ? OR ki.summary LIKE ? OR ki.indexed_text LIKE ? OR "
-                "COALESCE(NULLIF(ki.area, ''), ka.name) LIKE ? OR kt.name LIKE ? OR "
-                "COALESCE(NULLIF(ki.tipo, ''), kit.name) LIKE ? OR "
-                "EXISTS (SELECT 1 FROM knowledge_item_tags ktag_link "
-                "JOIN knowledge_tags ktag ON ktag.id = ktag_link.tag_id "
-                "WHERE ktag_link.item_id = ki.id AND ktag.name LIKE ?) OR "
-                "EXISTS (SELECT 1 FROM knowledge_attachments katt "
-                "WHERE katt.item_id = ki.id AND "
-                "(katt.original_filename LIKE ? OR katt.stored_filename LIKE ? OR katt.stored_path LIKE ?))"
-                ")"
-            )
-            params.extend([like, like, like, like, like, like, like, like, like, like, like])
+            if use_normalized_sql:
+                normalized_like = f"%{normalize_text(term)}%"
+                term_clauses.append(
+                    "("
+                    "ki.title LIKE ? OR KNOWLEDGE_NORMALIZE(ki.title) LIKE ? OR "
+                    "ki.content LIKE ? OR KNOWLEDGE_NORMALIZE(ki.content) LIKE ? OR "
+                    "ki.summary LIKE ? OR KNOWLEDGE_NORMALIZE(ki.summary) LIKE ? OR "
+                    "ki.indexed_text LIKE ? OR KNOWLEDGE_NORMALIZE(ki.indexed_text) LIKE ? OR "
+                    "COALESCE(NULLIF(ki.area, ''), ka.name) LIKE ? OR "
+                    "KNOWLEDGE_NORMALIZE(COALESCE(NULLIF(ki.area, ''), ka.name)) LIKE ? OR "
+                    "kt.name LIKE ? OR KNOWLEDGE_NORMALIZE(kt.name) LIKE ? OR "
+                    "COALESCE(NULLIF(ki.tipo, ''), kit.name) LIKE ? OR "
+                    "KNOWLEDGE_NORMALIZE(COALESCE(NULLIF(ki.tipo, ''), kit.name)) LIKE ? OR "
+                    "EXISTS (SELECT 1 FROM knowledge_item_tags ktag_link "
+                    "JOIN knowledge_tags ktag ON ktag.id = ktag_link.tag_id "
+                    "WHERE ktag_link.item_id = ki.id AND "
+                    "(ktag.name LIKE ? OR KNOWLEDGE_NORMALIZE(ktag.name) LIKE ?)) OR "
+                    "EXISTS (SELECT 1 FROM knowledge_attachments katt "
+                    "WHERE katt.item_id = ki.id AND "
+                    "(katt.original_filename LIKE ? OR KNOWLEDGE_NORMALIZE(katt.original_filename) LIKE ? OR "
+                    "katt.stored_filename LIKE ? OR KNOWLEDGE_NORMALIZE(katt.stored_filename) LIKE ? OR "
+                    "katt.stored_path LIKE ? OR KNOWLEDGE_NORMALIZE(katt.stored_path) LIKE ?))"
+                    ")"
+                )
+                params.extend([like, normalized_like] * 11)
+            else:
+                term_clauses.append(
+                    "("
+                    "ki.title LIKE ? OR ki.content LIKE ? OR ki.summary LIKE ? OR ki.indexed_text LIKE ? OR "
+                    "COALESCE(NULLIF(ki.area, ''), ka.name) LIKE ? OR kt.name LIKE ? OR "
+                    "COALESCE(NULLIF(ki.tipo, ''), kit.name) LIKE ? OR "
+                    "EXISTS (SELECT 1 FROM knowledge_item_tags ktag_link "
+                    "JOIN knowledge_tags ktag ON ktag.id = ktag_link.tag_id "
+                    "WHERE ktag_link.item_id = ki.id AND ktag.name LIKE ?) OR "
+                    "EXISTS (SELECT 1 FROM knowledge_attachments katt "
+                    "WHERE katt.item_id = ki.id AND "
+                    "(katt.original_filename LIKE ? OR katt.stored_filename LIKE ? OR katt.stored_path LIKE ?))"
+                    ")"
+                )
+                params.extend([like, like, like, like, like, like, like, like, like, like, like])
         clauses.append("(" + " OR ".join(term_clauses) + ")")
         params.append(max(1, int(limit)))
         return self.conn.execute(
