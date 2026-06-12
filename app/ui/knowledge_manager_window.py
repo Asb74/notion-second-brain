@@ -318,7 +318,8 @@ class KnowledgeManagerWindow(tk.Toplevel):
         entities_buttons = ttk.Frame(entities_tab)
         entities_buttons.grid(row=0, column=0, sticky="ew", pady=(0, 6))
         ttk.Button(entities_buttons, text="Recalcular entidades de esta nota", command=self.rebuild_current_note_entities).pack(side="left", padx=(0, 6))
-        ttk.Button(entities_buttons, text="Abrir ventana global", command=self.open_entities_window).pack(side="left")
+        ttk.Button(entities_buttons, text="Abrir ventana global", command=self.open_entities_window).pack(side="left", padx=(0, 6))
+        ttk.Button(entities_buttons, text="Ver relaciones", command=self.open_selected_note_entity_relations).pack(side="left")
         entity_columns = ("value", "type", "source", "confidence")
         self.note_entities_tree = ttk.Treeview(entities_tab, columns=entity_columns, show="headings", selectmode="browse")
         for column, label, width in (
@@ -330,6 +331,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
             self.note_entities_tree.heading(column, text=label)
             self.note_entities_tree.column(column, width=width, anchor="w")
         self.note_entities_tree.grid(row=1, column=0, sticky="nsew")
+        self.note_entities_tree.bind("<Double-1>", lambda _event: self.open_selected_note_entity_relations())
         note_entities_scroll = ttk.Scrollbar(entities_tab, orient="vertical", command=self.note_entities_tree.yview)
         note_entities_scroll.grid(row=1, column=1, sticky="ns")
         self.note_entities_tree.configure(yscrollcommand=note_entities_scroll.set)
@@ -485,14 +487,43 @@ class KnowledgeManagerWindow(tk.Toplevel):
 
 
 
-    def open_entities_window(self) -> None:
+    def open_entities_window(self, entity_id: int | None = None) -> None:
         if self._entities_window is not None and self._entities_window.winfo_exists():
             self._entities_window.deiconify()
             self._entities_window.lift()
             self._entities_window.focus_force()
             self._entities_window.refresh_all()
+            if entity_id is not None:
+                self._entities_window.select_entity(int(entity_id))
             return
-        self._entities_window = KnowledgeEntitiesWindow(self, self.repo.conn, on_open_note=self.select_note_by_id)
+        self._entities_window = KnowledgeEntitiesWindow(
+            self,
+            self.repo.conn,
+            on_open_note=self.select_note_by_id,
+            initial_entity_id=entity_id,
+        )
+
+    def _selected_note_entity_id(self) -> int | None:
+        if not hasattr(self, "note_entities_tree"):
+            return None
+        selection = self.note_entities_tree.selection()
+        if not selection:
+            return None
+        iid = str(selection[0])
+        if not iid.startswith("entity-link:"):
+            return None
+        try:
+            return int(iid.split(":", 2)[1])
+        except (IndexError, ValueError):
+            return None
+
+    def open_selected_note_entity_relations(self) -> None:
+        entity_id = self._selected_note_entity_id()
+        if entity_id is None:
+            messagebox.showwarning("Entidades", "Selecciona una entidad de la nota.", parent=self)
+            return
+        logger.info("KNOWLEDGE_RELATION: open related entity_id=%s", entity_id)
+        self.open_entities_window(entity_id=entity_id)
 
     def refresh_note_entities(self) -> None:
         if not hasattr(self, "note_entities_tree"):
