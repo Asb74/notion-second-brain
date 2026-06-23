@@ -28,6 +28,7 @@ from app.core.email.gmail_client import GmailClient
 from app.core.email.mail_ingestion_service import MailIngestionService
 from app.persistence.calendar_repository import CalendarRepository
 from app.persistence.email_repository import EmailRepository
+from app.config.config_paths import GMAIL_CREDENTIALS, GMAIL_TOKEN, open_google_credentials_config_dir
 from app.config.email_runtime_config import load_config
 from app.services.email_background_checker import EmailCheckerThread
 from app.ui.excel_filter import ExcelTreeFilter
@@ -109,8 +110,8 @@ class MainWindow(ttk.Frame):
         master: tk.Tk,
         service: NoteService,
         db_connection: sqlite3.Connection | None = None,
-        gmail_credentials_path: str = "secrets/gmail_credentials.json",
-        gmail_token_path: str = "secrets/gmail_token.json",
+        gmail_credentials_path: str = GMAIL_CREDENTIALS,
+        gmail_token_path: str = GMAIL_TOKEN,
     ):
         super().__init__(master, padding=10)
         self.master = master
@@ -273,6 +274,14 @@ class MainWindow(ttk.Frame):
             )
             self._email_window.calendar_refresh_callback = self._refresh_calendar_if_open
             return self._email_window
+        except FileNotFoundError as exc:
+            logger.warning("No se pudo abrir Gmail por falta de credenciales: %s", exc)
+            if messagebox.askyesno(
+                "Credenciales Google no encontradas",
+                f"{exc}\n\n¿Quieres abrir la carpeta de configuración ahora?",
+            ):
+                open_google_credentials_config_dir()
+            return None
         except Exception as exc:  # noqa: BLE001
             logger.exception("No se pudo abrir la ventana de gestión de emails")
             messagebox.showerror("Error", f"No se pudo abrir la gestión de emails.\n\n{exc}")

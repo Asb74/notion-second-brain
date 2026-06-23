@@ -34,6 +34,7 @@ Desktop.ini
 *.p12
 *.crt
 secrets/
+secrets/*.json
 config.local.*
 settings.local.*
 
