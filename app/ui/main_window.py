@@ -28,8 +28,10 @@ from app.core.email.gmail_client import GmailClient
 from app.core.email.mail_ingestion_service import MailIngestionService
 from app.persistence.calendar_repository import CalendarRepository
 from app.persistence.email_repository import EmailRepository
+from app.persistence.user_profile_repository import UserProfileRepository
 from app.config.config_paths import GMAIL_CREDENTIALS, GMAIL_TOKEN, open_google_credentials_config_dir
 from app.config.email_runtime_config import load_config
+from app.config.config_manager import ConfigManager
 from app.services.email_background_checker import EmailCheckerThread
 from app.ui.excel_filter import ExcelTreeFilter
 from app.ui.masters_dialog import MastersDialog
@@ -138,6 +140,7 @@ class MainWindow(ttk.Frame):
         self.email_repo: EmailRepository | None = None
         self._email_queue_after_id: str | None = None
         self.app_config = load_config()
+        self.config_manager = ConfigManager()
         self.status_var = tk.StringVar(value="Listo")
         self.pack(fill="both", expand=True)
         self.notes_data: list[tuple[int, str, str, str, str]] = []
@@ -258,6 +261,9 @@ class MainWindow(ttk.Frame):
             self._email_window.focus_set()
             return self._email_window
 
+        if not self._ensure_managed_email_configured():
+            return None
+
         try:
             from app.core.email.gmail_client import GmailClient
 
@@ -286,6 +292,68 @@ class MainWindow(ttk.Frame):
             logger.exception("No se pudo abrir la ventana de gestión de emails")
             messagebox.showerror("Error", f"No se pudo abrir la gestión de emails.\n\n{exc}")
             return None
+
+    def _ensure_managed_email_configured(self) -> bool:
+        profile_repo = UserProfileRepository(self.db_connection)
+        migrated_email = profile_repo.migrate_managed_email_from_legacy()
+        if migrated_email:
+            self._sync_managed_email_to_config(migrated_email)
+            return True
+
+        config_email = self._configured_managed_email()
+        if config_email:
+            profile_repo.save_email(config_email)
+            return True
+
+        open_settings = messagebox.askyesno(
+            "Correo gestionado no configurado",
+            "No hay ningún correo gestionado configurado en el perfil de usuario.\n\n"
+            "Para abrir Gestión de Emails, configura primero el correo que debe gestionar Sansebas Nexus.\n\n"
+            "¿Quieres abrir Configuración → Email ahora?",
+            parent=self.master,
+        )
+        if not open_settings:
+            return False
+
+        dialog = self._open_settings("Email")
+        if dialog is not None:
+            self.master.wait_window(dialog)
+
+        email_after_save = profile_repo.migrate_managed_email_from_legacy() or self._configured_managed_email()
+        if email_after_save:
+            profile_repo.save_email(email_after_save)
+            return True
+
+        messagebox.showinfo(
+            "Correo gestionado pendiente",
+            "Gestión de Emails no se abrirá hasta que guardes un correo gestionado en Configuración → Email.",
+            parent=self.master,
+        )
+        return False
+
+    def _configured_managed_email(self) -> str:
+        account = self.config_manager.get_email_account()
+        profile = self.config_manager.get_user_profile()
+        settings_email = str(self.service.get_settings().managed_email or "").strip().lower()
+        return (
+            str(account.get("account_email", "")).strip().lower()
+            or settings_email
+            or str(profile.get("email_principal", "")).strip().lower()
+        )
+
+    def _sync_managed_email_to_config(self, email: str) -> None:
+        clean_email = email.strip().lower()
+        if not clean_email:
+            return
+        settings = self.service.get_settings()
+        if settings.managed_email != clean_email:
+            settings.managed_email = clean_email
+            self.service.save_settings(settings)
+        config = self.config_manager.load()
+        config.setdefault("email_account", {})["account_email"] = clean_email
+        if not str(config.setdefault("user_profile", {}).get("email_principal", "")).strip():
+            config["user_profile"]["email_principal"] = clean_email
+        self.config_manager.save(config)
 
     def _refresh_calendar_if_open(self) -> None:
         if self._calendar_window is not None and self._calendar_window.winfo_exists():
@@ -787,7 +855,7 @@ class MainWindow(ttk.Frame):
         elif prioridad_values:
             self.prioridad_var.set(prioridad_values[0])
 
-    def _open_settings(self, initial_tab: str = "General") -> None:
+    def _open_settings(self, initial_tab: str = "General") -> SettingsDialog:
         current = self.service.get_settings()
 
         def on_save(new_settings: AppSettings) -> None:
@@ -796,8 +864,11 @@ class MainWindow(ttk.Frame):
             self._refresh_database_button_state()
             self.sync_google_calendars()
             self._load_calendar_selector_values()
+            email = (new_settings.managed_email or self._configured_managed_email()).strip().lower()
+            if email and self.db_connection is not None:
+                UserProfileRepository(self.db_connection).save_email(email)
 
-        SettingsDialog(
+        return SettingsDialog(
             self.master,
             current,
             on_save,

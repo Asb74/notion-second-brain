@@ -491,10 +491,12 @@ class SettingsDialog(tk.Toplevel):
                 parent=self,
             )
 
-        if not str(self.config_vars["email_principal"].get()).strip():
+        email_principal = str(self.config_vars["email_principal"].get()).strip()
+        managed_email = str(self.config_vars["managed_email"].get()).strip()
+        if not email_principal and not managed_email:
             messagebox.showerror(
                 "Validación",
-                "El Email principal es obligatorio para respuestas automáticas y firma.",
+                "Configura al menos el Email principal o el Correo gestionado.",
                 parent=self,
             )
             return False
@@ -527,9 +529,11 @@ class SettingsDialog(tk.Toplevel):
             )
             self._on_save(settings)
             config = self.config_manager.load()
+            email_principal = str(self.config_vars["email_principal"].get()).strip().lower()
+            managed_email = str(self.config_vars["managed_email"].get()).strip().lower()
             config["user_profile"] = {
                 "nombre": str(self.config_vars["nombre"].get()).strip(),
-                "email_principal": str(self.config_vars["email_principal"].get()).strip().lower(),
+                "email_principal": email_principal or managed_email,
                 "dominio": str(self.config_vars["dominio"].get()).strip().lower(),
                 "alias": [
                     alias.strip().lower()
@@ -539,7 +543,7 @@ class SettingsDialog(tk.Toplevel):
             }
             config["email_account"] = {
                 "provider": "gmail",
-                "account_email": str(self.config_vars["managed_email"].get()).strip().lower(),
+                "account_email": managed_email or email_principal,
             }
             config["email_settings"] = {
                 "auto_check": bool(self.config_vars["auto_check_email"].get()),
