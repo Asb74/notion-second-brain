@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Callable
 
+from app.config.config_paths import copy_google_credentials, google_credentials_config_dir
 from app.config.config_manager import (
     DEFAULT_REQUIRED_ORDER_FIELDS,
     ORDER_VALIDATION_FIELDS_BY_GROUP,
@@ -179,6 +180,47 @@ class SettingsDialog(tk.Toplevel):
             attach_dictation(token, body).grid(row=2, column=2, sticky="w", padx=(6, 0), pady=4)
 
         self._add_field(body, 3, "Notion Database ID", self.config_vars["notion_database_id"])
+
+        google_frame = ttk.LabelFrame(body, text="Google / Gmail")
+        google_frame.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(18, 0))
+        google_frame.columnconfigure(0, weight=1)
+        ttk.Label(
+            google_frame,
+            text=(
+                "Selecciona el JSON de credenciales OAuth de Google. "
+                "Se copiará a la carpeta de configuración del usuario; no se empaqueta con la aplicación."
+            ),
+            wraplength=680,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 6))
+        ttk.Label(
+            google_frame,
+            text=f"Destino: {google_credentials_config_dir() / 'gmail_credentials.json'}",
+            wraplength=680,
+        ).grid(row=1, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 8))
+        ttk.Button(
+            google_frame,
+            text="Seleccionar credenciales Google",
+            command=self._select_google_credentials,
+        ).grid(row=2, column=0, sticky="w", padx=8, pady=(0, 8))
+
+    def _select_google_credentials(self) -> None:
+        selected_path = filedialog.askopenfilename(
+            parent=self,
+            title="Seleccionar credenciales Google",
+            filetypes=[("Archivos JSON", "*.json"), ("Todos los archivos", "*.*")],
+        )
+        if not selected_path:
+            return
+        try:
+            destination = copy_google_credentials(selected_path)
+        except Exception as exc:  # pragma: no cover - defensive UI safeguard
+            messagebox.showerror("Credenciales Google", f"No se pudieron copiar las credenciales:\n\n{exc}", parent=self)
+            return
+        messagebox.showinfo(
+            "Credenciales Google",
+            f"Credenciales copiadas correctamente a:\n{destination}",
+            parent=self,
+        )
 
     def _build_email_tab(self) -> None:
         body = self._create_tab_body(self.tab_email)

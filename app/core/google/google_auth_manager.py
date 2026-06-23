@@ -12,6 +12,8 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 
+from app.config.config_paths import find_google_credentials, google_credentials_not_found_message
+
 
 logger = logging.getLogger(__name__)
 
@@ -94,9 +96,11 @@ class GoogleAuthManager:
     def _run_oauth_flow(self, trigger_reauth: bool = False) -> Credentials:
         credentials_file = Path(self.credentials_path)
         if not credentials_file.exists():
-            raise FileNotFoundError(
-                f"No se encontró el archivo de credenciales Google en: {self.credentials_path}"
-            )
+            credentials_file = find_google_credentials()
+        if credentials_file is None or not credentials_file.exists():
+            raise FileNotFoundError(google_credentials_not_found_message())
+
+        resolved_credentials_path = str(credentials_file)
 
         if trigger_reauth:
             self.reauthentication_required = True
@@ -104,7 +108,7 @@ class GoogleAuthManager:
             self._emit_auth_event("reauthentication_started")
 
         try:
-            flow = InstalledAppFlow.from_client_secrets_file(self.credentials_path, self.scopes)
+            flow = InstalledAppFlow.from_client_secrets_file(resolved_credentials_path, self.scopes)
             creds = flow.run_local_server(port=0)
             logger.info("OAuth completado correctamente")
             if trigger_reauth:
