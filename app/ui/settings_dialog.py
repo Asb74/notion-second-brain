@@ -14,6 +14,7 @@ from app.config.config_manager import (
 )
 from app.core.models import AppSettings
 from app.ui.app_icons import apply_app_icon
+from app.services.ocr_runtime import test_ocr_runtime
 from app.ui.dictation_widgets import attach_dictation
 
 
@@ -83,6 +84,7 @@ class SettingsDialog(tk.Toplevel):
             "notifications_enabled": tk.BooleanVar(),
             "notifications_toast": tk.BooleanVar(),
             "notifications_sound": tk.BooleanVar(),
+            "ocr_tesseract_path": tk.StringVar(),
         }
 
         self._load_config()
@@ -106,6 +108,7 @@ class SettingsDialog(tk.Toplevel):
 
         self._build_general_tab()
         self._build_integrations_tab()
+        self._build_ocr_section()
         self._build_email_tab()
         self._build_notifications_tab()
         self._build_master_data_tab()
@@ -202,6 +205,58 @@ class SettingsDialog(tk.Toplevel):
             text="Seleccionar credenciales Google",
             command=self._select_google_credentials,
         ).grid(row=2, column=0, sticky="w", padx=8, pady=(0, 8))
+
+    def _build_ocr_section(self) -> None:
+        frame = ttk.LabelFrame(self.tab_integrations, text="OCR / Tesseract")
+        frame.pack(fill="x", padx=20, pady=(0, 10))
+        frame.columnconfigure(1, weight=1)
+
+        ttk.Label(frame, text="Ruta Tesseract").grid(row=0, column=0, sticky="w", padx=8, pady=(8, 4))
+        ttk.Entry(frame, textvariable=self.config_vars["ocr_tesseract_path"]).grid(row=0, column=1, sticky="ew", padx=8, pady=(8, 4))
+        ttk.Button(frame, text="Examinar", command=self._browse_tesseract).grid(row=0, column=2, sticky="e", padx=8, pady=(8, 4))
+
+        self.ocr_status_var = tk.StringVar(value="Comprobando OCR...")
+        self.ocr_languages_var = tk.StringVar(value="Idiomas: -")
+        ttk.Label(frame, textvariable=self.ocr_status_var, wraplength=680).grid(row=1, column=0, columnspan=3, sticky="w", padx=8, pady=(0, 4))
+        ttk.Label(frame, textvariable=self.ocr_languages_var, wraplength=680).grid(row=2, column=0, columnspan=3, sticky="w", padx=8, pady=(0, 4))
+        ttk.Button(frame, text="Probar OCR", command=self._refresh_ocr_status).grid(row=3, column=0, sticky="w", padx=8, pady=(0, 8))
+        ttk.Label(
+            frame,
+            text="Nexus buscará también Tesseract-OCR junto a la aplicación, _internal, Program Files y PATH.",
+            wraplength=680,
+        ).grid(row=3, column=1, columnspan=2, sticky="w", padx=8, pady=(0, 8))
+        self._refresh_ocr_status(show_message=False)
+
+    def _browse_tesseract(self) -> None:
+        selected_path = filedialog.askopenfilename(
+            parent=self,
+            title="Seleccionar tesseract.exe",
+            filetypes=[("Tesseract", "tesseract.exe"), ("Ejecutables", "*.exe"), ("Todos los archivos", "*.*")],
+        )
+        if selected_path:
+            self.config_vars["ocr_tesseract_path"].set(selected_path)
+            self._refresh_ocr_status(show_message=False)
+
+    def _refresh_ocr_status(self, show_message: bool = True) -> None:
+        status = test_ocr_runtime(str(self.config_vars["ocr_tesseract_path"].get()).strip())
+        if status.available:
+            self.ocr_status_var.set(f"Disponible ({status.source}): {status.tesseract_path}")
+        else:
+            self.ocr_status_var.set(f"No disponible: {status.reason}")
+        available = ", ".join(status.languages_available) or "ninguno"
+        missing = ", ".join(status.languages_missing) or "ninguno"
+        self.ocr_languages_var.set(f"Idiomas disponibles: {available}. Faltan: {missing}.")
+        if show_message:
+            if status.available and not status.languages_missing:
+                messagebox.showinfo("OCR", "OCR disponible con idiomas spa y eng.", parent=self)
+            elif status.available:
+                messagebox.showwarning(
+                    "OCR",
+                    f"Tesseract está disponible, pero faltan idiomas: {missing}. Nexus seguirá funcionando.",
+                    parent=self,
+                )
+            else:
+                messagebox.showwarning("OCR", f"OCR no disponible: {status.reason}", parent=self)
 
     def _select_google_credentials(self) -> None:
         selected_path = filedialog.askopenfilename(
@@ -405,6 +460,7 @@ class SettingsDialog(tk.Toplevel):
             "notifications_enabled": True,
             "notifications_toast": True,
             "notifications_sound": False,
+            "ocr_tesseract_path": str(runtime_config.get("ocr_settings", {}).get("tesseract_path", "") or ""),
         }
         for key, var in self.config_vars.items():
             var.set(config.get(key))
@@ -555,6 +611,9 @@ class SettingsDialog(tk.Toplevel):
                     for field, var in self.checkboxes.items()
                     if bool(var.get())
                 ],
+            }
+            config["ocr_settings"] = {
+                "tesseract_path": str(self.config_vars["ocr_tesseract_path"].get()).strip(),
             }
             self.config_manager.save(config)
             self.destroy()

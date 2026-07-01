@@ -5,7 +5,6 @@ from __future__ import annotations
 import importlib
 import logging
 import mimetypes
-import os
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -20,19 +19,12 @@ PDF_EXTENSIONS = {".pdf"}
 MAX_OCR_TEXT_CHARS = 120_000
 MAX_OCR_PDF_PAGES = 5
 PDF_OCR_TEXT_THRESHOLD = 80
-_WINDOWS_TESSERACT_PATHS = (
-    r"C:\Program Files\Tesseract-OCR\tesseract.exe",
-    r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
-)
 
 
 def _configure_tesseract() -> None:
-    if pytesseract is None:
-        return
-    for candidate in _WINDOWS_TESSERACT_PATHS:
-        if os.path.exists(candidate):
-            pytesseract.pytesseract.tesseract_cmd = candidate
-            return
+    from app.services.ocr_runtime import configure_pytesseract
+
+    configure_pytesseract()
 
 
 def _clean_text(text: str) -> str:
