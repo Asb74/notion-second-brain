@@ -6,6 +6,8 @@ import importlib
 import importlib.util
 import logging
 import mimetypes
+import re
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +19,28 @@ MAX_PDF_PAGES = 250
 MAX_XLSX_SHEETS = 10
 MAX_XLSX_ROWS = 2_000
 MAX_XLSX_COLUMNS = 100
+
+_OCR_SIGNS_RE = re.compile(r"[^\w\s]", re.UNICODE)
+
+
+def normalize_ocr_text_for_search(text: str) -> str:
+    """Normalize OCR text for tolerant search without replacing the original OCR output."""
+    normalized = unicodedata.normalize("NFKD", str(text or ""))
+    normalized = "".join(char for char in normalized if not unicodedata.combining(char)).casefold()
+    normalized = _OCR_SIGNS_RE.sub(" ", normalized)
+    tokens: list[str] = []
+    for token in normalized.split():
+        if any(char.isalpha() for char in token):
+            token = re.sub(r"(?<=[a-zñ])1(?=[a-zñ])", "i", token)
+            token = re.sub(r"(?<=[a-zñ])0(?=[a-zñ])", "o", token)
+            if "rn" in token and "carni" not in token:
+                tokens.append(token.replace("rn", "m"))
+            if token.endswith("1a"):
+                token = f"{token[:-2]}ia"
+            if token.endswith("la") and len(token) > 5:
+                tokens.append(f"{token[:-2]}ia")
+        tokens.append(token)
+    return re.sub(r"\s+", " ", " ".join(tokens)).strip()
 
 _TEXT_EXTENSIONS = {".txt", ".csv", ".log", ".md", ".json", ".xml", ".html", ".htm"}
 _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -201,7 +225,10 @@ def build_indexed_text(note: dict[str, Any] | Any, attachments: list[dict[str, A
             logger.info("KNOWLEDGE_INDEX: attachment skipped filename=%s reason=missing_path", filename)
         ocr_text = str(_value(attachment, "ocr_text", "") or "").strip()
         if ocr_text:
+            normalized_ocr_text = normalize_ocr_text_for_search(ocr_text)
             parts.append(f"[OCR: {filename or 'adjunto'}]\n{ocr_text}")
+            if normalized_ocr_text:
+                parts.append(f"[OCR_NORMALIZADO: {filename or 'adjunto'}]\n{normalized_ocr_text}")
 
     indexed_text = "\n".join(part for part in parts if part).strip()
     return _trim(indexed_text, MAX_INDEXED_TEXT_CHARS, context=f"note_id={_value(note, 'id', '')}")

@@ -11,6 +11,7 @@ import logging
 import re
 import sqlite3
 import unicodedata
+from difflib import SequenceMatcher
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
@@ -140,7 +141,7 @@ _MATCH_SOURCE_BY_FIELD = {
     "content": "contenido",
     "indexed_text": "contenido",
 }
-_SOURCE_PRIORITY = {"título": 0, "etiquetas": 1, "adjunto": 2, "contenido": 3, "metadatos": 4}
+_SOURCE_PRIORITY = {"título": 0, "etiquetas": 1, "adjunto": 2, "ocr": 2, "contenido": 3, "metadatos": 4}
 _STRONG_MATCH_FIELDS = ("title", "tags", "attachment_names", "content", "indexed_text")
 _EXACT_PHRASE_FIELDS = ("title", "tags", "attachment_names", "content", "indexed_text")
 _EXACT_PHRASE_WEIGHTS = {
@@ -154,6 +155,7 @@ _SNIPPET_FIELDS = ("content", "indexed_text", "attachment_names", "title", "tags
 _MIN_SCORE = 1.5
 _PARTIAL_MATCH_SCORE = 0.5
 _QUOTED_PHRASE_RE = re.compile(r'\"([^\"\\]*(?:\\.[^\"\\]*)*)\"|\'([^\'\\]*(?:\\.[^\'\\]*)*)\'|“([^”]+)”|‘([^’]+)’')
+_OCR_BLOCK_RE = re.compile(r"\[OCR(?P<normalized>_NORMALIZADO)?: (?P<filename>[^\]]+)\]\n(?P<text>.*?)(?=\n\[OCR|\Z)", re.DOTALL)
 
 
 def _fold(text: str) -> str:
@@ -230,6 +232,47 @@ def extract_phrases(question: str) -> list[str]:
 def _remove_quoted_phrases(question: str) -> str:
     return _QUOTED_PHRASE_RE.sub(" ", str(question or ""))
 
+
+
+def _ocr_blocks(indexed_text: str) -> list[tuple[str, str, bool]]:
+    return [
+        (match.group("filename").strip(), match.group("text"), bool(match.group("normalized")))
+        for match in _OCR_BLOCK_RE.finditer(str(indexed_text or ""))
+    ]
+
+
+def _similar_token(left: str, right: str) -> bool:
+    left = normalize_search_token(left)
+    right = normalize_search_token(right)
+    if not left or not right:
+        return False
+    if left == right or left in right or right in left:
+        return True
+    return SequenceMatcher(None, left, right).ratio() >= 0.78
+
+
+def _ocr_phrase_fallback(row: sqlite3.Row | dict[str, Any], phrases: Sequence[str]) -> tuple[float, str, str]:
+    query_tokens = [token for phrase in phrases for token in _normalized_tokens(phrase)]
+    if not query_tokens:
+        return 0.0, "", ""
+    best: tuple[float, str, str] = (0.0, "", "")
+    for filename, text, _is_normalized in _ocr_blocks(_row_value(row, "indexed_text")):
+        ocr_tokens = _normalized_tokens(text)
+        if not ocr_tokens:
+            continue
+        matched_positions: list[int] = []
+        for query_token in query_tokens:
+            position = next((i for i, token in enumerate(ocr_tokens) if _similar_token(query_token, token)), -1)
+            if position >= 0:
+                matched_positions.append(position)
+        required = max(1, len(query_tokens) - 1)
+        if len(matched_positions) < required:
+            continue
+        proximity_bonus = 2.0 if max(matched_positions) - min(matched_positions) <= max(8, len(query_tokens) * 4) else 0.0
+        score = 9.0 + len(matched_positions) + proximity_bonus
+        if score > best[0]:
+            best = (score, filename, query_tokens[0])
+    return best
 
 def _row_value(row: sqlite3.Row | dict[str, Any], key: str) -> str:
     try:
@@ -321,6 +364,15 @@ def make_snippet(
 ) -> str:
     """Return a compact snippet around the best relevant matching term or phrase."""
     text, needle, field = _find_best_snippet_text(row, terms, phrases)
+    if phrases and (not needle or field == "indexed_text"):
+        ocr_score, ocr_filename, _ocr_needle = _ocr_phrase_fallback(row, phrases)
+        exact_outside_ocr = any(
+            _contains_exact_phrase(_row_value(row, outside_field), phrase)
+            for phrase in phrases
+            for outside_field in ("title", "tags", "attachment_names", "content")
+        )
+        if ocr_score > 0 and not exact_outside_ocr:
+            return f"Coincidencia en OCR: {ocr_filename}"
     text = re.sub(r"\s+", " ", text).strip()
     source = _MATCH_SOURCE_BY_FIELD.get(field, "contenido")
     if not text or not needle:
@@ -387,7 +439,20 @@ def _score_row(
             matched_literals += 1
 
     if phrases and not matched_literals:
+        ocr_score, _ocr_filename, _ocr_needle = _ocr_phrase_fallback(row, phrases)
+        if ocr_score > 0:
+            return round(ocr_score, 2), "ocr"
         return 0.0, ""
+
+    if phrases and phrase_match_source == "contenido":
+        ocr_score, _ocr_filename, _ocr_needle = _ocr_phrase_fallback(row, phrases)
+        exact_outside_ocr = any(
+            _contains_exact_phrase(_row_value(row, outside_field), phrase)
+            for phrase in phrases
+            for outside_field in ("title", "tags", "attachment_names", "content")
+        )
+        if ocr_score > 0 and not exact_outside_ocr:
+            return round(max(score, ocr_score), 2), "ocr"
 
     for term in terms:
         term_matched = False
@@ -476,7 +541,9 @@ def query_knowledge(
     phrases = extract_phrases(cleaned_question)
     exact_phrase_mode = bool(phrases)
     terms = [] if exact_phrase_mode else extract_terms(cleaned_question)
+    phrase_terms = [token for phrase in phrases for token in extract_terms(phrase)] if exact_phrase_mode else []
     normalized_terms = list(dict.fromkeys(terms))
+    candidate_terms = list(dict.fromkeys([*phrases, *phrase_terms, *normalized_terms]))
     logger.info("KNOWLEDGE_QUERY: raw_terms=%s", raw_terms)
     logger.info("KNOWLEDGE_QUERY: normalized_terms=%s", normalized_terms)
     logger.info("KNOWLEDGE_QUERY: exact_phrases=%s", phrases)
@@ -492,7 +559,7 @@ def query_knowledge(
         raise ValueError("query_knowledge necesita un KnowledgeRepository o una conexión SQLite")
 
     candidate_limit = max(int(limit or 20) * 10, 100)
-    candidates = repo.search_query_candidates([*phrases, *normalized_terms], candidate_limit)
+    candidates = repo.search_query_candidates(candidate_terms, candidate_limit)
     scored: list[dict[str, Any]] = []
     for row in candidates:
         score, match_source = _score_row(row, normalized_terms, phrases)
