@@ -284,6 +284,14 @@ def ensure_knowledge_schema(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_topics_area_text ON knowledge_topics(area)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_items_source ON knowledge_items(source_type, source_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_items_title ON knowledge_items(title)")
+    knowledge_attachment_columns = _table_columns(conn, "knowledge_attachments")
+    if "ocr_text" not in knowledge_attachment_columns:
+        conn.execute("ALTER TABLE knowledge_attachments ADD COLUMN ocr_text TEXT")
+    if "ocr_updated_at" not in knowledge_attachment_columns:
+        conn.execute("ALTER TABLE knowledge_attachments ADD COLUMN ocr_updated_at TEXT")
+    if "ocr_status" not in knowledge_attachment_columns:
+        conn.execute("ALTER TABLE knowledge_attachments ADD COLUMN ocr_status TEXT")
+
     conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_items_indexed_text ON knowledge_items(indexed_text)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_attachments_item ON knowledge_attachments(item_id)")
 

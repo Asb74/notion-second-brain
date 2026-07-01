@@ -205,7 +205,8 @@ class KnowledgeManagerWindow(tk.Toplevel):
         ttk.Button(buttons, text="Refrescar", command=self.refresh_items).pack(side="left", padx=(0, 6))
         ttk.Button(buttons, text="Preguntar a Knowledge", command=self.open_query_dialog).pack(side="left", padx=(0, 6))
         ttk.Button(buttons, text="Entidades", command=self.open_entities_window).pack(side="left", padx=(0, 6))
-        ttk.Button(buttons, text="Reindexar Knowledge", command=self.reindex_knowledge).pack(side="left")
+        ttk.Button(buttons, text="Reindexar Knowledge", command=self.reindex_knowledge).pack(side="left", padx=(0, 6))
+        ttk.Button(buttons, text="Reindexar Knowledge con OCR", command=self.reindex_knowledge_with_ocr).pack(side="left")
 
         ttk.Label(right, text="Título").grid(row=0, column=0, sticky="w", pady=(0, 4))
         ttk.Entry(right, textvariable=self.title_var).grid(row=0, column=1, sticky="ew", pady=(0, 4))
@@ -302,7 +303,9 @@ class KnowledgeManagerWindow(tk.Toplevel):
         )
         ttk.Button(attachment_buttons, text="Abrir", command=self.open_attachment).pack(side="left", padx=(0, 6))
         ttk.Button(attachment_buttons, text="Quitar", command=self.remove_attachment).pack(side="left", padx=(0, 6))
-        ttk.Button(attachment_buttons, text="Abrir carpeta", command=self.open_attachment_folder).pack(side="left")
+        ttk.Button(attachment_buttons, text="Abrir carpeta", command=self.open_attachment_folder).pack(side="left", padx=(0, 6))
+        ttk.Button(attachment_buttons, text="OCR adjunto", command=self.ocr_selected_attachment).pack(side="left", padx=(0, 6))
+        ttk.Button(attachment_buttons, text="OCR nota", command=self.ocr_current_note_attachments).pack(side="left")
 
         self.attachments_paned = ttk.PanedWindow(attachments_tab, orient="vertical")
         self.attachments_paned.grid(row=1, column=0, sticky="nsew")
@@ -338,12 +341,12 @@ class KnowledgeManagerWindow(tk.Toplevel):
         attachments_list_frame.columnconfigure(0, weight=1)
         attachments_list_frame.rowconfigure(0, weight=1)
 
-        attachment_columns = ("filename", "type", "size", "date")
+        attachment_columns = ("filename", "type", "size", "ocr", "date")
         self.attachments_tree = ttk.Treeview(
             attachments_list_frame, columns=attachment_columns, show="headings", selectmode="browse", height=6
         )
-        attachment_headings = {"filename": "Archivo", "type": "Tipo", "size": "Tamaño", "date": "Fecha"}
-        attachment_widths = {"filename": 300, "type": 140, "size": 90, "date": 150}
+        attachment_headings = {"filename": "Archivo", "type": "Tipo", "size": "Tamaño", "ocr": "OCR", "date": "Fecha"}
+        attachment_widths = {"filename": 280, "type": 130, "size": 90, "ocr": 90, "date": 150}
         for column in attachment_columns:
             self.attachments_tree.heading(column, text=attachment_headings[column])
             self.attachments_tree.column(column, width=attachment_widths[column], anchor="w")
@@ -919,16 +922,29 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self.status_var.set(f"Nota eliminada id={item_id}")
 
     def reindex_knowledge(self) -> None:
+        self._start_reindex_knowledge(apply_ocr=False)
+
+    def reindex_knowledge_with_ocr(self) -> None:
+        if not messagebox.askyesno(
+            "Reindexar Knowledge con OCR",
+            "El OCR puede tardar. Se aplicará solo a imágenes y PDFs escaneados candidatos. ¿Continuar?",
+            parent=self,
+        ):
+            return
+        self._start_reindex_knowledge(apply_ocr=True)
+
+    def _start_reindex_knowledge(self, *, apply_ocr: bool) -> None:
         if getattr(self, "_reindexing", False):
             return
         self._reindexing = True
-        self.status_var.set("Reindexando Knowledge...")
+        self._reindex_apply_ocr = apply_ocr
+        self.status_var.set("Reindexando Knowledge con OCR..." if apply_ocr else "Reindexando Knowledge...")
         self.configure(cursor="watch")
-        threading.Thread(target=self._reindex_knowledge_worker, daemon=True).start()
+        threading.Thread(target=self._reindex_knowledge_worker, args=(apply_ocr,), daemon=True).start()
 
-    def _reindex_knowledge_worker(self) -> None:
+    def _reindex_knowledge_worker(self, apply_ocr: bool = False) -> None:
         try:
-            result = self.repo.reindex_all()
+            result = self.repo.reindex_all(apply_ocr=apply_ocr)
         except Exception as exc:  # noqa: BLE001
             logger.exception("KNOWLEDGE_INDEX: reindex failed")
             try:
@@ -956,6 +972,8 @@ class KnowledgeManagerWindow(tk.Toplevel):
             f"{int(result.get('errors') or 0)} errores, "
             f"{seconds:.1f}s."
         )
+        if getattr(self, "_reindex_apply_ocr", False):
+            message += " OCR aplicado a candidatos."
         self.refresh_items()
         self.status_var.set(message)
         messagebox.showinfo("Reindexar Knowledge", message, parent=self)
@@ -1824,9 +1842,87 @@ class KnowledgeManagerWindow(tk.Toplevel):
                     row["original_filename"] or row["stored_filename"] or "",
                     row["mime_type"] or "",
                     self._format_file_size(row["file_size"]),
+                    self._format_ocr_status(row),
                     row["created_at"] or "",
                 ),
             )
+
+    @staticmethod
+    def _format_ocr_status(row: sqlite3.Row) -> str:
+        status = str(row["ocr_status"] or "") if "ocr_status" in row.keys() else ""
+        return {"ok": "ok", "empty": "sin texto", "error": "error", "unavailable": "no disponible", "pending": "pendiente"}.get(status, status)
+
+    def _run_ocr_worker(self, target: str, identifier: int) -> None:
+        try:
+            if target == "attachment":
+                result = self.repo.ocr_attachment(identifier)
+            else:
+                result = self.repo.ocr_item_attachments(identifier)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("KNOWLEDGE_OCR: UI worker failed")
+            try:
+                self.after(0, self._finish_ocr, None, exc)
+            except tk.TclError:
+                pass
+            return
+        try:
+            self.after(0, self._finish_ocr, result, None)
+        except tk.TclError:
+            logger.info("KNOWLEDGE_OCR: ventana cerrada antes de mostrar resultado")
+
+    def _finish_ocr(self, result: dict[str, object] | None, error: Exception | None) -> None:
+        self.configure(cursor="")
+        self._ocr_running = False
+        self.refresh_attachments()
+        self.refresh_items()
+        if error is not None or result is None:
+            message = f"No se pudo ejecutar OCR. {error}"
+            self.status_var.set(message)
+            messagebox.showerror("OCR Knowledge", message, parent=self)
+            return
+        if "total" in result:
+            message = (
+                f"OCR finalizado: {int(result.get('ok') or 0)} adjunto(s) con texto, "
+                f"{int(result.get('empty') or 0)} sin texto, {int(result.get('errors') or 0)} errores."
+            )
+        else:
+            status = str(result.get("status") or "")
+            chars = int(result.get("chars") or 0)
+            if status == "unavailable":
+                message = str(result.get("message") or "OCR no disponible. Instala Tesseract OCR y pytesseract.")
+                messagebox.showwarning("OCR Knowledge", message, parent=self)
+            elif status == "empty":
+                message = "OCR sin texto detectado"
+            elif status == "ok":
+                message = f"OCR finalizado: {chars} caracteres"
+            else:
+                message = str(result.get("message") or "OCR finalizado")
+        self.status_var.set(message)
+        if "total" in result:
+            messagebox.showinfo("OCR Knowledge", message, parent=self)
+
+    def ocr_selected_attachment(self) -> None:
+        attachment_id = self._selected_attachment_id()
+        if attachment_id is None:
+            messagebox.showwarning("OCR Knowledge", "Selecciona un adjunto para ejecutar OCR.", parent=self)
+            return
+        if getattr(self, "_ocr_running", False):
+            return
+        self._ocr_running = True
+        self.status_var.set("OCR en curso...")
+        self.configure(cursor="watch")
+        threading.Thread(target=self._run_ocr_worker, args=("attachment", attachment_id), daemon=True).start()
+
+    def ocr_current_note_attachments(self) -> None:
+        if self.current_item_id is None:
+            messagebox.showwarning("OCR Knowledge", "Selecciona una nota para ejecutar OCR.", parent=self)
+            return
+        if getattr(self, "_ocr_running", False):
+            return
+        self._ocr_running = True
+        self.status_var.set("OCR en curso...")
+        self.configure(cursor="watch")
+        threading.Thread(target=self._run_ocr_worker, args=("note", self.current_item_id), daemon=True).start()
 
     def _ensure_current_item_saved(self) -> int | None:
         if self.current_item_id is not None:

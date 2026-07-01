@@ -199,6 +199,9 @@ def build_indexed_text(note: dict[str, Any] | Any, attachments: list[dict[str, A
             parts.append(extract_text_from_attachment(path, mime, filename))
         elif filename:
             logger.info("KNOWLEDGE_INDEX: attachment skipped filename=%s reason=missing_path", filename)
+        ocr_text = str(_value(attachment, "ocr_text", "") or "").strip()
+        if ocr_text:
+            parts.append(f"[OCR: {filename or 'adjunto'}]\n{ocr_text}")
 
     indexed_text = "\n".join(part for part in parts if part).strip()
     return _trim(indexed_text, MAX_INDEXED_TEXT_CHARS, context=f"note_id={_value(note, 'id', '')}")
