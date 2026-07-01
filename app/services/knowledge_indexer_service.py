@@ -223,12 +223,15 @@ def build_indexed_text(note: dict[str, Any] | Any, attachments: list[dict[str, A
             parts.append(extract_text_from_attachment(path, mime, filename))
         elif filename:
             logger.info("KNOWLEDGE_INDEX: attachment skipped filename=%s reason=missing_path", filename)
-        ocr_text = str(_value(attachment, "ocr_text", "") or "").strip()
+        corrected_ocr_text = str(_value(attachment, "ocr_text_corrected", "") or "").strip()
+        raw_ocr_text = str(_value(attachment, "ocr_text_raw", "") or _value(attachment, "ocr_text", "") or "").strip()
+        ocr_text = corrected_ocr_text or raw_ocr_text
         if ocr_text:
             normalized_ocr_text = normalize_ocr_text_for_search(ocr_text)
-            parts.append(f"[OCR: {filename or 'adjunto'}]\n{ocr_text}")
+            marker = "OCR corregido" if corrected_ocr_text else "OCR"
+            parts.append(f"[{marker}: {filename or 'adjunto'}]\n{ocr_text}")
             if normalized_ocr_text:
-                parts.append(f"[OCR_NORMALIZADO: {filename or 'adjunto'}]\n{normalized_ocr_text}")
+                parts.append(f"[{marker}_NORMALIZADO: {filename or 'adjunto'}]\n{normalized_ocr_text}")
 
     indexed_text = "\n".join(part for part in parts if part).strip()
     return _trim(indexed_text, MAX_INDEXED_TEXT_CHARS, context=f"note_id={_value(note, 'id', '')}")

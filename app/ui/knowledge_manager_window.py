@@ -322,13 +322,23 @@ class KnowledgeManagerWindow(tk.Toplevel):
         attachments_list_frame.columnconfigure(0, weight=1)
 
         ocr_tab.columnconfigure(0, weight=1)
-        ocr_tab.rowconfigure(1, weight=1)
+        ocr_tab.rowconfigure(2, weight=1)
         ocr_buttons = ttk.Frame(ocr_tab)
         ocr_buttons.grid(row=0, column=0, sticky="ew", pady=(0, 6))
-        ttk.Button(ocr_buttons, text="Actualizar OCR", command=self.refresh_ocr_tab).pack(side="left")
+        ttk.Label(ocr_buttons, text="Adjunto:").pack(side="left", padx=(0, 4))
+        self.ocr_attachment_var = tk.StringVar()
+        self.ocr_attachment_combo = ttk.Combobox(ocr_buttons, textvariable=self.ocr_attachment_var, state="readonly", width=34)
+        self.ocr_attachment_combo.pack(side="left", padx=(0, 6))
+        self.ocr_attachment_combo.bind("<<ComboboxSelected>>", self._on_ocr_attachment_selected)
+        ttk.Button(ocr_buttons, text="Guardar corrección", command=self.save_ocr_tab_correction).pack(side="left", padx=(0, 6))
+        ttk.Button(ocr_buttons, text="Rehacer OCR", command=self.rerun_ocr_tab_attachment).pack(side="left", padx=(0, 6))
+        ttk.Button(ocr_buttons, text="Restaurar OCR bruto", command=self.restore_ocr_tab_raw).pack(side="left", padx=(0, 6))
+        ttk.Button(ocr_buttons, text="Copiar texto", command=self.copy_ocr_tab_text).pack(side="left", padx=(0, 6))
+        ttk.Button(ocr_buttons, text="Refrescar OCR", command=self.refresh_ocr_tab).pack(side="left")
+        self.ocr_info_var = tk.StringVar(value="Selecciona una nota para ver el OCR reconocido.")
+        ttk.Label(ocr_tab, textvariable=self.ocr_info_var).grid(row=1, column=0, sticky="ew", pady=(0, 4))
         self.ocr_text = ScrolledText(ocr_tab, wrap="word", height=24)
-        self.ocr_text.grid(row=1, column=0, sticky="nsew")
-        self.ocr_text.configure(state="disabled")
+        self.ocr_text.grid(row=2, column=0, sticky="nsew")
 
         entities_tab.columnconfigure(0, weight=1)
         entities_tab.rowconfigure(1, weight=1)
@@ -1880,54 +1890,170 @@ class KnowledgeManagerWindow(tk.Toplevel):
                 ),
             )
 
+    def _attachment_ocr_texts(self, row: sqlite3.Row) -> tuple[str, str, str]:
+        raw = str(row["ocr_text_raw"] or row["ocr_text"] or "") if "ocr_text_raw" in row.keys() else str(row["ocr_text"] or "")
+        corrected = str(row["ocr_text_corrected"] or "") if "ocr_text_corrected" in row.keys() else ""
+        return raw, corrected, corrected.strip() or raw
+
+    def _ocr_selected_attachment_id(self) -> int | None:
+        if not hasattr(self, "ocr_attachment_combo"):
+            return None
+        value = self.ocr_attachment_combo.get()
+        if not value:
+            return None
+        try:
+            return int(value.split(" | ", 1)[0])
+        except (TypeError, ValueError):
+            return None
+
+    def _on_ocr_attachment_selected(self, _event: tk.Event | None = None) -> None:
+        attachment_id = self._ocr_selected_attachment_id()
+        if attachment_id is not None:
+            self._load_ocr_editor_attachment(attachment_id)
+
     def refresh_ocr_tab(self) -> None:
         if not hasattr(self, "ocr_text"):
             return
-        self.ocr_text.configure(state="normal")
+        previous_id = self._ocr_selected_attachment_id()
         self.ocr_text.delete("1.0", "end")
+        self.ocr_attachment_combo.configure(values=[])
+        self.ocr_attachment_var.set("")
         if self.current_item_id is None:
+            self.ocr_info_var.set("Selecciona una nota para ver el OCR reconocido.")
             self.ocr_text.insert("1.0", "Selecciona una nota para ver el OCR reconocido.")
-            self.ocr_text.configure(state="disabled")
             return
-        sections: list[str] = []
-        for row in self.repo.list_attachments(self.current_item_id):
-            ocr_text = str(row["ocr_text"] or "") if "ocr_text" in row.keys() else ""
+        rows = self.repo.list_attachments(self.current_item_id)
+        values = []
+        selected_id = None
+        for row in rows:
+            raw, corrected, active = self._attachment_ocr_texts(row)
             status = self._format_ocr_status(row)
-            updated_at = str(row["ocr_updated_at"] or "") if "ocr_updated_at" in row.keys() else ""
-            if not ocr_text and not status:
+            if not raw and not corrected and not status:
                 continue
             filename = str(row["original_filename"] or row["stored_filename"] or "Adjunto")
-            sections.append(
-                f"[{filename}]\n"
-                f"Estado: {status or 'sin OCR'}\n"
-                f"Caracteres: {len(ocr_text)}\n"
-                f"Fecha OCR: {updated_at or '—'}\n\n"
-                f"{ocr_text or '(Sin texto OCR reconocido)'}"
-            )
-        self.ocr_text.insert("1.0", "\n\n".join(sections) if sections else "Esta nota no tiene OCR guardado en sus adjuntos.")
-        self.ocr_text.configure(state="disabled")
+            value = f"{int(row['id'])} | {filename}"
+            values.append(value)
+            if previous_id == int(row["id"]):
+                selected_id = previous_id
+            elif selected_id is None:
+                selected_id = int(row["id"])
+        self.ocr_attachment_combo.configure(values=values)
+        if selected_id is None:
+            self.ocr_info_var.set("Esta nota no tiene OCR guardado en sus adjuntos.")
+            self.ocr_text.insert("1.0", "Esta nota no tiene OCR guardado en sus adjuntos.")
+            return
+        for value in values:
+            if value.startswith(f"{selected_id} | "):
+                self.ocr_attachment_var.set(value)
+                break
+        self._load_ocr_editor_attachment(selected_id)
+
+    def _load_ocr_editor_attachment(self, attachment_id: int) -> None:
+        row = self.repo.get_attachment(attachment_id)
+        self.ocr_text.delete("1.0", "end")
+        if row is None:
+            self.ocr_info_var.set("Adjunto no encontrado.")
+            return
+        raw, corrected, active = self._attachment_ocr_texts(row)
+        status = self._format_ocr_status(row)
+        updated_at = str(row["ocr_updated_at"] or "") if "ocr_updated_at" in row.keys() else ""
+        corrected_at = str(row["ocr_corrected_at"] or "") if "ocr_corrected_at" in row.keys() else ""
+        filename = str(row["original_filename"] or row["stored_filename"] or "Adjunto")
+        self.ocr_info_var.set(
+            f"{filename} | Estado: {status or 'sin OCR'} | Caracteres: {len(active)} | "
+            f"Fecha OCR: {updated_at or '—'} | Corregido: {'sí' if corrected.strip() else 'no'}{f' ({corrected_at})' if corrected_at else ''}"
+        )
+        self.ocr_text.insert("1.0", active or "")
+
+    def save_ocr_tab_correction(self) -> None:
+        attachment_id = self._ocr_selected_attachment_id()
+        if attachment_id is None:
+            messagebox.showwarning("OCR Knowledge", "Selecciona un adjunto OCR.", parent=self)
+            return
+        text = self.ocr_text.get("1.0", "end-1c")
+        result = self.repo.save_attachment_ocr_correction(attachment_id, text)
+        if not result.get("ok"):
+            messagebox.showerror("OCR Knowledge", str(result.get("message") or "No se pudo guardar."), parent=self)
+            return
+        self.status_var.set(f"Corrección OCR guardada: {int(result.get('chars') or 0)} caracteres")
+        self.refresh_attachments(); self.refresh_ocr_tab(); self.refresh_items()
+
+    def restore_ocr_tab_raw(self) -> None:
+        attachment_id = self._ocr_selected_attachment_id()
+        if attachment_id is None:
+            return
+        row = self.repo.get_attachment(attachment_id)
+        if row is None:
+            return
+        raw, _corrected, _active = self._attachment_ocr_texts(row)
+        self.ocr_text.delete("1.0", "end")
+        self.ocr_text.insert("1.0", raw)
+        logger.info("KNOWLEDGE_OCR: raw restored attachment_id=%s", attachment_id)
+
+    def copy_ocr_tab_text(self) -> None:
+        self.clipboard_clear(); self.clipboard_append(self.ocr_text.get("1.0", "end-1c")); self.status_var.set("Texto OCR copiado.")
+
+    def rerun_ocr_tab_attachment(self) -> None:
+        attachment_id = self._ocr_selected_attachment_id()
+        if attachment_id is None:
+            messagebox.showwarning("OCR Knowledge", "Selecciona un adjunto OCR.", parent=self); return
+        self._rerun_ocr_attachment_with_correction_prompt(attachment_id)
 
     def view_selected_attachment_ocr(self) -> None:
         attachment_id = self._selected_attachment_id()
         if attachment_id is None:
-            messagebox.showwarning("OCR Knowledge", "Selecciona un adjunto para ver su OCR.", parent=self)
-            return
+            messagebox.showwarning("OCR Knowledge", "Selecciona un adjunto para ver su OCR.", parent=self); return
+        self._open_ocr_popup(attachment_id)
+
+    def _open_ocr_popup(self, attachment_id: int) -> None:
         row = self.repo.get_attachment(attachment_id)
         if row is None:
-            self.refresh_attachments()
-            return
-        text = str(row["ocr_text"] or "") if "ocr_text" in row.keys() else ""
+            self.refresh_attachments(); return
+        raw, corrected, active = self._attachment_ocr_texts(row)
         status = self._format_ocr_status(row)
         updated_at = str(row["ocr_updated_at"] or "") if "ocr_updated_at" in row.keys() else ""
         filename = str(row["original_filename"] or row["stored_filename"] or "Adjunto")
-        popup = tk.Toplevel(self)
-        popup.title(f"OCR - {filename}")
-        popup.geometry("760x520")
-        ttk.Label(popup, text=f"{filename}  |  Estado: {status or 'sin OCR'}  |  Caracteres: {len(text)}  |  Fecha OCR: {updated_at or '—'}").pack(fill="x", padx=10, pady=(10, 4))
-        viewer = ScrolledText(popup, wrap="word")
-        viewer.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-        viewer.insert("1.0", text or "(Sin texto OCR reconocido)")
-        viewer.configure(state="disabled")
+        popup = tk.Toplevel(self); popup.title(f"OCR - {filename}"); popup.geometry("820x560")
+        info = ttk.Label(popup, text=f"{filename} | Estado: {status or 'sin OCR'} | Caracteres: {len(active)} | Fecha OCR: {updated_at or '—'} | Corregido: {'sí' if corrected.strip() else 'no'}")
+        info.pack(fill="x", padx=10, pady=(10, 4))
+        viewer = ScrolledText(popup, wrap="word"); viewer.pack(fill="both", expand=True, padx=10, pady=(0, 10)); viewer.insert("1.0", active)
+        buttons = ttk.Frame(popup); buttons.pack(fill="x", padx=10, pady=(0, 10))
+        ttk.Button(buttons, text="Guardar corrección", command=lambda: self._save_popup_ocr_correction(attachment_id, viewer, popup)).pack(side="left", padx=(0, 6))
+        ttk.Button(buttons, text="Rehacer OCR", command=lambda: self._rerun_ocr_attachment_with_correction_prompt(attachment_id)).pack(side="left", padx=(0, 6))
+        ttk.Button(buttons, text="Restaurar OCR bruto", command=lambda: (viewer.delete("1.0", "end"), viewer.insert("1.0", raw), logger.info("KNOWLEDGE_OCR: raw restored attachment_id=%s", attachment_id))).pack(side="left", padx=(0, 6))
+        ttk.Button(buttons, text="Copiar", command=lambda: (self.clipboard_clear(), self.clipboard_append(viewer.get("1.0", "end-1c")))).pack(side="left", padx=(0, 6))
+        ttk.Button(buttons, text="Cerrar", command=popup.destroy).pack(side="right")
+
+    def _save_popup_ocr_correction(self, attachment_id: int, viewer: ScrolledText, popup: tk.Toplevel) -> None:
+        result = self.repo.save_attachment_ocr_correction(attachment_id, viewer.get("1.0", "end-1c"))
+        if result.get("ok"):
+            self.refresh_attachments(); self.refresh_ocr_tab(); self.refresh_items(); popup.destroy()
+        else:
+            messagebox.showerror("OCR Knowledge", str(result.get("message") or "No se pudo guardar."), parent=popup)
+
+    def _rerun_ocr_attachment_with_correction_prompt(self, attachment_id: int) -> None:
+        row = self.repo.get_attachment(attachment_id)
+        if row is None:
+            return
+        corrected = str(row["ocr_text_corrected"] or "") if "ocr_text_corrected" in row.keys() else ""
+        replace = False
+        if corrected.strip():
+            answer = messagebox.askyesnocancel("Rehacer OCR", "Ya existe OCR corregido. ¿Quieres reemplazarlo por el nuevo OCR?\n\nSí = Reemplazar corrección\nNo = Mantener corrección\nCancelar = Cancelar", parent=self)
+            if answer is None:
+                return
+            replace = bool(answer)
+        if getattr(self, "_ocr_running", False):
+            return
+        self._ocr_running = True; self.status_var.set("Rehaciendo OCR..."); self.configure(cursor="watch")
+        threading.Thread(target=self._run_rerun_ocr_worker, args=(attachment_id, replace), daemon=True).start()
+
+    def _run_rerun_ocr_worker(self, attachment_id: int, replace_correction: bool) -> None:
+        result = self.repo.ocr_attachment(attachment_id, force=True)
+        if replace_correction and result.get("ok"):
+            row = self.repo.get_attachment(attachment_id)
+            raw = str(row["ocr_text_raw"] or row["ocr_text"] or "") if row is not None else ""
+            self.repo.save_attachment_ocr_correction(attachment_id, raw)
+        self.after(0, self._finish_ocr, result, None)
 
     def _format_ocr_status(self, row: sqlite3.Row | dict[str, object] | object) -> str:
         status = self._get_ocr_status_value(row)
@@ -1941,6 +2067,10 @@ class KnowledgeManagerWindow(tk.Toplevel):
             "error": "error",
             "pending": "pendiente",
             "pendiente": "pendiente",
+            "corrected": "corregido",
+            "running": "en curso",
+            "skipped": "omitido",
+            "unavailable": "no disponible",
         }.get(normalized_status, "")
 
     @staticmethod
