@@ -710,16 +710,37 @@ class KnowledgeRepository:
     def update_attachment_ocr(
         self, attachment_id: int, ocr_text: str = "", ocr_status: str = "", *, commit: bool = True
     ) -> None:
+        now = self._now()
         self.conn.execute(
             """
             UPDATE knowledge_attachments
-            SET ocr_text = ?, ocr_status = ?, ocr_updated_at = ?, updated_at = ?
+            SET ocr_text = ?, ocr_text_raw = ?, ocr_status = ?, ocr_updated_at = ?, updated_at = ?
             WHERE id = ?
             """,
-            (ocr_text, ocr_status, self._now(), self._now(), attachment_id),
+            (ocr_text, ocr_text, ocr_status, now, now, attachment_id),
         )
         if commit:
             self.conn.commit()
+
+    def save_attachment_ocr_correction(self, attachment_id: int, corrected_text: str) -> dict[str, object]:
+        row = self.get_attachment(attachment_id)
+        if row is None:
+            return {"ok": False, "message": "Adjunto no encontrado."}
+        now = self._now()
+        item_id = int(row["item_id"])
+        self.conn.execute(
+            """
+            UPDATE knowledge_attachments
+            SET ocr_text_corrected = ?, ocr_corrected_at = ?, ocr_status = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (corrected_text, now, "corrected", now, attachment_id),
+        )
+        self.conn.commit()
+        logger.info("KNOWLEDGE_OCR: correction saved attachment_id=%s chars=%s", attachment_id, len(corrected_text))
+        logger.info("KNOWLEDGE_OCR: reindex after correction note_id=%s", item_id)
+        self.reindex_item(item_id)
+        return {"ok": True, "item_id": item_id, "chars": len(corrected_text)}
 
     def ocr_attachment(
         self,
@@ -749,28 +770,31 @@ class KnowledgeRepository:
 
             available, reason = is_ocr_available()
             if not available:
-                self.update_attachment_ocr(attachment_id, "", "unavailable")
+                previous_raw = str(row["ocr_text_raw"] or row["ocr_text"] or "") if "ocr_text_raw" in row.keys() else str(row["ocr_text"] or "")
+                self.update_attachment_ocr(attachment_id, previous_raw, "unavailable")
                 return {"ok": False, "status": "unavailable", "chars": 0, "message": reason}
-            self.update_attachment_ocr(attachment_id, str(row["ocr_text"] or ""), "running")
+            self.update_attachment_ocr(attachment_id, str(row["ocr_text_raw"] or row["ocr_text"] or "") if "ocr_text_raw" in row.keys() else str(row["ocr_text"] or ""), "running")
             existing_text = ""
             if is_pdf_candidate(path, mime):
                 existing_text = extract_text_from_attachment(path, mime, str(row["original_filename"] or ""))
             if not force and not should_ocr_attachment(path, mime, existing_text):
-                self.update_attachment_ocr(attachment_id, str(row["ocr_text"] or ""), "skipped")
+                self.update_attachment_ocr(attachment_id, str(row["ocr_text_raw"] or row["ocr_text"] or "") if "ocr_text_raw" in row.keys() else str(row["ocr_text"] or ""), "skipped")
                 return {"ok": True, "status": "skipped", "chars": 0, "message": "OCR omitido: el adjunto no es candidato."}
+            logger.info("KNOWLEDGE_OCR: rerun started attachment_id=%s", attachment_id)
             if is_image_candidate(path, mime):
                 text = ocr_image(path)
             else:
                 text = ocr_pdf(path, max_pages=max_pdf_pages)
             status = "ok" if text.strip() else "empty"
             self.update_attachment_ocr(attachment_id, text, status)
+            logger.info("KNOWLEDGE_OCR: rerun finished attachment_id=%s chars=%s", attachment_id, len(text))
             logger.info("KNOWLEDGE_OCR: saved note_id=%s attachment_id=%s chars=%s", item_id, attachment_id, len(text))
             if reindex:
                 self.reindex_item(item_id)
             return {"ok": True, "status": status, "chars": len(text), "message": "OCR finalizado."}
         except Exception as exc:  # noqa: BLE001
             logger.info("KNOWLEDGE_OCR: error reason=%s", exc)
-            self.update_attachment_ocr(attachment_id, "", "error")
+            self.update_attachment_ocr(attachment_id, str(row["ocr_text_raw"] or row["ocr_text"] or "") if "ocr_text_raw" in row.keys() else str(row["ocr_text"] or ""), "error")
             return {"ok": False, "status": "error", "chars": 0, "message": str(exc)}
 
     def ocr_item_attachments(self, item_id: int) -> dict[str, int]:
