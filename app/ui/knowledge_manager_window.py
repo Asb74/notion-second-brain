@@ -37,6 +37,7 @@ from app.services.knowledge_summary_service import (
 )
 from app.ui.app_icons import apply_app_icon
 from app.ui.knowledge_entities_window import KnowledgeEntitiesWindow
+from app.ui.knowledge_bulk_ocr_dialog import KnowledgeBulkOcrDialog
 from app.ui.knowledge_query_dialog import KnowledgeQueryDialog
 from app.ui.dictation_widgets import attach_dictation
 from app.ui.tooltips import add_tooltip
@@ -206,7 +207,8 @@ class KnowledgeManagerWindow(tk.Toplevel):
         ttk.Button(buttons, text="Preguntar a Knowledge", command=self.open_query_dialog).pack(side="left", padx=(0, 6))
         ttk.Button(buttons, text="Entidades", command=self.open_entities_window).pack(side="left", padx=(0, 6))
         ttk.Button(buttons, text="Reindexar Knowledge", command=self.reindex_knowledge).pack(side="left", padx=(0, 6))
-        ttk.Button(buttons, text="Reindexar Knowledge con OCR", command=self.reindex_knowledge_with_ocr).pack(side="left")
+        ttk.Button(buttons, text="Reindexar Knowledge con OCR", command=self.reindex_knowledge_with_ocr).pack(side="left", padx=(0, 6))
+        ttk.Button(buttons, text="OCR masivo", command=self.open_bulk_ocr_dialog).pack(side="left")
 
         ttk.Label(right, text="Título").grid(row=0, column=0, sticky="w", pady=(0, 4))
         ttk.Entry(right, textvariable=self.title_var).grid(row=0, column=1, sticky="ew", pady=(0, 4))
@@ -934,6 +936,16 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self.new_item()
         self.refresh_items()
         self.status_var.set(f"Nota eliminada id={item_id}")
+
+
+    def open_bulk_ocr_dialog(self) -> None:
+        """Open the manual controlled bulk OCR dialog for pending Knowledge attachments."""
+        KnowledgeBulkOcrDialog(self, self.repo, on_finished=self._after_bulk_ocr_finished)
+
+    def _after_bulk_ocr_finished(self) -> None:
+        self.refresh_items()
+        self.refresh_attachments()
+        self.refresh_ocr_tab()
 
     def reindex_knowledge(self) -> None:
         self._start_reindex_knowledge(apply_ocr=False)

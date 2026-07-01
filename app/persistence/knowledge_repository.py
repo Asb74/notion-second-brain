@@ -5,9 +5,10 @@ from __future__ import annotations
 import logging
 import sqlite3
 import time
+from pathlib import Path
 from datetime import datetime, timezone
 
-from app.services.knowledge_indexer_service import index_note
+from app.services.knowledge_indexer_service import extract_text_from_attachment, index_note
 
 logger = logging.getLogger(__name__)
 
@@ -720,13 +721,22 @@ class KnowledgeRepository:
         if commit:
             self.conn.commit()
 
-    def ocr_attachment(self, attachment_id: int, *, reindex: bool = True) -> dict[str, object]:
+    def ocr_attachment(
+        self,
+        attachment_id: int,
+        *,
+        reindex: bool = True,
+        force: bool = False,
+        max_pdf_pages: int = 5,
+    ) -> dict[str, object]:
         row = self.get_attachment(attachment_id)
         if row is None:
             return {"ok": False, "status": "error", "chars": 0, "message": "Adjunto no encontrado."}
         path = str(row["stored_path"] or "")
         mime = str(row["mime_type"] or "")
         item_id = int(row["item_id"])
+        if not force and str(row["ocr_status"] or "").lower() == "ok":
+            return {"ok": True, "status": "skipped", "chars": 0, "message": "OCR omitido: ya existe OCR correcto."}
         try:
             from app.services.knowledge_ocr_service import (
                 is_image_candidate,
@@ -741,17 +751,17 @@ class KnowledgeRepository:
             if not available:
                 self.update_attachment_ocr(attachment_id, "", "unavailable")
                 return {"ok": False, "status": "unavailable", "chars": 0, "message": reason}
+            self.update_attachment_ocr(attachment_id, str(row["ocr_text"] or ""), "running")
             existing_text = ""
             if is_pdf_candidate(path, mime):
-                from app.services.knowledge_indexer_service import extract_text_from_attachment
-
                 existing_text = extract_text_from_attachment(path, mime, str(row["original_filename"] or ""))
-            if not should_ocr_attachment(path, mime, existing_text):
+            if not force and not should_ocr_attachment(path, mime, existing_text):
+                self.update_attachment_ocr(attachment_id, str(row["ocr_text"] or ""), "skipped")
                 return {"ok": True, "status": "skipped", "chars": 0, "message": "OCR omitido: el adjunto no es candidato."}
             if is_image_candidate(path, mime):
                 text = ocr_image(path)
             else:
-                text = ocr_pdf(path)
+                text = ocr_pdf(path, max_pages=max_pdf_pages)
             status = "ok" if text.strip() else "empty"
             self.update_attachment_ocr(attachment_id, text, status)
             logger.info("KNOWLEDGE_OCR: saved note_id=%s attachment_id=%s chars=%s", item_id, attachment_id, len(text))
@@ -777,6 +787,148 @@ class KnowledgeRepository:
                 errors += 1
         self.reindex_item(item_id)
         return {"total": total, "ok": ok, "empty": empty, "errors": errors}
+
+    def _bulk_ocr_candidate_rows(
+        self,
+        *,
+        include_images: bool = True,
+        include_pdfs: bool = True,
+        force: bool = False,
+        limit: int | None = None,
+    ) -> list[sqlite3.Row]:
+        clauses = ["ki.status != 'deleted'"]
+        params: list[object] = []
+        if not force:
+            clauses.append("COALESCE(ka.ocr_status, '') != 'ok'")
+        extension_clauses: list[str] = []
+        if include_images:
+            for extension in (".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp"):
+                extension_clauses.append("LOWER(ka.original_filename) LIKE ?")
+                params.append(f"%{extension}")
+            extension_clauses.append("LOWER(ka.mime_type) LIKE 'image/%'")
+        if include_pdfs:
+            extension_clauses.append("LOWER(ka.original_filename) GLOB '*.pdf'")
+            extension_clauses.append("LOWER(ka.mime_type) = 'application/pdf'")
+        if not extension_clauses:
+            return []
+        clauses.append("(" + " OR ".join(extension_clauses) + ")")
+        query = f"""
+            SELECT ka.*, ki.title AS item_title
+            FROM knowledge_attachments ka
+            JOIN knowledge_items ki ON ki.id = ka.item_id
+            WHERE {' AND '.join(clauses)}
+            ORDER BY ka.item_id ASC, ka.id ASC
+        """
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(max(1, int(limit)))
+        return self.conn.execute(query, tuple(params)).fetchall()
+
+    @staticmethod
+    def _attachment_has_image_extension(row: sqlite3.Row) -> bool:
+        return Path(str(row["original_filename"] or row["stored_filename"] or row["stored_path"] or "")).suffix.lower() in {
+            ".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp"
+        } or str(row["mime_type"] or "").lower().startswith("image/")
+
+    @staticmethod
+    def _attachment_has_pdf_extension(row: sqlite3.Row) -> bool:
+        return Path(str(row["original_filename"] or row["stored_filename"] or row["stored_path"] or "")).suffix.lower() == ".pdf" or str(
+            row["mime_type"] or ""
+        ).lower() == "application/pdf"
+
+    def list_bulk_ocr_candidates(
+        self,
+        *,
+        include_images: bool = True,
+        include_pdfs: bool = True,
+        force: bool = False,
+        limit: int | None = None,
+    ) -> list[sqlite3.Row]:
+        rows = self._bulk_ocr_candidate_rows(
+            include_images=include_images,
+            include_pdfs=include_pdfs,
+            force=force,
+            limit=None,
+        )
+        candidates: list[sqlite3.Row] = []
+        for row in rows:
+            path = str(row["stored_path"] or "")
+            mime = str(row["mime_type"] or "")
+            if self._attachment_has_image_extension(row):
+                candidates.append(row)
+            elif self._attachment_has_pdf_extension(row):
+                existing_text = extract_text_from_attachment(path, mime, str(row["original_filename"] or ""))
+                if force or len(existing_text.strip()) < 80:
+                    candidates.append(row)
+            if limit is not None and len(candidates) >= int(limit):
+                break
+        return candidates
+
+    def count_bulk_ocr_candidates(self, **options: object) -> dict[str, int]:
+        candidates = self.list_bulk_ocr_candidates(
+            include_images=bool(options.get("include_images", True)),
+            include_pdfs=bool(options.get("include_pdfs", True)),
+            force=bool(options.get("force", False)),
+            limit=int(options["limit"]) if options.get("limit") is not None else None,
+        )
+        return {"attachments": len(candidates), "notes": len({int(row["item_id"]) for row in candidates})}
+
+    def bulk_ocr_pending_attachments(
+        self,
+        *,
+        include_images: bool = True,
+        include_pdfs: bool = True,
+        force: bool = False,
+        limit: int = 100,
+        max_pdf_pages: int = 5,
+        cancel_event: object | None = None,
+        progress_callback: object | None = None,
+    ) -> dict[str, int | float | bool]:
+        started = time.monotonic()
+        candidates = self.list_bulk_ocr_candidates(include_images=include_images, include_pdfs=include_pdfs, force=force, limit=limit)
+        total = len(candidates)
+        logger.info("KNOWLEDGE_BULK_OCR: started total=%s", total)
+        stats = {"candidates": total, "processed": 0, "ok": 0, "empty": 0, "errors": 0, "skipped": 0}
+        reindex_item_ids: set[int] = set()
+
+        def emit(event: dict[str, object]) -> None:
+            if callable(progress_callback):
+                progress_callback(event)
+
+        for row in candidates:
+            if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
+                logger.info("KNOWLEDGE_BULK_OCR: cancelled")
+                break
+            attachment_id = int(row["id"])
+            item_id = int(row["item_id"])
+            filename = str(row["original_filename"] or row["stored_filename"] or "")
+            logger.info("KNOWLEDGE_BULK_OCR: processing attachment_id=%s filename=%s", attachment_id, filename)
+            emit({"type": "progress", "processed": stats["processed"], "total": total, "errors": stats["errors"], "note": row["item_title"], "attachment": filename})
+            emit({"type": "log", "message": f"Procesando {filename}"})
+            result = self.ocr_attachment(attachment_id, reindex=False, force=force, max_pdf_pages=max_pdf_pages)
+            status = str(result.get("status") or "")
+            chars = int(result.get("chars") or 0)
+            stats["processed"] += 1
+            if status == "ok":
+                stats["ok"] += 1
+                logger.info("KNOWLEDGE_BULK_OCR: ok attachment_id=%s chars=%s", attachment_id, chars)
+            elif status == "empty":
+                stats["empty"] += 1
+                logger.info("KNOWLEDGE_BULK_OCR: empty attachment_id=%s", attachment_id)
+            elif status == "skipped":
+                stats["skipped"] += 1
+            else:
+                stats["errors"] += 1
+                logger.info("KNOWLEDGE_BULK_OCR: error attachment_id=%s reason=%s", attachment_id, result.get("message"))
+            reindex_item_ids.add(item_id)
+            emit({"type": "progress", "processed": stats["processed"], "total": total, "errors": stats["errors"], "note": row["item_title"], "attachment": filename})
+
+        for item_id in sorted(reindex_item_ids):
+            self.reindex_item(item_id)
+        elapsed = time.monotonic() - started
+        cancelled = bool(cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)())
+        logger.info("KNOWLEDGE_BULK_OCR: finished ok=%s empty=%s errors=%s", stats["ok"], stats["empty"], stats["errors"])
+        return {**stats, "seconds": elapsed, "cancelled": cancelled}
 
     def update_indexed_text(self, item_id: int, indexed_text: str) -> None:
         self.conn.execute(
