@@ -708,16 +708,35 @@ class KnowledgeRepository:
             self.reindex_item(item_id)
 
     def update_attachment_ocr(
-        self, attachment_id: int, ocr_text: str = "", ocr_status: str = "", *, commit: bool = True
+        self,
+        attachment_id: int,
+        ocr_text: str = "",
+        ocr_status: str = "",
+        *,
+        commit: bool = True,
+        ocr_mode: str = "",
+        ocr_rotation: int | None = None,
+        ocr_characters: int | None = None,
     ) -> None:
         now = self._now()
         self.conn.execute(
             """
             UPDATE knowledge_attachments
-            SET ocr_text = ?, ocr_text_raw = ?, ocr_status = ?, ocr_updated_at = ?, updated_at = ?
+            SET ocr_text = ?, ocr_text_raw = ?, ocr_status = ?, ocr_updated_at = ?, updated_at = ?,
+                ocr_mode = ?, ocr_rotation = ?, ocr_characters = ?
             WHERE id = ?
             """,
-            (ocr_text, ocr_text, ocr_status, now, now, attachment_id),
+            (
+                ocr_text,
+                ocr_text,
+                ocr_status,
+                now,
+                now,
+                ocr_mode,
+                ocr_rotation,
+                ocr_characters if ocr_characters is not None else len(ocr_text),
+                attachment_id,
+            ),
         )
         if commit:
             self.conn.commit()
@@ -763,7 +782,7 @@ class KnowledgeRepository:
                 is_image_candidate,
                 is_ocr_available,
                 is_pdf_candidate,
-                ocr_image,
+                ocr_image_result,
                 ocr_pdf,
                 should_ocr_attachment,
             )
@@ -781,17 +800,30 @@ class KnowledgeRepository:
                 self.update_attachment_ocr(attachment_id, str(row["ocr_text_raw"] or row["ocr_text"] or "") if "ocr_text_raw" in row.keys() else str(row["ocr_text"] or ""), "skipped")
                 return {"ok": True, "status": "skipped", "chars": 0, "message": "OCR omitido: el adjunto no es candidato."}
             logger.info("KNOWLEDGE_OCR: rerun started attachment_id=%s", attachment_id)
+            ocr_mode = ""
+            ocr_rotation = None
             if is_image_candidate(path, mime):
-                text = ocr_image(path)
+                image_result = ocr_image_result(path)
+                text = image_result.text
+                ocr_mode = image_result.mode
+                ocr_rotation = image_result.rotation
             else:
                 text = ocr_pdf(path, max_pages=max_pdf_pages)
+                ocr_mode = "PDF multipase avanzado"
             status = "ok" if text.strip() else "empty"
-            self.update_attachment_ocr(attachment_id, text, status)
-            logger.info("KNOWLEDGE_OCR: rerun finished attachment_id=%s chars=%s", attachment_id, len(text))
+            self.update_attachment_ocr(
+                attachment_id,
+                text,
+                status,
+                ocr_mode=ocr_mode,
+                ocr_rotation=ocr_rotation,
+                ocr_characters=len(text),
+            )
+            logger.info("KNOWLEDGE_OCR: rerun finished attachment_id=%s chars=%s mode=%s rotation=%s", attachment_id, len(text), ocr_mode, ocr_rotation)
             logger.info("KNOWLEDGE_OCR: saved note_id=%s attachment_id=%s chars=%s", item_id, attachment_id, len(text))
             if reindex:
                 self.reindex_item(item_id)
-            return {"ok": True, "status": status, "chars": len(text), "message": "OCR finalizado."}
+            return {"ok": True, "status": status, "chars": len(text), "mode": ocr_mode, "rotation": ocr_rotation, "message": "OCR finalizado."}
         except Exception as exc:  # noqa: BLE001
             logger.info("KNOWLEDGE_OCR: error reason=%s", exc)
             self.update_attachment_ocr(attachment_id, str(row["ocr_text_raw"] or row["ocr_text"] or "") if "ocr_text_raw" in row.keys() else str(row["ocr_text"] or ""), "error")

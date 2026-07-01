@@ -331,7 +331,8 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self.ocr_attachment_combo.pack(side="left", padx=(0, 6))
         self.ocr_attachment_combo.bind("<<ComboboxSelected>>", self._on_ocr_attachment_selected)
         ttk.Button(ocr_buttons, text="Guardar corrección", command=self.save_ocr_tab_correction).pack(side="left", padx=(0, 6))
-        ttk.Button(ocr_buttons, text="Rehacer OCR", command=self.rerun_ocr_tab_attachment).pack(side="left", padx=(0, 6))
+        ttk.Button(ocr_buttons, text="Rehacer OCR avanzado", command=self.rerun_ocr_tab_attachment).pack(side="left", padx=(0, 6))
+        ttk.Button(ocr_buttons, text="Seleccionar zona OCR", command=self.select_ocr_zone_placeholder).pack(side="left", padx=(0, 6))
         ttk.Button(ocr_buttons, text="Restaurar OCR bruto", command=self.restore_ocr_tab_raw).pack(side="left", padx=(0, 6))
         ttk.Button(ocr_buttons, text="Copiar texto", command=self.copy_ocr_tab_text).pack(side="left", padx=(0, 6))
         ttk.Button(ocr_buttons, text="Refrescar OCR", command=self.refresh_ocr_tab).pack(side="left")
@@ -1959,8 +1960,13 @@ class KnowledgeManagerWindow(tk.Toplevel):
         updated_at = str(row["ocr_updated_at"] or "") if "ocr_updated_at" in row.keys() else ""
         corrected_at = str(row["ocr_corrected_at"] or "") if "ocr_corrected_at" in row.keys() else ""
         filename = str(row["original_filename"] or row["stored_filename"] or "Adjunto")
+        mode = str(row["ocr_mode"] or "") if "ocr_mode" in row.keys() else ""
+        rotation = row["ocr_rotation"] if "ocr_rotation" in row.keys() else None
+        stored_chars = row["ocr_characters"] if "ocr_characters" in row.keys() else None
+        chars = int(stored_chars) if stored_chars not in (None, "") and not corrected.strip() else len(active)
         self.ocr_info_var.set(
-            f"{filename} | Estado: {status or 'sin OCR'} | Caracteres: {len(active)} | "
+            f"{filename} | Estado: {status or 'sin OCR'} | Modo OCR: {mode or '—'} | "
+            f"Rotación: {rotation if rotation is not None else '—'}° | Caracteres: {chars} | "
             f"Fecha OCR: {updated_at or '—'} | Corregido: {'sí' if corrected.strip() else 'no'}{f' ({corrected_at})' if corrected_at else ''}"
         )
         self.ocr_text.insert("1.0", active or "")
@@ -1993,6 +1999,13 @@ class KnowledgeManagerWindow(tk.Toplevel):
     def copy_ocr_tab_text(self) -> None:
         self.clipboard_clear(); self.clipboard_append(self.ocr_text.get("1.0", "end-1c")); self.status_var.set("Texto OCR copiado.")
 
+    def select_ocr_zone_placeholder(self) -> None:
+        messagebox.showinfo(
+            "Seleccionar zona OCR",
+            "Opción futura: permitirá recortar manualmente solo la etiqueta o ticket antes de lanzar OCR.",
+            parent=self,
+        )
+
     def rerun_ocr_tab_attachment(self) -> None:
         attachment_id = self._ocr_selected_attachment_id()
         if attachment_id is None:
@@ -2014,12 +2027,23 @@ class KnowledgeManagerWindow(tk.Toplevel):
         updated_at = str(row["ocr_updated_at"] or "") if "ocr_updated_at" in row.keys() else ""
         filename = str(row["original_filename"] or row["stored_filename"] or "Adjunto")
         popup = tk.Toplevel(self); popup.title(f"OCR - {filename}"); popup.geometry("820x560")
-        info = ttk.Label(popup, text=f"{filename} | Estado: {status or 'sin OCR'} | Caracteres: {len(active)} | Fecha OCR: {updated_at or '—'} | Corregido: {'sí' if corrected.strip() else 'no'}")
+        mode = str(row["ocr_mode"] or "") if "ocr_mode" in row.keys() else ""
+        rotation = row["ocr_rotation"] if "ocr_rotation" in row.keys() else None
+        stored_chars = row["ocr_characters"] if "ocr_characters" in row.keys() else None
+        chars = int(stored_chars) if stored_chars not in (None, "") and not corrected.strip() else len(active)
+        info = ttk.Label(
+            popup,
+            text=(
+                f"{filename} | Estado: {status or 'sin OCR'} | Modo OCR: {mode or '—'} | "
+                f"Rotación: {rotation if rotation is not None else '—'}° | Caracteres: {chars} | "
+                f"Fecha OCR: {updated_at or '—'} | Corregido: {'sí' if corrected.strip() else 'no'}"
+            ),
+        )
         info.pack(fill="x", padx=10, pady=(10, 4))
         viewer = ScrolledText(popup, wrap="word"); viewer.pack(fill="both", expand=True, padx=10, pady=(0, 10)); viewer.insert("1.0", active)
         buttons = ttk.Frame(popup); buttons.pack(fill="x", padx=10, pady=(0, 10))
         ttk.Button(buttons, text="Guardar corrección", command=lambda: self._save_popup_ocr_correction(attachment_id, viewer, popup)).pack(side="left", padx=(0, 6))
-        ttk.Button(buttons, text="Rehacer OCR", command=lambda: self._rerun_ocr_attachment_with_correction_prompt(attachment_id)).pack(side="left", padx=(0, 6))
+        ttk.Button(buttons, text="Rehacer OCR avanzado", command=lambda: self._rerun_ocr_attachment_with_correction_prompt(attachment_id)).pack(side="left", padx=(0, 6))
         ttk.Button(buttons, text="Restaurar OCR bruto", command=lambda: (viewer.delete("1.0", "end"), viewer.insert("1.0", raw), logger.info("KNOWLEDGE_OCR: raw restored attachment_id=%s", attachment_id))).pack(side="left", padx=(0, 6))
         ttk.Button(buttons, text="Copiar", command=lambda: (self.clipboard_clear(), self.clipboard_append(viewer.get("1.0", "end-1c")))).pack(side="left", padx=(0, 6))
         ttk.Button(buttons, text="Cerrar", command=popup.destroy).pack(side="right")
