@@ -16,6 +16,11 @@ from app.services.knowledge_answer_service import (
 )
 from app.services.federated_search_service import emails_available, search_federated
 from app.ui.app_icons import apply_app_icon
+from app.ui.window_state import (
+    is_valid_window_geometry,
+    load_window_state,
+    save_window_state,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,14 +47,15 @@ class KnowledgeQueryDialog(tk.Toplevel):
         self.current_answer_sources: list[dict[str, object]] = []
         self._searching = False
         self._answering = False
+        self._window_state_key = "knowledge_query_window"
+        self._saved_window_state = load_window_state(self._window_state_key)
 
         self.title("Preguntar a Knowledge")
         apply_app_icon(self)
-        self.geometry("1280x820")
-        self.minsize(920, 620)
+        self.minsize(1200, 700)
         self.resizable(True, True)
-        self.transient(parent.winfo_toplevel())
-        self.after(0, self._maximize_initial_window)
+        self._apply_initial_window_state()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self.question_var = tk.StringVar()
         self.include_knowledge_var = tk.BooleanVar(value=True)
@@ -65,12 +71,43 @@ class KnowledgeQueryDialog(tk.Toplevel):
         self._build_layout()
         self.question_entry.focus_set()
 
-    def _maximize_initial_window(self) -> None:
+    def _apply_initial_window_state(self) -> None:
+        geometry = str(self._saved_window_state.get("geometry") or "").strip()
+        maximized = bool(self._saved_window_state.get("maximized"))
+        if geometry:
+            try:
+                self.geometry(geometry)
+            except tk.TclError:
+                logger.debug(
+                    "KNOWLEDGE_QUERY_UI: saved geometry unavailable geometry=%s",
+                    geometry,
+                    exc_info=True,
+                )
+        else:
+            self.geometry("1600x900")
+            self.update_idletasks()
+            self._center_on_screen()
+            logger.info("KNOWLEDGE_QUERY_UI: default geometry applied")
+
+        if maximized or not geometry:
+            self.after(100, self._safe_zoom)
+        logger.info("KNOWLEDGE_QUERY_UI: state restored maximized=%s", maximized)
+
+    def _center_on_screen(self) -> None:
+        try:
+            width = self.winfo_width()
+            height = self.winfo_height()
+            x = max(0, (self.winfo_screenwidth() - width) // 2)
+            y = max(0, (self.winfo_screenheight() - height) // 2)
+            self.geometry(f"{width}x{height}+{x}+{y}")
+        except tk.TclError:
+            logger.debug("KNOWLEDGE_QUERY_UI: could not center window", exc_info=True)
+
+    def _safe_zoom(self) -> None:
         try:
             self.state("zoomed")
-            logger.info("KNOWLEDGE_QUERY_UI: window maximized")
-        except tk.TclError:
-            logger.debug("KNOWLEDGE_QUERY_UI: zoomed state unavailable", exc_info=True)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _build_layout(self) -> None:
         self.columnconfigure(0, weight=1)
@@ -267,21 +304,27 @@ class KnowledgeQueryDialog(tk.Toplevel):
         sources_scrollbar.grid(row=1, column=1, sticky="ns")
         self.sources_tree.configure(yscrollcommand=sources_scrollbar.set)
         self.sources_tree.bind("<<TreeviewSelect>>", self._on_answer_source_selected)
-        self.after(100, self._set_initial_pane_distribution)
+        self.after(100, self._restore_or_set_pane_distribution)
 
         ttk.Label(self, textvariable=self.status_var, padding=(12, 0, 12, 12)).grid(
             row=4, column=0, sticky="ew"
         )
 
-    def _set_initial_pane_distribution(self) -> None:
-        """Set the first visible sash positions to 35% / 40% / 25%."""
+    def _restore_or_set_pane_distribution(self) -> None:
+        """Restore saved sash positions or set 35% / 40% / 25%."""
         if not hasattr(self, "body_paned"):
             return
         self.update_idletasks()
         height = self.body_paned.winfo_height()
         if height <= 1:
             return
+        saved_sashes = self._saved_window_state.get("sashes")
         try:
+            if isinstance(saved_sashes, list) and len(saved_sashes) >= 2:
+                self.body_paned.sashpos(0, int(saved_sashes[0]))
+                self.body_paned.sashpos(1, int(saved_sashes[1]))
+                logger.info("KNOWLEDGE_QUERY_UI: sash restored")
+                return
             self.body_paned.sashpos(0, int(height * 0.35))
             self.body_paned.sashpos(1, int(height * 0.75))
         except tk.TclError:
@@ -289,6 +332,44 @@ class KnowledgeQueryDialog(tk.Toplevel):
                 "KNOWLEDGE_QUERY_UI: initial sash positioning unavailable",
                 exc_info=True,
             )
+
+    def _on_close(self) -> None:
+        self._save_window_state()
+        self.destroy()
+
+    def _save_window_state(self) -> None:
+        try:
+            current_state = str(self.state())
+        except tk.TclError:
+            current_state = ""
+        if current_state == "iconic":
+            return
+
+        self.update_idletasks()
+        if not is_valid_window_geometry(self):
+            return
+
+        geometry = self.geometry()
+        maximized = current_state == "zoomed"
+        state: dict[str, object] = {
+            "geometry": geometry,
+            "maximized": maximized,
+        }
+        if hasattr(self, "body_paned"):
+            try:
+                state["sashes"] = [
+                    int(self.body_paned.sashpos(0)),
+                    int(self.body_paned.sashpos(1)),
+                ]
+                logger.info("KNOWLEDGE_QUERY_UI: sash saved")
+            except tk.TclError:
+                logger.debug("KNOWLEDGE_QUERY_UI: sash save unavailable", exc_info=True)
+        save_window_state(self._window_state_key, state)
+        logger.info(
+            "KNOWLEDGE_QUERY_UI: state saved geometry=%s maximized=%s",
+            geometry,
+            maximized,
+        )
 
     def search(self) -> None:
         if self._searching:
