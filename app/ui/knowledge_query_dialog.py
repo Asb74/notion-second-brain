@@ -45,9 +45,11 @@ class KnowledgeQueryDialog(tk.Toplevel):
 
         self.title("Preguntar a Knowledge")
         apply_app_icon(self)
-        self.geometry("1120x720")
-        self.minsize(820, 560)
+        self.geometry("1280x820")
+        self.minsize(920, 620)
+        self.resizable(True, True)
         self.transient(parent.winfo_toplevel())
+        self.after(0, self._maximize_initial_window)
 
         self.question_var = tk.StringVar()
         self.include_knowledge_var = tk.BooleanVar(value=True)
@@ -62,6 +64,13 @@ class KnowledgeQueryDialog(tk.Toplevel):
 
         self._build_layout()
         self.question_entry.focus_set()
+
+    def _maximize_initial_window(self) -> None:
+        try:
+            self.state("zoomed")
+            logger.info("KNOWLEDGE_QUERY_UI: window maximized")
+        except tk.TclError:
+            logger.debug("KNOWLEDGE_QUERY_UI: zoomed state unavailable", exc_info=True)
 
     def _build_layout(self) -> None:
         self.columnconfigure(0, weight=1)
@@ -105,13 +114,13 @@ class KnowledgeQueryDialog(tk.Toplevel):
             font=("TkDefaultFont", 10, "bold"),
         ).grid(row=2, column=0, sticky="w")
 
-        body = ttk.PanedWindow(self, orient="vertical")
-        body.grid(row=3, column=0, sticky="nsew", padx=12, pady=(0, 8))
+        self.body_paned = ttk.PanedWindow(self, orient="vertical")
+        self.body_paned.grid(row=3, column=0, sticky="nsew", padx=12, pady=(0, 8))
 
-        results_frame = ttk.Frame(body)
+        results_frame = ttk.Frame(self.body_paned)
         results_frame.columnconfigure(0, weight=1)
         results_frame.rowconfigure(0, weight=1)
-        body.add(results_frame, weight=3)
+        self.body_paned.add(results_frame, weight=35)
 
         columns = (
             "source",
@@ -127,7 +136,7 @@ class KnowledgeQueryDialog(tk.Toplevel):
         )
         self.results_tree.heading("#0", text="Título / Asunto")
         self.results_tree.column(
-            "#0", width=230, minwidth=160, anchor="w", stretch=True
+            "#0", width=320, minwidth=180, anchor="w", stretch=True
         )
         headings = {
             "source": "Origen",
@@ -139,13 +148,13 @@ class KnowledgeQueryDialog(tk.Toplevel):
             "snippet": "Snippet",
         }
         widths = {
-            "source": 90,
+            "source": 80,
             "subtitle": 150,
             "date": 130,
             "type": 90,
             "match_source": 120,
             "score": 65,
-            "snippet": 320,
+            "snippet": 420,
         }
         for column in columns:
             self.results_tree.heading(column, text=headings[column])
@@ -160,45 +169,63 @@ class KnowledgeQueryDialog(tk.Toplevel):
         scrollbar.grid(row=0, column=1, sticky="ns")
         self.results_tree.configure(yscrollcommand=scrollbar.set)
 
-        answer_frame = ttk.Frame(body)
+        answer_frame = ttk.Frame(self.body_paned)
         answer_frame.columnconfigure(0, weight=1)
         answer_frame.rowconfigure(1, weight=1)
-        answer_frame.rowconfigure(3, weight=1)
-        body.add(answer_frame, weight=3)
+        self.body_paned.add(answer_frame, weight=40)
         ttk.Label(
             answer_frame, text="Respuesta IA:", font=("TkDefaultFont", 10, "bold")
         ).grid(row=0, column=0, sticky="w", pady=(6, 4))
         self.answer_text = tk.Text(
-            answer_frame, height=9, wrap="word", state="disabled"
+            answer_frame,
+            height=10,
+            wrap="none",
+            state="disabled",
+            font=("TkDefaultFont", 11),
         )
         self.answer_text.grid(row=1, column=0, sticky="nsew")
         answer_scrollbar = ttk.Scrollbar(
             answer_frame, orient="vertical", command=self.answer_text.yview
         )
         answer_scrollbar.grid(row=1, column=1, sticky="ns")
-        self.answer_text.configure(yscrollcommand=answer_scrollbar.set)
+        answer_xscrollbar = ttk.Scrollbar(
+            answer_frame, orient="horizontal", command=self.answer_text.xview
+        )
+        answer_xscrollbar.grid(row=2, column=0, sticky="ew")
+        self.answer_text.configure(
+            yscrollcommand=answer_scrollbar.set, xscrollcommand=answer_xscrollbar.set
+        )
 
-        sources_header = ttk.Frame(answer_frame)
-        sources_header.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 4))
+        sources_frame = ttk.Frame(self.body_paned)
+        sources_frame.columnconfigure(0, weight=1)
+        sources_frame.rowconfigure(1, weight=1)
+        self.body_paned.add(sources_frame, weight=25)
+
+        sources_header = ttk.Frame(sources_frame)
+        sources_header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(6, 4))
         ttk.Label(
             sources_header,
             text="Fuentes utilizadas:",
             font=("TkDefaultFont", 10, "bold"),
         ).pack(side="left")
-        ttk.Button(
+        self.open_source_button = ttk.Button(
             sources_header,
             text="Abrir fuente",
             command=self._open_selected_answer_source,
-        ).pack(side="right")
-        ttk.Button(
+            state="disabled",
+        )
+        self.open_source_button.pack(side="right")
+        self.create_note_from_email_button = ttk.Button(
             sources_header,
             text="Crear nota desde este email",
             command=self._create_note_from_selected_answer_email,
-        ).pack(side="right", padx=(0, 8))
+            state="disabled",
+        )
+        self.create_note_from_email_button.pack(side="right", padx=(0, 8))
 
         source_columns = ("origin", "location", "date", "match", "snippet")
         self.sources_tree = ttk.Treeview(
-            answer_frame,
+            sources_frame,
             columns=source_columns,
             show="tree headings",
             selectmode="browse",
@@ -230,19 +257,38 @@ class KnowledgeQueryDialog(tk.Toplevel):
                 anchor="w",
                 stretch=column == "snippet",
             )
-        self.sources_tree.grid(row=3, column=0, sticky="nsew")
+        self.sources_tree.grid(row=1, column=0, sticky="nsew")
         self.sources_tree.bind(
             "<Double-1>", lambda _event: self._open_selected_answer_source()
         )
         sources_scrollbar = ttk.Scrollbar(
-            answer_frame, orient="vertical", command=self.sources_tree.yview
+            sources_frame, orient="vertical", command=self.sources_tree.yview
         )
-        sources_scrollbar.grid(row=3, column=1, sticky="ns")
+        sources_scrollbar.grid(row=1, column=1, sticky="ns")
         self.sources_tree.configure(yscrollcommand=sources_scrollbar.set)
+        self.sources_tree.bind("<<TreeviewSelect>>", self._on_answer_source_selected)
+        self.after(100, self._set_initial_pane_distribution)
 
         ttk.Label(self, textvariable=self.status_var, padding=(12, 0, 12, 12)).grid(
             row=4, column=0, sticky="ew"
         )
+
+    def _set_initial_pane_distribution(self) -> None:
+        """Set the first visible sash positions to 35% / 40% / 25%."""
+        if not hasattr(self, "body_paned"):
+            return
+        self.update_idletasks()
+        height = self.body_paned.winfo_height()
+        if height <= 1:
+            return
+        try:
+            self.body_paned.sashpos(0, int(height * 0.35))
+            self.body_paned.sashpos(1, int(height * 0.75))
+        except tk.TclError:
+            logger.debug(
+                "KNOWLEDGE_QUERY_UI: initial sash positioning unavailable",
+                exc_info=True,
+            )
 
     def search(self) -> None:
         if self._searching:
@@ -290,6 +336,7 @@ class KnowledgeQueryDialog(tk.Toplevel):
         for item_id in self.results_tree.get_children():
             self.results_tree.delete(item_id)
         self._update_answer_button_state()
+        self._update_answer_source_buttons()
 
     def _set_answer_text(self, text: str) -> None:
         self.answer_text.configure(state="normal")
@@ -510,6 +557,7 @@ class KnowledgeQueryDialog(tk.Toplevel):
             return
         for item_id in self.sources_tree.get_children():
             self.sources_tree.delete(item_id)
+        self._update_answer_source_buttons()
         for index, source in enumerate(sources, start=1):
             iid = f"source:{index}"
             normalized = self._normalize_answer_source(source)
@@ -533,6 +581,7 @@ class KnowledgeQueryDialog(tk.Toplevel):
         if children:
             self.sources_tree.selection_set(children[0])
             self.sources_tree.focus(children[0])
+        self._update_answer_source_buttons()
 
     def _normalize_answer_source(self, source: dict[str, object]) -> dict[str, object]:
         source_type = str(source.get("source") or "knowledge").lower()
@@ -570,6 +619,22 @@ class KnowledgeQueryDialog(tk.Toplevel):
             return None
         return self.sources_by_iid.get(str(selection[0]))
 
+    def _on_answer_source_selected(self, _event: tk.Event | None = None) -> None:
+        self._update_answer_source_buttons()
+
+    def _update_answer_source_buttons(self) -> None:
+        source = self._selected_answer_source()
+        has_source = source is not None
+        is_email = bool(source and source.get("source") == "email")
+        if hasattr(self, "open_source_button"):
+            self.open_source_button.configure(
+                state="normal" if has_source else "disabled"
+            )
+        if hasattr(self, "create_note_from_email_button"):
+            self.create_note_from_email_button.configure(
+                state="normal" if is_email else "disabled"
+            )
+
     def _open_selected_answer_source(self) -> None:
         source = self._selected_answer_source()
         if source is None:
@@ -587,7 +652,7 @@ class KnowledgeQueryDialog(tk.Toplevel):
             )
             return
         gmail_id = str(source.get("id") or "").strip()
-        logger.info("FEDERATED_ANSWER: create_note_from_email id=%s", gmail_id)
+        logger.info("KNOWLEDGE_QUERY_UI: create note from email id=%s", gmail_id)
         if (
             gmail_id
             and self.on_create_note_from_email is not None
@@ -607,7 +672,7 @@ class KnowledgeQueryDialog(tk.Toplevel):
         source_type = str(source.get("source") or "knowledge")
         source_id = str(source.get("id") or source.get("note_id") or "").strip()
         logger.info(
-            "FEDERATED_ANSWER: open_source source=%s id=%s", source_type, source_id
+            "KNOWLEDGE_QUERY_UI: open source source=%s id=%s", source_type, source_id
         )
         try:
             if source_type == "email":
@@ -656,7 +721,7 @@ class KnowledgeQueryDialog(tk.Toplevel):
         source = str(result.get("source") or "knowledge")
         if source == "email":
             gmail_id = str(result.get("id") or "").strip()
-            logger.info("FEDERATED_ANSWER: open_source source=email id=%s", gmail_id)
+            logger.info("KNOWLEDGE_QUERY_UI: open source source=email id=%s", gmail_id)
             if (
                 gmail_id
                 and self.on_open_email is not None
@@ -668,7 +733,7 @@ class KnowledgeQueryDialog(tk.Toplevel):
         note_id = int(result.get("note_id") or result.get("id") or 0)
         if note_id <= 0:
             return
-        logger.info("FEDERATED_ANSWER: open_source source=knowledge id=%s", note_id)
+        logger.info("KNOWLEDGE_QUERY_UI: open source source=knowledge id=%s", note_id)
         if self.on_open_note is not None:
             self.on_open_note(note_id)
 
@@ -697,7 +762,7 @@ class KnowledgeQueryDialog(tk.Toplevel):
         buttons.grid(row=2, column=0, sticky="ew")
 
         def open_email() -> None:
-            logger.info("FEDERATED_ANSWER: open_source source=email id=%s", gmail_id)
+            logger.info("KNOWLEDGE_QUERY_UI: open source source=email id=%s", gmail_id)
             if self.on_open_email is not None and self.on_open_email(gmail_id):
                 dialog.destroy()
             else:
@@ -711,7 +776,7 @@ class KnowledgeQueryDialog(tk.Toplevel):
                 )
 
         def create_note() -> None:
-            logger.info("FEDERATED_ANSWER: create_note_from_email id=%s", gmail_id)
+            logger.info("KNOWLEDGE_QUERY_UI: create note from email id=%s", gmail_id)
             if (
                 gmail_id
                 and self.on_create_note_from_email is not None
