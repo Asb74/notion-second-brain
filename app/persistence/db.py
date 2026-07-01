@@ -306,6 +306,8 @@ def ensure_knowledge_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE knowledge_attachments ADD COLUMN ocr_status TEXT")
     if "ocr_mode" not in knowledge_attachment_columns:
         conn.execute("ALTER TABLE knowledge_attachments ADD COLUMN ocr_mode TEXT")
+    if "ocr_engine" not in knowledge_attachment_columns:
+        conn.execute("ALTER TABLE knowledge_attachments ADD COLUMN ocr_engine TEXT")
     if "ocr_rotation" not in knowledge_attachment_columns:
         conn.execute("ALTER TABLE knowledge_attachments ADD COLUMN ocr_rotation INTEGER")
     if "ocr_characters" not in knowledge_attachment_columns:

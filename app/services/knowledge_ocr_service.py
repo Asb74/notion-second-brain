@@ -57,6 +57,72 @@ def _clean_text(text: str) -> str:
 
 
 
+def _json_from_string(value: str) -> object | None:
+    cleaned = str(value or "").strip()
+    if not cleaned:
+        return None
+    try:
+        return json.loads(cleaned)
+    except Exception:
+        pass
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        try:
+            return json.loads(cleaned[start : end + 1])
+        except Exception:
+            return None
+    return None
+
+
+def extract_ai_ocr_text(response: object) -> str:
+    """Extract useful OCR text from common AI response shapes."""
+    seen: set[int] = set()
+
+    def visit(value: object, depth: int = 0) -> str:
+        if value is None or depth > 6:
+            return ""
+        value_id = id(value)
+        if value_id in seen:
+            return ""
+        seen.add(value_id)
+        if isinstance(value, str):
+            parsed = _json_from_string(value)
+            if parsed is not None and parsed is not value:
+                nested = visit(parsed, depth + 1)
+                if nested:
+                    return nested
+            return _clean_text(value)
+        if isinstance(value, dict):
+            for key in ("text", "texto", "answer", "content", "output_text"):
+                if key in value:
+                    text = visit(value.get(key), depth + 1)
+                    if text:
+                        return text
+            for key in ("message", "data", "result", "response", "output"):
+                if key in value:
+                    text = visit(value.get(key), depth + 1)
+                    if text:
+                        return text
+            return ""
+        if isinstance(value, (list, tuple)):
+            parts = [visit(item, depth + 1) for item in value]
+            return _clean_text("\n".join(part for part in parts if part))
+        for attr in ("output_text", "text", "texto", "answer", "content"):
+            if hasattr(value, attr):
+                text = visit(getattr(value, attr), depth + 1)
+                if text:
+                    return text
+        if hasattr(value, "output"):
+            text = visit(getattr(value, "output"), depth + 1)
+            if text:
+                return text
+        return ""
+
+    text = visit(response)
+    return text if any(char.isalnum() for char in text) else ""
+
+
 def evaluate_ocr_quality(text: str) -> dict[str, object]:
     """Conservative local OCR quality heuristic for hybrid OCR decisions."""
     cleaned = _clean_text(text)
@@ -122,7 +188,7 @@ def improve_ocr_with_ai(attachment_path: str, mime: str, current_ocr_text: str |
         data_url = _render_pdf_first_page_data_url(attachment_path) if is_pdf_candidate(attachment_path, mime) else _file_data_url(attachment_path, mime or "image/png")
         if not data_url:
             return {"ok": False, "status": "empty", "message": "No se pudo renderizar el documento para IA."}
-        logger.info("KNOWLEDGE_OCR: ai requested path=%s", attachment_path)
+        logger.info("KNOWLEDGE_OCR_AI: requested path=%s", attachment_path)
         client = build_openai_client()
         response = client.responses.create(
             model="gpt-4o-mini",
@@ -132,14 +198,19 @@ def improve_ocr_with_ai(attachment_path: str, mime: str, current_ocr_text: str |
             ]}],
             text={"format": {"type": "json_object"}},
         )
+        logger.info("KNOWLEDGE_OCR_AI: raw_response_type=%s", type(response).__name__)
         raw = OpenAIService._extract_text(response)
-        parsed = json.loads(raw) if raw else {}
-        text = _clean_text(str(parsed.get("text") or ""))
-        logger.info("KNOWLEDGE_OCR: ai finished chars=%s", len(text))
-        return {"ok": bool(text), "text": text, "document_type": parsed.get("document_type", ""), "fields": parsed.get("fields", {}), "confidence": parsed.get("confidence", 0), "status": "ok_ai" if text else "empty"}
+        parsed = _json_from_string(raw) if raw else None
+        parsed_dict = parsed if isinstance(parsed, dict) else {}
+        text = extract_ai_ocr_text(parsed_dict or raw or response)
+        logger.info("KNOWLEDGE_OCR_AI: extracted_chars=%s preview=%r", len(text), text[:300])
+        if not text:
+            logger.info("KNOWLEDGE_OCR_AI: empty reason=no_useful_text")
+            return {"ok": False, "status": "empty_ai", "text": "", "message": "La IA no ha podido extraer texto útil."}
+        return {"ok": True, "text": text, "document_type": parsed_dict.get("document_type", ""), "fields": parsed_dict.get("fields", {}), "confidence": parsed_dict.get("confidence", 0), "status": "ok_ai"}
     except Exception as exc:  # noqa: BLE001
-        logger.info("KNOWLEDGE_OCR: ai unavailable reason=%s", exc)
-        return {"ok": False, "status": "unavailable", "message": "No hay configuración IA disponible."}
+        logger.info("KNOWLEDGE_OCR_AI: error reason=%s", exc)
+        return {"ok": False, "status": "error", "message": "La IA no ha podido extraer texto útil."}
 
 def is_ocr_available() -> tuple[bool, str]:
     if pytesseract is None:
