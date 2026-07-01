@@ -473,7 +473,25 @@ class MainWindow(ttk.Frame):
         if self.db_connection is None:
             messagebox.showerror("Error", "No hay conexión de base de datos disponible para preguntar a Knowledge.")
             return
-        KnowledgeQueryDialog(self.master, self.db_connection, on_open_note=self._open_knowledge_note)
+        KnowledgeQueryDialog(
+            self.master,
+            self.db_connection,
+            on_open_note=self._open_knowledge_note,
+            on_open_email=self._open_email_from_knowledge_query,
+            on_create_note_from_email=self._create_note_from_email_query,
+        )
+
+    def _open_email_from_knowledge_query(self, gmail_id: str) -> bool:
+        email_window = self._ensure_email_manager_window()
+        if email_window is None:
+            return False
+        return email_window.open_email_by_id(gmail_id)
+
+    def _create_note_from_email_query(self, gmail_id: str) -> bool:
+        email_window = self._ensure_email_manager_window()
+        if email_window is None:
+            return False
+        return email_window.create_note_from_email_id(gmail_id)
 
     def _open_knowledge_note(self, note_id: int) -> None:
         window = self._open_knowledge_manager()

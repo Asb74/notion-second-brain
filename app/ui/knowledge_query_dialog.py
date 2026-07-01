@@ -14,7 +14,7 @@ from app.services.knowledge_answer_service import (
     KnowledgeAnswerGenerationError,
     answer_question_from_knowledge,
 )
-from app.services.knowledge_query_service import query_knowledge
+from app.services.federated_search_service import emails_available, search_federated
 from app.ui.app_icons import apply_app_icon
 
 logger = logging.getLogger(__name__)
@@ -28,10 +28,14 @@ class KnowledgeQueryDialog(tk.Toplevel):
         parent: tk.Misc,
         db_connection: sqlite3.Connection,
         on_open_note: Callable[[int], None] | None = None,
+        on_open_email: Callable[[str], bool] | None = None,
+        on_create_note_from_email: Callable[[str], bool] | None = None,
     ):
         super().__init__(parent)
         self.db_connection = db_connection
         self.on_open_note = on_open_note
+        self.on_open_email = on_open_email
+        self.on_create_note_from_email = on_create_note_from_email
         self.results_by_iid: dict[str, dict[str, object]] = {}
         self.current_results: list[dict[str, object]] = []
         self._searching = False
@@ -44,14 +48,20 @@ class KnowledgeQueryDialog(tk.Toplevel):
         self.transient(parent.winfo_toplevel())
 
         self.question_var = tk.StringVar()
-        self.status_var = tk.StringVar(value="Escribe una pregunta para localizar notas relevantes.")
+        self.include_knowledge_var = tk.BooleanVar(value=True)
+        self.emails_available = emails_available(self.db_connection)
+        self.include_emails_var = tk.BooleanVar(value=self.emails_available)
+        status = "Escribe una pregunta para localizar Knowledge y emails locales."
+        if not self.emails_available:
+            status = "Escribe una pregunta. No hay emails locales disponibles para buscar."
+        self.status_var = tk.StringVar(value=status)
 
         self._build_layout()
         self.question_entry.focus_set()
 
     def _build_layout(self) -> None:
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(2, weight=1)
+        self.rowconfigure(3, weight=1)
 
         form = ttk.Frame(self, padding=(12, 12, 12, 8))
         form.grid(row=0, column=0, sticky="ew")
@@ -65,34 +75,46 @@ class KnowledgeQueryDialog(tk.Toplevel):
         self.answer_button = ttk.Button(form, text="Responder con IA", command=self.answer_with_ai, state="disabled")
         self.answer_button.grid(row=0, column=3, padx=(8, 0))
 
+        source_frame = ttk.Frame(self, padding=(12, 0, 12, 8))
+        source_frame.grid(row=1, column=0, sticky="ew")
+        ttk.Label(source_frame, text="Buscar en:").pack(side="left", padx=(0, 8))
+        self.knowledge_check = ttk.Checkbutton(source_frame, text="Knowledge", variable=self.include_knowledge_var)
+        self.knowledge_check.pack(side="left", padx=(0, 12))
+        self.emails_check = ttk.Checkbutton(source_frame, text="Emails", variable=self.include_emails_var)
+        self.emails_check.pack(side="left")
+        if not self.emails_available:
+            self.emails_check.configure(state="disabled")
+            ttk.Label(source_frame, text="No hay emails locales disponibles para buscar.").pack(side="left", padx=(12, 0))
+
         ttk.Label(
             self,
             text="Resultados:",
             padding=(12, 0, 12, 4),
             font=("TkDefaultFont", 10, "bold"),
-        ).grid(row=1, column=0, sticky="w")
+        ).grid(row=2, column=0, sticky="w")
 
         body = ttk.PanedWindow(self, orient="vertical")
-        body.grid(row=2, column=0, sticky="nsew", padx=12, pady=(0, 8))
+        body.grid(row=3, column=0, sticky="nsew", padx=12, pady=(0, 8))
 
         results_frame = ttk.Frame(body)
         results_frame.columnconfigure(0, weight=1)
         results_frame.rowconfigure(0, weight=1)
         body.add(results_frame, weight=3)
 
-        columns = ("area", "topic", "type", "match_source", "score", "snippet")
+        columns = ("source", "subtitle", "date", "type", "match_source", "score", "snippet")
         self.results_tree = ttk.Treeview(results_frame, columns=columns, show="tree headings", selectmode="browse")
-        self.results_tree.heading("#0", text="Nota")
+        self.results_tree.heading("#0", text="Título / Asunto")
         self.results_tree.column("#0", width=230, minwidth=160, anchor="w", stretch=True)
         headings = {
-            "area": "Área",
-            "topic": "Tema",
+            "source": "Origen",
+            "subtitle": "Área / Remitente",
+            "date": "Tema / Fecha",
             "type": "Tipo",
             "match_source": "Coincidencia",
             "score": "Score",
             "snippet": "Snippet",
         }
-        widths = {"area": 105, "topic": 110, "type": 90, "match_source": 105, "score": 65, "snippet": 320}
+        widths = {"source": 90, "subtitle": 150, "date": 130, "type": 90, "match_source": 120, "score": 65, "snippet": 320}
         for column in columns:
             self.results_tree.heading(column, text=headings[column])
             self.results_tree.column(column, width=widths[column], anchor="w", stretch=column == "snippet")
@@ -115,7 +137,7 @@ class KnowledgeQueryDialog(tk.Toplevel):
         answer_scrollbar.grid(row=1, column=1, sticky="ns")
         self.answer_text.configure(yscrollcommand=answer_scrollbar.set)
 
-        ttk.Label(self, textvariable=self.status_var, padding=(12, 0, 12, 12)).grid(row=3, column=0, sticky="ew")
+        ttk.Label(self, textvariable=self.status_var, padding=(12, 0, 12, 12)).grid(row=4, column=0, sticky="ew")
 
     def search(self) -> None:
         if self._searching:
@@ -124,12 +146,17 @@ class KnowledgeQueryDialog(tk.Toplevel):
         if not question:
             messagebox.showwarning("Preguntar a Knowledge", "Escribe una pregunta para buscar.", parent=self)
             return
+        include_knowledge = bool(self.include_knowledge_var.get())
+        include_emails = bool(self.include_emails_var.get()) and self.emails_available
+        if not include_knowledge and not include_emails:
+            messagebox.showwarning("Preguntar a Knowledge", "Selecciona al menos un origen para buscar.", parent=self)
+            return
         self._set_searching(True)
-        self.status_var.set("Buscando en Knowledge local...")
+        self.status_var.set("Buscando en orígenes locales...")
         self._clear_results()
         self._set_answer_text("")
         database_path = self._database_path()
-        threading.Thread(target=self._query_worker, args=(question, database_path), daemon=True).start()
+        threading.Thread(target=self._query_worker, args=(question, database_path, include_knowledge, include_emails), daemon=True).start()
 
     def _set_searching(self, searching: bool) -> None:
         self._searching = searching
@@ -170,19 +197,19 @@ class KnowledgeQueryDialog(tk.Toplevel):
             return ""
         return str(row[2] if len(row) > 2 else "")
 
-    def _query_worker(self, question: str, database_path: str) -> None:
+    def _query_worker(self, question: str, database_path: str, include_knowledge: bool, include_emails: bool) -> None:
         conn: sqlite3.Connection | None = None
         try:
             if database_path and database_path != ":memory":
                 conn = sqlite3.connect(database_path)
                 conn.row_factory = sqlite3.Row
-                results = query_knowledge(question, conn=conn)
+                results = search_federated(question, include_knowledge, include_emails, conn=conn)
             else:
                 # Fallback for tests or in-memory databases. Real app databases use
                 # the file-backed branch above so the UI remains responsive.
-                results = query_knowledge(question, conn=self.db_connection)
+                results = search_federated(question, include_knowledge, include_emails, conn=self.db_connection)
         except Exception as exc:  # noqa: BLE001
-            logger.exception("KNOWLEDGE_QUERY: search failed")
+            logger.exception("FEDERATED_SEARCH: search failed")
             self.after(0, self._finish_search, None, exc)
             return
         finally:
@@ -215,8 +242,9 @@ class KnowledgeQueryDialog(tk.Toplevel):
                 iid=iid,
                 text=str(result.get("title") or "Sin título"),
                 values=(
-                    str(result.get("area") or ""),
-                    str(result.get("topic") or ""),
+                    "Knowledge" if result.get("source") == "knowledge" else "Email",
+                    str(result.get("subtitle") or ""),
+                    str(result.get("date") or ""),
                     str(result.get("type") or ""),
                     self._format_match_source(result.get("match_source")),
                     f"{score:.2f}",
@@ -227,7 +255,7 @@ class KnowledgeQueryDialog(tk.Toplevel):
         self.results_tree.selection_set(first)
         self.results_tree.focus(first)
         self.status_var.set(
-            f"{len(results)} coincidencias encontradas. Doble clic para abrir la nota o pulsa Responder con IA."
+            f"{len(results)} coincidencias encontradas. Doble clic para abrir el resultado o pulsa Responder con IA."
         )
         self._update_answer_button_state()
 
@@ -245,8 +273,13 @@ class KnowledgeQueryDialog(tk.Toplevel):
         self._set_answering(True)
         self.status_var.set("Generando respuesta IA usando solo resultados locales...")
         self._set_answer_text("Generando respuesta IA...")
-        results_snapshot = [dict(result) for result in self.current_results]
-        threading.Thread(target=self._answer_worker, args=(question, results_snapshot), daemon=True).start()
+        knowledge_results = [dict(result.get("raw") or result) for result in self.current_results if result.get("source") == "knowledge"]
+        if not knowledge_results:
+            self._set_answering(False)
+            self._set_answer_text("La respuesta IA de la Fase 5A usa solo Knowledge. No hay resultados Knowledge seleccionables.")
+            self.status_var.set("Responder con IA queda limitado a Knowledge en esta fase.")
+            return
+        threading.Thread(target=self._answer_worker, args=(question, knowledge_results), daemon=True).start()
 
     def _answer_worker(self, question: str, results: list[dict[str, object]]) -> None:
         try:
@@ -296,9 +329,54 @@ class KnowledgeQueryDialog(tk.Toplevel):
         result = self.results_by_iid.get(str(selection[0]))
         if not result:
             return
-        note_id = int(result.get("note_id") or 0)
+        source = str(result.get("source") or "knowledge")
+        if source == "email":
+            gmail_id = str(result.get("id") or "").strip()
+            logger.info("FEDERATED_SEARCH: open source=email id=%s", gmail_id)
+            if gmail_id and self.on_open_email is not None and self.on_open_email(gmail_id):
+                return
+            self._show_email_result_dialog(result)
+            return
+        note_id = int(result.get("note_id") or result.get("id") or 0)
         if note_id <= 0:
             return
         logger.info("KNOWLEDGE_QUERY: open note_id=%s", note_id)
         if self.on_open_note is not None:
             self.on_open_note(note_id)
+
+    def _show_email_result_dialog(self, result: dict[str, object]) -> None:
+        raw = result.get("raw") if isinstance(result.get("raw"), dict) else {}
+        gmail_id = str(result.get("id") or "").strip()
+        dialog = tk.Toplevel(self)
+        dialog.title("Resultado Email")
+        dialog.geometry("760x520")
+        dialog.transient(self)
+        dialog.columnconfigure(0, weight=1)
+        dialog.rowconfigure(1, weight=1)
+        header = (
+            f"Asunto: {result.get('title') or ''}\n"
+            f"Remitente: {result.get('subtitle') or ''}\n"
+            f"Fecha: {result.get('date') or ''}"
+        )
+        ttk.Label(dialog, text=header, padding=12, justify="left").grid(row=0, column=0, sticky="ew")
+        text = tk.Text(dialog, wrap="word")
+        text.grid(row=1, column=0, sticky="nsew", padx=12)
+        text.insert("1.0", str(raw.get("body_text") or result.get("snippet") or ""))
+        text.configure(state="disabled")
+        buttons = ttk.Frame(dialog, padding=12)
+        buttons.grid(row=2, column=0, sticky="ew")
+
+        def open_email() -> None:
+            if self.on_open_email is not None and self.on_open_email(gmail_id):
+                dialog.destroy()
+
+        def create_note() -> None:
+            logger.info("FEDERATED_SEARCH: create_note_from_email id=%s", gmail_id)
+            if self.on_create_note_from_email is not None and self.on_create_note_from_email(gmail_id):
+                dialog.destroy()
+            else:
+                messagebox.showinfo("Crear nota", "Abre el gestor de emails y usa el flujo existente para crear la nota.", parent=dialog)
+
+        ttk.Button(buttons, text="Abrir en gestor de emails", command=open_email).pack(side="left", padx=(0, 8))
+        ttk.Button(buttons, text="Crear nota desde email", command=create_note).pack(side="left", padx=(0, 8))
+        ttk.Button(buttons, text="Cerrar", command=dialog.destroy).pack(side="right")
