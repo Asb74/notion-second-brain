@@ -1739,6 +1739,17 @@ class EmailManagerWindow(tk.Toplevel):
     def select_email_by_gmail_id(self, gmail_id: str) -> bool:
         return self.open_email_by_id(gmail_id, open_reply=False)
 
+    def create_note_from_email_id(self, gmail_id: str) -> bool:
+        """Select one cached email and reuse the existing create-note flow."""
+        target_id = str(gmail_id or "").strip()
+        if not target_id:
+            return False
+        if not self.open_email_by_id(target_id, open_reply=False):
+            return False
+        self.tree.selection_set((target_id,))
+        self._create_notes_from_selected_emails()
+        return True
+
     def set_reply_body(self, body: str, note_id: int | None = None) -> None:
         self.set_response_draft(body, note_id)
 
