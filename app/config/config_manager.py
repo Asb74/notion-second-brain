@@ -62,6 +62,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "order_validation": {
         "required_fields": list(DEFAULT_REQUIRED_ORDER_FIELDS),
     },
+    "ocr_settings": {
+        "tesseract_path": "",
+    },
 }
 
 
@@ -109,6 +112,10 @@ class ConfigManager:
         """Return order validation runtime settings."""
         return dict(self.load().get("order_validation", {}))
 
+    def get_ocr_settings(self) -> dict[str, Any]:
+        """Return OCR runtime settings."""
+        return dict(self.load().get("ocr_settings", {}))
+
     @staticmethod
     def _clone_default() -> dict[str, Any]:
         return json.loads(json.dumps(DEFAULT_CONFIG))
@@ -148,6 +155,12 @@ class ConfigManager:
             config["email_settings"] = {
                 "auto_check": bool(raw_settings.get("auto_check", True)),
                 "interval": interval,
+            }
+
+        raw_ocr_settings = data.get("ocr_settings", {})
+        if isinstance(raw_ocr_settings, dict):
+            config["ocr_settings"] = {
+                "tesseract_path": str(raw_ocr_settings.get("tesseract_path", "") or "").strip(),
             }
 
         raw_order_validation = data.get("order_validation", {})

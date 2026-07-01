@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
-import shutil
 
 try:
     import pytesseract  # type: ignore
@@ -29,26 +27,12 @@ logger = logging.getLogger(__name__)
 
 
 def configure_tesseract() -> None:
-    """Configure pytesseract to find tesseract.exe in common locations."""
-    if pytesseract is None:
-        logger.warning("pytesseract is not available; OCR fallback may be limited")
-        return
+    """Configure pytesseract through centralized OCR runtime detection."""
+    from app.services.ocr_runtime import configure_pytesseract
 
-    try:
-        tesseract_from_path = shutil.which("tesseract")
-        if tesseract_from_path:
-            logger.info("Tesseract found in PATH: %s", tesseract_from_path)
-            return
-
-        default_path = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-        if os.path.exists(default_path):
-            pytesseract.pytesseract.tesseract_cmd = default_path
-            logger.info("Tesseract configured manually: %s", default_path)
-            return
-
-        logger.warning("Tesseract executable not found on system")
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Tesseract configuration failed: %s", exc)
+    status = configure_pytesseract()
+    if not status.available:
+        logger.warning("ATTACHMENT_DEBUG: OCR runtime unavailable: %s", status.reason)
 
 
 configure_tesseract()
