@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import importlib
 import logging
+import base64
+import json
 import mimetypes
+import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,6 +55,91 @@ def _clean_text(text: str) -> str:
         return cleaned[:MAX_OCR_TEXT_CHARS]
     return cleaned
 
+
+
+def evaluate_ocr_quality(text: str) -> dict[str, object]:
+    """Conservative local OCR quality heuristic for hybrid OCR decisions."""
+    cleaned = _clean_text(text)
+    useful_chars = sum(1 for char in cleaned if char.isalnum())
+    words = re.findall(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9]{2,}", cleaned)
+    real_words = [word for word in words if any(char.isalpha() for char in word)]
+    symbols = sum(1 for char in cleaned if not char.isalnum() and not char.isspace())
+    short_lines = sum(1 for line in cleaned.splitlines() if 0 < sum(1 for char in line if char.isalnum()) <= 2)
+    lines = max(1, len([line for line in cleaned.splitlines() if line.strip()]))
+    symbol_ratio = symbols / max(1, len(cleaned))
+    short_line_ratio = short_lines / lines
+    score = 0.0
+    if useful_chars >= 80:
+        score += 0.35
+    elif useful_chars >= 40:
+        score += 0.2
+    if len(real_words) >= 8:
+        score += 0.35
+    elif len(real_words) >= 4:
+        score += 0.2
+    if symbol_ratio <= 0.18:
+        score += 0.15
+    if short_line_ratio <= 0.35:
+        score += 0.1
+    if re.search(r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b|\b\d+[,.]\d{2}\b|\b\+?\d{6,}\b", cleaned):
+        score += 0.05
+    score = round(min(score, 1.0), 2)
+    if useful_chars < 10:
+        quality, reason = "empty", "menos de 10 caracteres útiles"
+        score = 0.0
+    elif useful_chars < 60 or len(real_words) < 5 or symbol_ratio > 0.35 or short_line_ratio > 0.55 or score < 0.65:
+        quality, reason = "low_quality", f"texto insuficiente o ruidoso (chars={useful_chars}, palabras={len(real_words)}, símbolos={symbol_ratio:.0%})"
+    else:
+        quality, reason = "ok", "texto suficiente para indexación local"
+    return {"quality": quality, "score": score, "reason": reason, "chars": useful_chars, "words": len(real_words)}
+
+
+def _render_pdf_first_page_data_url(path: str) -> str:
+    fitz = importlib.import_module("fitz")
+    with fitz.open(path) as document:
+        if len(document) == 0:
+            return ""
+        pix = document.load_page(0).get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+        return "data:image/png;base64," + base64.b64encode(pix.tobytes("png")).decode("ascii")
+
+
+def _file_data_url(path: str, mime: str) -> str:
+    data = Path(path).read_bytes()
+    return f"data:{mime or 'image/png'};base64," + base64.b64encode(data).decode("ascii")
+
+
+def improve_ocr_with_ai(attachment_path: str, mime: str, current_ocr_text: str | None = None) -> dict[str, object]:
+    """Use configured visual AI to extract better OCR text from an image or first PDF page."""
+    prompt = (
+        "Analiza esta imagen/documento. Extrae todo el texto legible. Corrige errores de OCR evidentes. "
+        "Si identificas campos como empresa, fecha, importe, matrícula, medida, pedido, dirección o teléfono, inclúyelos. "
+        "No inventes datos no visibles. Devuelve JSON con text, document_type, fields y confidence."
+    )
+    try:
+        from app.core.openai_client import build_openai_client
+        from app.services.openai_service import OpenAIService
+
+        data_url = _render_pdf_first_page_data_url(attachment_path) if is_pdf_candidate(attachment_path, mime) else _file_data_url(attachment_path, mime or "image/png")
+        if not data_url:
+            return {"ok": False, "status": "empty", "message": "No se pudo renderizar el documento para IA."}
+        logger.info("KNOWLEDGE_OCR: ai requested path=%s", attachment_path)
+        client = build_openai_client()
+        response = client.responses.create(
+            model="gpt-4o-mini",
+            input=[{"role": "user", "content": [
+                {"type": "input_text", "text": prompt + (f"\nOCR local actual:\n{current_ocr_text}" if current_ocr_text else "")},
+                {"type": "input_image", "image_url": data_url},
+            ]}],
+            text={"format": {"type": "json_object"}},
+        )
+        raw = OpenAIService._extract_text(response)
+        parsed = json.loads(raw) if raw else {}
+        text = _clean_text(str(parsed.get("text") or ""))
+        logger.info("KNOWLEDGE_OCR: ai finished chars=%s", len(text))
+        return {"ok": bool(text), "text": text, "document_type": parsed.get("document_type", ""), "fields": parsed.get("fields", {}), "confidence": parsed.get("confidence", 0), "status": "ok_ai" if text else "empty"}
+    except Exception as exc:  # noqa: BLE001
+        logger.info("KNOWLEDGE_OCR: ai unavailable reason=%s", exc)
+        return {"ok": False, "status": "unavailable", "message": "No hay configuración IA disponible."}
 
 def is_ocr_available() -> tuple[bool, str]:
     if pytesseract is None:

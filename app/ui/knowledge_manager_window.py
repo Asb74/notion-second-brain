@@ -308,7 +308,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
         ttk.Button(attachment_buttons, text="Abrir", command=self.open_attachment).pack(side="left", padx=(0, 6))
         ttk.Button(attachment_buttons, text="Quitar", command=self.remove_attachment).pack(side="left", padx=(0, 6))
         ttk.Button(attachment_buttons, text="Abrir carpeta", command=self.open_attachment_folder).pack(side="left", padx=(0, 6))
-        ttk.Button(attachment_buttons, text="OCR adjunto", command=self.ocr_selected_attachment).pack(side="left", padx=(0, 6))
+        ttk.Button(attachment_buttons, text="OCR / Mejorar", command=self.ocr_selected_attachment).pack(side="left", padx=(0, 6))
         ttk.Button(attachment_buttons, text="Ver OCR", command=self.view_selected_attachment_ocr).pack(side="left", padx=(0, 6))
         ttk.Button(attachment_buttons, text="OCR nota", command=self.ocr_current_note_attachments).pack(side="left")
 
@@ -331,7 +331,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self.ocr_attachment_combo.pack(side="left", padx=(0, 6))
         self.ocr_attachment_combo.bind("<<ComboboxSelected>>", self._on_ocr_attachment_selected)
         ttk.Button(ocr_buttons, text="Guardar corrección", command=self.save_ocr_tab_correction).pack(side="left", padx=(0, 6))
-        ttk.Button(ocr_buttons, text="Rehacer OCR avanzado", command=self.rerun_ocr_tab_attachment).pack(side="left", padx=(0, 6))
+        ttk.Button(ocr_buttons, text="OCR / Mejorar", command=self.rerun_ocr_tab_attachment).pack(side="left", padx=(0, 6))
         ttk.Button(ocr_buttons, text="Seleccionar zona OCR", command=self.select_ocr_zone_placeholder).pack(side="left", padx=(0, 6))
         ttk.Button(ocr_buttons, text="Restaurar OCR bruto", command=self.restore_ocr_tab_raw).pack(side="left", padx=(0, 6))
         ttk.Button(ocr_buttons, text="Copiar texto", command=self.copy_ocr_tab_text).pack(side="left", padx=(0, 6))
@@ -2010,6 +2010,16 @@ class KnowledgeManagerWindow(tk.Toplevel):
         attachment_id = self._ocr_selected_attachment_id()
         if attachment_id is None:
             messagebox.showwarning("OCR Knowledge", "Selecciona un adjunto OCR.", parent=self); return
+        answer = messagebox.askyesnocancel(
+            "OCR / Mejorar",
+            "¿Quieres rehacer OCR local o mejorar con IA?\n\nSí = Rehacer local\nNo = Mejorar con IA\nCancelar = Cancelar",
+            parent=self,
+        )
+        if answer is None:
+            return
+        if answer is False:
+            self._start_ai_ocr_attachment(attachment_id)
+            return
         self._rerun_ocr_attachment_with_correction_prompt(attachment_id)
 
     def view_selected_attachment_ocr(self) -> None:
@@ -2043,7 +2053,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
         viewer = ScrolledText(popup, wrap="word"); viewer.pack(fill="both", expand=True, padx=10, pady=(0, 10)); viewer.insert("1.0", active)
         buttons = ttk.Frame(popup); buttons.pack(fill="x", padx=10, pady=(0, 10))
         ttk.Button(buttons, text="Guardar corrección", command=lambda: self._save_popup_ocr_correction(attachment_id, viewer, popup)).pack(side="left", padx=(0, 6))
-        ttk.Button(buttons, text="Rehacer OCR avanzado", command=lambda: self._rerun_ocr_attachment_with_correction_prompt(attachment_id)).pack(side="left", padx=(0, 6))
+        ttk.Button(buttons, text="OCR / Mejorar", command=lambda: self._rerun_ocr_attachment_with_correction_prompt(attachment_id)).pack(side="left", padx=(0, 6))
         ttk.Button(buttons, text="Restaurar OCR bruto", command=lambda: (viewer.delete("1.0", "end"), viewer.insert("1.0", raw), logger.info("KNOWLEDGE_OCR: raw restored attachment_id=%s", attachment_id))).pack(side="left", padx=(0, 6))
         ttk.Button(buttons, text="Copiar", command=lambda: (self.clipboard_clear(), self.clipboard_append(viewer.get("1.0", "end-1c")))).pack(side="left", padx=(0, 6))
         ttk.Button(buttons, text="Cerrar", command=popup.destroy).pack(side="right")
@@ -2085,7 +2095,10 @@ class KnowledgeManagerWindow(tk.Toplevel):
             return ""
         normalized_status = str(status).strip().lower()
         return {
-            "ok": "ok",
+            "ok": "ok local",
+            "ok_local": "ok local",
+            "low_quality": "pendiente (baja calidad)",
+            "ok_ai": "ok IA",
             "empty": "sin texto",
             "sin texto": "sin texto",
             "error": "error",
@@ -2095,6 +2108,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
             "running": "en curso",
             "skipped": "omitido",
             "unavailable": "no disponible",
+            "ignored": "ignorado",
         }.get(normalized_status, "")
 
     @staticmethod
@@ -2117,6 +2131,8 @@ class KnowledgeManagerWindow(tk.Toplevel):
         try:
             if target == "attachment":
                 result = self.repo.ocr_attachment(identifier)
+            elif target == "attachment_force":
+                result = self.repo.ocr_attachment(identifier, force=True)
             else:
                 result = self.repo.ocr_item_attachments(identifier)
         except Exception as exc:  # noqa: BLE001
@@ -2153,9 +2169,19 @@ class KnowledgeManagerWindow(tk.Toplevel):
             if status == "unavailable":
                 message = str(result.get("message") or "OCR no disponible. Instala Tesseract OCR y pytesseract.")
                 messagebox.showwarning("OCR Knowledge", message, parent=self)
-            elif status == "empty":
-                message = "OCR sin texto detectado"
-            elif status == "ok":
+            elif status in {"empty", "low_quality"}:
+                message = "OCR local insuficiente. Queda pendiente."
+                answer = messagebox.askyesnocancel(
+                    "OCR / Mejorar",
+                    "El OCR local no ha obtenido texto suficiente.\n¿Quieres intentar reconocimiento con IA?\n\nSí = Usar IA\nNo = Dejar pendiente\nCancelar = Ignorar OCR",
+                    parent=self,
+                )
+                attachment_id = int(result.get("attachment_id") or self._selected_attachment_id() or 0)
+                if answer is True and attachment_id:
+                    self._start_ai_ocr_attachment(attachment_id)
+                elif answer is None and attachment_id:
+                    self.repo.ignore_attachment_ocr(attachment_id); self.refresh_attachments(); self.refresh_ocr_tab()
+            elif status in {"ok", "ok_local", "ok_ai"}:
                 message = f"OCR finalizado: {chars} caracteres"
             else:
                 message = str(result.get("message") or "OCR finalizado")
@@ -2168,12 +2194,46 @@ class KnowledgeManagerWindow(tk.Toplevel):
         if attachment_id is None:
             messagebox.showwarning("OCR Knowledge", "Selecciona un adjunto para ejecutar OCR.", parent=self)
             return
+        row = self.repo.get_attachment(attachment_id)
+        status = str(row["ocr_status"] or "").lower() if row is not None else ""
+        if status in {"ok", "ok_local", "ok_ai", "corrected"}:
+            answer = messagebox.askyesnocancel(
+                "OCR / Mejorar",
+                "Este adjunto ya tiene OCR. ¿Quieres rehacer OCR local o mejorar con IA?\n\nSí = Rehacer local\nNo = Mejorar con IA\nCancelar = Cancelar",
+                parent=self,
+            )
+            if answer is None:
+                return
+            if answer is False:
+                self._start_ai_ocr_attachment(attachment_id)
+                return
+            self._start_local_ocr_attachment(attachment_id, force=True)
+            return
+        self._start_local_ocr_attachment(attachment_id, force=False)
+
+    def _start_local_ocr_attachment(self, attachment_id: int, *, force: bool = False) -> None:
         if getattr(self, "_ocr_running", False):
             return
         self._ocr_running = True
-        self.status_var.set("OCR en curso...")
+        self.status_var.set("OCR local en curso...")
         self.configure(cursor="watch")
-        threading.Thread(target=self._run_ocr_worker, args=("attachment", attachment_id), daemon=True).start()
+        threading.Thread(target=self._run_ocr_worker, args=("attachment_force" if force else "attachment", attachment_id), daemon=True).start()
+
+    def _start_ai_ocr_attachment(self, attachment_id: int) -> None:
+        if getattr(self, "_ocr_running", False):
+            return
+        self._ocr_running = True
+        self.status_var.set("OCR con IA en curso...")
+        self.configure(cursor="watch")
+        threading.Thread(target=self._run_ai_ocr_worker, args=(attachment_id,), daemon=True).start()
+
+    def _run_ai_ocr_worker(self, attachment_id: int) -> None:
+        try:
+            result = self.repo.improve_attachment_ocr_with_ai(attachment_id)
+            self.after(0, self._finish_ocr, result, None)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("KNOWLEDGE_OCR: AI UI worker failed")
+            self.after(0, self._finish_ocr, None, exc)
 
     def ocr_current_note_attachments(self) -> None:
         if self.current_item_id is None:

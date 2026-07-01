@@ -99,6 +99,8 @@ class KnowledgeBulkOcrDialog(tk.Toplevel):
         buttons.grid(row=6, column=0, sticky="e")
         self.start_button = ttk.Button(buttons, text="Iniciar", command=self._start)
         self.start_button.pack(side="left", padx=(0, 6))
+        self.ai_button = ttk.Button(buttons, text="Procesar pendientes con IA", command=self._start_ai_pending)
+        self.ai_button.pack(side="left", padx=(0, 6))
         self.cancel_button = ttk.Button(buttons, text="Cancelar", command=self._cancel, state="disabled")
         self.cancel_button.pack(side="left", padx=(0, 6))
         self.close_button = ttk.Button(buttons, text="Cerrar", command=self._close_or_cancel)
@@ -141,11 +143,46 @@ class KnowledgeBulkOcrDialog(tk.Toplevel):
         self.running = True
         self.cancel_event.clear()
         self.start_button.configure(state="disabled")
+        self.ai_button.configure(state="disabled")
         self.cancel_button.configure(state="normal")
         self.summary_var.set("OCR masivo en curso...")
         self.worker = threading.Thread(target=self._worker, daemon=True)
         self.worker.start()
         self.after(150, self._drain_events)
+
+    def _start_ai_pending(self) -> None:
+        if self.running:
+            return
+        if not messagebox.askyesno(
+            "OCR IA",
+            "Se procesarán adjuntos pendientes (baja calidad o vacíos) con IA visual. Puede tener coste. ¿Continuar?",
+            parent=self,
+        ):
+            return
+        self.running = True
+        self.cancel_event.clear()
+        self.start_button.configure(state="disabled")
+        self.ai_button.configure(state="disabled")
+        self.cancel_button.configure(state="normal")
+        self.summary_var.set("Procesando pendientes con IA...")
+        self.worker = threading.Thread(target=self._ai_worker, daemon=True)
+        self.worker.start()
+        self.after(150, self._drain_events)
+
+    def _ai_worker(self) -> None:
+        def progress(event: dict[str, object]) -> None:
+            self.events.put(event)
+
+        try:
+            result = self.repo.bulk_improve_pending_ocr_with_ai(
+                limit=max(1, int(self.max_attachments_var.get() or 1)),
+                cancel_event=self.cancel_event,
+                progress_callback=progress,
+            )
+            self.events.put({"type": "finished", "result": result})
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("KNOWLEDGE_BULK_OCR: ai worker failed")
+            self.events.put({"type": "failed", "error": exc})
 
     def _worker(self) -> None:
         def progress(event: dict[str, object]) -> None:
@@ -182,12 +219,14 @@ class KnowledgeBulkOcrDialog(tk.Toplevel):
     def _finish(self, result: object) -> None:
         self.running = False
         self.start_button.configure(state="normal")
+        self.ai_button.configure(state="normal")
         self.cancel_button.configure(state="disabled")
         data = result if isinstance(result, dict) else {}
         summary = (
             f"Finalizado: candidatos={data.get('candidates', 0)}, procesados={data.get('processed', 0)}, "
-            f"ok={data.get('ok', 0)}, sin texto={data.get('empty', 0)}, errores={data.get('errors', 0)}, "
-            f"omitidos={data.get('skipped', 0)}, tiempo={float(data.get('seconds', 0.0)):.1f}s"
+            f"OK local={data.get('ok_local', data.get('ok', 0))}, baja calidad={data.get('low_quality', 0)}, "
+            f"vacíos={data.get('empty', 0)}, errores={data.get('errors', 0)}, "
+            f"ignorados/omitidos={data.get('skipped', 0)}, tiempo={float(data.get('seconds', 0.0)):.1f}s"
         )
         if data.get("cancelled"):
             summary = "Cancelado. " + summary
@@ -200,6 +239,7 @@ class KnowledgeBulkOcrDialog(tk.Toplevel):
     def _fail(self, error: object) -> None:
         self.running = False
         self.start_button.configure(state="normal")
+        self.ai_button.configure(state="normal")
         self.cancel_button.configure(state="disabled")
         self.summary_var.set(f"Error: {error}")
         messagebox.showerror("OCR masivo", f"No se pudo ejecutar OCR masivo.\n\n{error}", parent=self)
