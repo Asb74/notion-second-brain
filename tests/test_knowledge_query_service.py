@@ -164,3 +164,30 @@ def test_query_candidate_search_is_accent_insensitive() -> None:
 
     assert [result["note_id"] for result in results] == [cafe_id]
     assert results[0]["match_source"] == "título"
+
+
+def test_quoted_phrase_can_fall_back_to_tolerant_ocr_match() -> None:
+    repo = _repo()
+    note_id = repo.create_item(
+        title="Ticket carnicería",
+        content="Recibo fotografiado.",
+        area="Compras",
+        tipo="Ticket",
+    )
+    repo.add_attachment(
+        item_id=note_id,
+        original_filename="Snapshot.png",
+        stored_filename="Snapshot.png",
+        stored_path="/tmp/no-existe-Snapshot.png",
+        mime_type="image/png",
+        file_size=123,
+    )
+    attachment_id = int(repo.list_attachments(note_id)[0]["id"])
+    repo.update_attachment_ocr(attachment_id, "JOSE MIGUEL CARNICER1A", "ok")
+    repo.reindex_item(note_id)
+
+    results = query_knowledge('busca "jose miguel carniceria"', repository=repo)
+
+    assert [result["note_id"] for result in results] == [note_id]
+    assert results[0]["match_source"] == "ocr"
+    assert results[0]["snippet"] == "Coincidencia en OCR: Snapshot.png"

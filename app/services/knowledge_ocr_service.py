@@ -63,6 +63,41 @@ def is_pdf_candidate(path: str | Path, mime: str = "") -> bool:
     return suffix in PDF_EXTENSIONS or normalized_mime == "application/pdf"
 
 
+def _preprocess_image_for_ocr(image: object) -> object:
+    """Return a PIL image optimized for receipt/ticket OCR."""
+    image_ops = importlib.import_module("PIL.ImageOps")
+    image_enhance = importlib.import_module("PIL.ImageEnhance")
+    resampling = getattr(importlib.import_module("PIL.Image"), "Resampling", None)
+    resample_filter = getattr(resampling, "LANCZOS", 1) if resampling is not None else 1
+
+    processed = image.convert("L")
+    processed = image_ops.autocontrast(processed)
+    processed = image_enhance.Contrast(processed).enhance(1.8)
+    width, height = processed.size
+    shortest = min(width, height)
+    scale = 3 if shortest < 900 else 2 if shortest < 1400 else 1
+    if scale > 1:
+        processed = processed.resize((width * scale, height * scale), resample_filter)
+    # Conservative thresholding helps many thermal receipts while keeping gray text legible.
+    return processed.point(lambda pixel: 255 if pixel > 175 else 0)
+
+
+def _tesseract_image_to_string(image: object, lang: str) -> str:
+    configs = ("--oem 3 --psm 6", "--oem 3 --psm 4", "--oem 3 --psm 11")
+    best = ""
+    for config in configs:
+        try:
+            text = _clean_text(pytesseract.image_to_string(image, lang=lang, config=config))
+        except Exception as exc:  # noqa: BLE001
+            logger.info("KNOWLEDGE_OCR: tesseract config failed config=%s reason=%s", config, exc)
+            continue
+        if len(text) > len(best):
+            best = text
+        if len(text) >= 80:
+            break
+    return best
+
+
 def ocr_image(path: str, lang: str = "spa+eng") -> str:
     available, reason = is_ocr_available()
     if not available:
@@ -72,7 +107,8 @@ def ocr_image(path: str, lang: str = "spa+eng") -> str:
         logger.info("KNOWLEDGE_OCR: image started path=%s", path)
         image_mod = importlib.import_module("PIL.Image")
         with image_mod.open(path) as image:
-            text = pytesseract.image_to_string(image, lang=lang)
+            processed = _preprocess_image_for_ocr(image)
+            text = _tesseract_image_to_string(processed, lang)
         cleaned = _clean_text(text)
         logger.info("KNOWLEDGE_OCR: image finished chars=%s", len(cleaned))
         return cleaned
@@ -124,7 +160,7 @@ def ocr_pdf(path: str, max_pages: int = MAX_OCR_PDF_PAGES, lang: str = "spa+eng"
             for page_index in range(min(len(document), max_pages)):
                 pix = document.load_page(page_index).get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
                 image = importlib.import_module("PIL.Image").frombytes("RGB", [pix.width, pix.height], pix.samples)
-                page_text = _clean_text(pytesseract.image_to_string(image, lang=lang))
+                page_text = _clean_text(_tesseract_image_to_string(_preprocess_image_for_ocr(image), lang))
                 logger.info("KNOWLEDGE_OCR: pdf page=%s chars=%s", page_index + 1, len(page_text))
                 if page_text:
                     chunks.append(page_text)

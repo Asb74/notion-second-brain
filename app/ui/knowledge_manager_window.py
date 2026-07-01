@@ -247,10 +247,12 @@ class KnowledgeManagerWindow(tk.Toplevel):
         content_tab = ttk.Frame(notebook, padding=6)
         summary_tab = ttk.Frame(notebook, padding=6)
         attachments_tab = ttk.Frame(notebook, padding=6)
+        ocr_tab = ttk.Frame(notebook, padding=6)
         entities_tab = ttk.Frame(notebook, padding=6)
         notebook.add(content_tab, text="Contenido")
         notebook.add(summary_tab, text="Resumen")
         notebook.add(attachments_tab, text="Adjuntos")
+        notebook.add(ocr_tab, text="OCR")
         notebook.add(entities_tab, text="Entidades")
 
         content_tab.columnconfigure(0, weight=1)
@@ -305,6 +307,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
         ttk.Button(attachment_buttons, text="Quitar", command=self.remove_attachment).pack(side="left", padx=(0, 6))
         ttk.Button(attachment_buttons, text="Abrir carpeta", command=self.open_attachment_folder).pack(side="left", padx=(0, 6))
         ttk.Button(attachment_buttons, text="OCR adjunto", command=self.ocr_selected_attachment).pack(side="left", padx=(0, 6))
+        ttk.Button(attachment_buttons, text="Ver OCR", command=self.view_selected_attachment_ocr).pack(side="left", padx=(0, 6))
         ttk.Button(attachment_buttons, text="OCR nota", command=self.ocr_current_note_attachments).pack(side="left")
 
         self.attachments_paned = ttk.PanedWindow(attachments_tab, orient="vertical")
@@ -315,6 +318,15 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self.attachments_paned.add(attachments_list_frame, weight=1)
         self.attachments_paned.add(preview_frame, weight=3)
         attachments_list_frame.columnconfigure(0, weight=1)
+
+        ocr_tab.columnconfigure(0, weight=1)
+        ocr_tab.rowconfigure(1, weight=1)
+        ocr_buttons = ttk.Frame(ocr_tab)
+        ocr_buttons.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        ttk.Button(ocr_buttons, text="Actualizar OCR", command=self.refresh_ocr_tab).pack(side="left")
+        self.ocr_text = ScrolledText(ocr_tab, wrap="word", height=24)
+        self.ocr_text.grid(row=1, column=0, sticky="nsew")
+        self.ocr_text.configure(state="disabled")
 
         entities_tab.columnconfigure(0, weight=1)
         entities_tab.rowconfigure(1, weight=1)
@@ -713,6 +725,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self._update_summary_controls()
         self.title_var.set("")
         self.refresh_attachments()
+        self.refresh_ocr_tab()
         self.refresh_note_entities()
         self.status_var.set("Nueva nota")
 
@@ -741,6 +754,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self.summary_text.insert("1.0", str(row["summary"] or ""))
         self._update_summary_controls()
         self.refresh_attachments()
+        self.refresh_ocr_tab()
         self.refresh_note_entities()
         self.status_var.set(f"Nota seleccionada id={item_id}")
 
@@ -1847,7 +1861,55 @@ class KnowledgeManagerWindow(tk.Toplevel):
                 ),
             )
 
-    @staticmethod
+    def refresh_ocr_tab(self) -> None:
+        if not hasattr(self, "ocr_text"):
+            return
+        self.ocr_text.configure(state="normal")
+        self.ocr_text.delete("1.0", "end")
+        if self.current_item_id is None:
+            self.ocr_text.insert("1.0", "Selecciona una nota para ver el OCR reconocido.")
+            self.ocr_text.configure(state="disabled")
+            return
+        sections: list[str] = []
+        for row in self.repo.list_attachments(self.current_item_id):
+            ocr_text = str(row["ocr_text"] or "") if "ocr_text" in row.keys() else ""
+            status = self._format_ocr_status(row)
+            updated_at = str(row["ocr_updated_at"] or "") if "ocr_updated_at" in row.keys() else ""
+            if not ocr_text and not status:
+                continue
+            filename = str(row["original_filename"] or row["stored_filename"] or "Adjunto")
+            sections.append(
+                f"[{filename}]\n"
+                f"Estado: {status or 'sin OCR'}\n"
+                f"Caracteres: {len(ocr_text)}\n"
+                f"Fecha OCR: {updated_at or '—'}\n\n"
+                f"{ocr_text or '(Sin texto OCR reconocido)'}"
+            )
+        self.ocr_text.insert("1.0", "\n\n".join(sections) if sections else "Esta nota no tiene OCR guardado en sus adjuntos.")
+        self.ocr_text.configure(state="disabled")
+
+    def view_selected_attachment_ocr(self) -> None:
+        attachment_id = self._selected_attachment_id()
+        if attachment_id is None:
+            messagebox.showwarning("OCR Knowledge", "Selecciona un adjunto para ver su OCR.", parent=self)
+            return
+        row = self.repo.get_attachment(attachment_id)
+        if row is None:
+            self.refresh_attachments()
+            return
+        text = str(row["ocr_text"] or "") if "ocr_text" in row.keys() else ""
+        status = self._format_ocr_status(row)
+        updated_at = str(row["ocr_updated_at"] or "") if "ocr_updated_at" in row.keys() else ""
+        filename = str(row["original_filename"] or row["stored_filename"] or "Adjunto")
+        popup = tk.Toplevel(self)
+        popup.title(f"OCR - {filename}")
+        popup.geometry("760x520")
+        ttk.Label(popup, text=f"{filename}  |  Estado: {status or 'sin OCR'}  |  Caracteres: {len(text)}  |  Fecha OCR: {updated_at or '—'}").pack(fill="x", padx=10, pady=(10, 4))
+        viewer = ScrolledText(popup, wrap="word")
+        viewer.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        viewer.insert("1.0", text or "(Sin texto OCR reconocido)")
+        viewer.configure(state="disabled")
+
     def _format_ocr_status(row: sqlite3.Row) -> str:
         status = str(row["ocr_status"] or "") if "ocr_status" in row.keys() else ""
         return {"ok": "ok", "empty": "sin texto", "error": "error", "unavailable": "no disponible", "pending": "pendiente"}.get(status, status)
@@ -1874,6 +1936,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self.configure(cursor="")
         self._ocr_running = False
         self.refresh_attachments()
+        self.refresh_ocr_tab()
         self.refresh_items()
         if error is not None or result is None:
             message = f"No se pudo ejecutar OCR. {error}"

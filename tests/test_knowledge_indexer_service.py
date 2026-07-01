@@ -62,3 +62,14 @@ def test_build_indexed_text_keeps_unsupported_attachment_name_and_mime(tmp_path)
 
     assert "foto_indice.png" in indexed
     assert "image/png" in indexed
+
+
+def test_build_indexed_text_adds_normalized_ocr_without_replacing_original() -> None:
+    indexed = build_indexed_text(
+        {"id": 1, "title": "Ticket", "content": ""},
+        [{"original_filename": "Snapshot.png", "ocr_text": "JOSE MIGUEL CARNICER1A"}],
+    )
+
+    assert "[OCR: Snapshot.png]\nJOSE MIGUEL CARNICER1A" in indexed
+    assert "[OCR_NORMALIZADO: Snapshot.png]" in indexed
+    assert "jose miguel carniceria" in indexed
