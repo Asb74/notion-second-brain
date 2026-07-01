@@ -1859,7 +1859,14 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self._clear_attachment_preview()
         if self.current_item_id is None:
             return
-        for row in self.repo.list_attachments(self.current_item_id):
+        attachment_rows = self.repo.list_attachments(self.current_item_id)
+        logger.info("KNOWLEDGE_ATTACHMENTS: load note_id=%s count=%s", self.current_item_id, len(attachment_rows))
+        for row in attachment_rows:
+            try:
+                ocr_status = self._format_ocr_status(row)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("KNOWLEDGE_ATTACHMENTS: ocr_status format error reason=%s", exc)
+                ocr_status = ""
             self.attachments_tree.insert(
                 "",
                 "end",
@@ -1868,7 +1875,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
                     row["original_filename"] or row["stored_filename"] or "",
                     row["mime_type"] or "",
                     self._format_file_size(row["file_size"]),
-                    self._format_ocr_status(row),
+                    ocr_status,
                     row["created_at"] or "",
                 ),
             )
@@ -1922,9 +1929,35 @@ class KnowledgeManagerWindow(tk.Toplevel):
         viewer.insert("1.0", text or "(Sin texto OCR reconocido)")
         viewer.configure(state="disabled")
 
-    def _format_ocr_status(row: sqlite3.Row) -> str:
-        status = str(row["ocr_status"] or "") if "ocr_status" in row.keys() else ""
-        return {"ok": "ok", "empty": "sin texto", "error": "error", "unavailable": "no disponible", "pending": "pendiente"}.get(status, status)
+    def _format_ocr_status(self, row: sqlite3.Row | dict[str, object] | object) -> str:
+        status = self._get_ocr_status_value(row)
+        if status is None:
+            return ""
+        normalized_status = str(status).strip().lower()
+        return {
+            "ok": "ok",
+            "empty": "sin texto",
+            "sin texto": "sin texto",
+            "error": "error",
+            "pending": "pendiente",
+            "pendiente": "pendiente",
+        }.get(normalized_status, "")
+
+    @staticmethod
+    def _get_ocr_status_value(row: sqlite3.Row | dict[str, object] | object) -> object | None:
+        if row is None:
+            return None
+        if isinstance(row, dict):
+            return row.get("ocr_status")
+        keys = getattr(row, "keys", None)
+        if callable(keys):
+            try:
+                if "ocr_status" in keys():
+                    return row["ocr_status"]
+                return None
+            except (KeyError, IndexError, TypeError):
+                return None
+        return getattr(row, "ocr_status", None)
 
     def _run_ocr_worker(self, target: str, identifier: int) -> None:
         try:
