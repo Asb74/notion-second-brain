@@ -292,6 +292,12 @@ def ensure_knowledge_schema(conn: sqlite3.Connection) -> None:
         conn.execute("UPDATE knowledge_attachments SET ocr_text_raw = ocr_text WHERE ocr_text_raw IS NULL AND ocr_text IS NOT NULL")
     if "ocr_text_corrected" not in knowledge_attachment_columns:
         conn.execute("ALTER TABLE knowledge_attachments ADD COLUMN ocr_text_corrected TEXT")
+    if "ocr_text_ai" not in knowledge_attachment_columns:
+        conn.execute("ALTER TABLE knowledge_attachments ADD COLUMN ocr_text_ai TEXT")
+    if "ocr_quality_score" not in knowledge_attachment_columns:
+        conn.execute("ALTER TABLE knowledge_attachments ADD COLUMN ocr_quality_score REAL")
+    if "ocr_quality_reason" not in knowledge_attachment_columns:
+        conn.execute("ALTER TABLE knowledge_attachments ADD COLUMN ocr_quality_reason TEXT")
     if "ocr_updated_at" not in knowledge_attachment_columns:
         conn.execute("ALTER TABLE knowledge_attachments ADD COLUMN ocr_updated_at TEXT")
     if "ocr_corrected_at" not in knowledge_attachment_columns:

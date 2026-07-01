@@ -723,7 +723,7 @@ class KnowledgeRepository:
             """
             UPDATE knowledge_attachments
             SET ocr_text = ?, ocr_text_raw = ?, ocr_status = ?, ocr_updated_at = ?, updated_at = ?,
-                ocr_mode = ?, ocr_rotation = ?, ocr_characters = ?
+                ocr_mode = ?, ocr_rotation = ?, ocr_characters = ?, ocr_quality_score = NULL, ocr_quality_reason = NULL
             WHERE id = ?
             """,
             (
@@ -775,13 +775,14 @@ class KnowledgeRepository:
         path = str(row["stored_path"] or "")
         mime = str(row["mime_type"] or "")
         item_id = int(row["item_id"])
-        if not force and str(row["ocr_status"] or "").lower() == "ok":
-            return {"ok": True, "status": "skipped", "chars": 0, "message": "OCR omitido: ya existe OCR correcto."}
+        if not force and str(row["ocr_status"] or "").lower() in {"ok", "ok_local", "ok_ai", "corrected"}:
+            return {"ok": True, "status": "skipped", "chars": 0, "message": "OCR omitido: ya existe OCR válido."}
         try:
             from app.services.knowledge_ocr_service import (
                 is_image_candidate,
                 is_ocr_available,
                 is_pdf_candidate,
+                evaluate_ocr_quality,
                 ocr_image_result,
                 ocr_pdf,
                 should_ocr_attachment,
@@ -810,7 +811,8 @@ class KnowledgeRepository:
             else:
                 text = ocr_pdf(path, max_pages=max_pdf_pages)
                 ocr_mode = "PDF multipase avanzado"
-            status = "ok" if text.strip() else "empty"
+            quality = evaluate_ocr_quality(text)
+            status = "ok_local" if quality["quality"] == "ok" else str(quality["quality"])
             self.update_attachment_ocr(
                 attachment_id,
                 text,
@@ -819,15 +821,54 @@ class KnowledgeRepository:
                 ocr_rotation=ocr_rotation,
                 ocr_characters=len(text),
             )
-            logger.info("KNOWLEDGE_OCR: rerun finished attachment_id=%s chars=%s mode=%s rotation=%s", attachment_id, len(text), ocr_mode, ocr_rotation)
-            logger.info("KNOWLEDGE_OCR: saved note_id=%s attachment_id=%s chars=%s", item_id, attachment_id, len(text))
-            if reindex:
+            self.conn.execute(
+                "UPDATE knowledge_attachments SET ocr_quality_score = ?, ocr_quality_reason = ? WHERE id = ?",
+                (float(quality.get("score") or 0.0), str(quality.get("reason") or ""), attachment_id),
+            )
+            self.conn.commit()
+            logger.info("KNOWLEDGE_OCR: local finished attachment_id=%s quality=%s score=%s chars=%s", attachment_id, status, quality.get("score"), quality.get("chars"))
+            if status == "low_quality":
+                logger.info("KNOWLEDGE_OCR: low_quality attachment_id=%s reason=%s", attachment_id, quality.get("reason"))
+            if reindex and status == "ok_local":
                 self.reindex_item(item_id)
-            return {"ok": True, "status": status, "chars": len(text), "mode": ocr_mode, "rotation": ocr_rotation, "message": "OCR finalizado."}
+            message = "OCR local correcto." if status == "ok_local" else "OCR local insuficiente; pendiente de IA." if status == "low_quality" else "OCR sin texto detectado."
+            return {"ok": status == "ok_local", "status": status, "chars": len(text), "mode": ocr_mode, "rotation": ocr_rotation, "quality": quality, "message": message, "attachment_id": attachment_id}
         except Exception as exc:  # noqa: BLE001
             logger.info("KNOWLEDGE_OCR: error reason=%s", exc)
             self.update_attachment_ocr(attachment_id, str(row["ocr_text_raw"] or row["ocr_text"] or "") if "ocr_text_raw" in row.keys() else str(row["ocr_text"] or ""), "error")
             return {"ok": False, "status": "error", "chars": 0, "message": str(exc)}
+
+    def improve_attachment_ocr_with_ai(self, attachment_id: int, *, reindex: bool = True) -> dict[str, object]:
+        row = self.get_attachment(attachment_id)
+        if row is None:
+            return {"ok": False, "status": "error", "message": "Adjunto no encontrado.", "chars": 0}
+        from app.services.knowledge_ocr_service import improve_ocr_with_ai
+
+        current = str(row["ocr_text_raw"] or row["ocr_text"] or "")
+        logger.info("KNOWLEDGE_OCR: ai requested attachment_id=%s", attachment_id)
+        result = improve_ocr_with_ai(str(row["stored_path"] or ""), str(row["mime_type"] or ""), current)
+        if not result.get("ok"):
+            return {"ok": False, "status": result.get("status", "unavailable"), "message": result.get("message", "No hay configuración IA disponible."), "chars": 0}
+        text = str(result.get("text") or "")
+        now = self._now()
+        self.conn.execute(
+            """
+            UPDATE knowledge_attachments
+            SET ocr_text_ai = ?, ocr_status = ?, ocr_updated_at = ?, updated_at = ?, ocr_quality_score = ?, ocr_quality_reason = ?
+            WHERE id = ?
+            """,
+            (text, "ok_ai", now, now, float(result.get("confidence") or 0.0), "IA visual", attachment_id),
+        )
+        self.conn.commit()
+        item_id = int(row["item_id"])
+        logger.info("KNOWLEDGE_OCR: ai finished attachment_id=%s chars=%s", attachment_id, len(text))
+        if reindex:
+            self.reindex_item(item_id)
+        return {"ok": True, "status": "ok_ai", "chars": len(text), "message": "OCR mejorado con IA.", "attachment_id": attachment_id}
+
+    def ignore_attachment_ocr(self, attachment_id: int) -> None:
+        self.conn.execute("UPDATE knowledge_attachments SET ocr_status = ?, updated_at = ? WHERE id = ?", ("ignored", self._now(), attachment_id))
+        self.conn.commit()
 
     def ocr_item_attachments(self, item_id: int) -> dict[str, int]:
         total = ok = empty = errors = 0
@@ -835,8 +876,10 @@ class KnowledgeRepository:
             total += 1
             result = self.ocr_attachment(int(row["id"]), reindex=False)
             status = str(result.get("status") or "")
-            if status == "ok":
+            if status in {"ok", "ok_local"}:
                 ok += 1
+            elif status == "low_quality":
+                errors += 1
             elif status == "empty":
                 empty += 1
             elif status not in {"skipped"}:
@@ -855,7 +898,7 @@ class KnowledgeRepository:
         clauses = ["ki.status != 'deleted'"]
         params: list[object] = []
         if not force:
-            clauses.append("COALESCE(ka.ocr_status, '') != 'ok'")
+            clauses.append("COALESCE(ka.ocr_status, '') NOT IN ('ok', 'ok_local', 'ok_ai', 'corrected', 'ignored')")
         extension_clauses: list[str] = []
         if include_images:
             for extension in (".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp"):
@@ -944,7 +987,7 @@ class KnowledgeRepository:
         candidates = self.list_bulk_ocr_candidates(include_images=include_images, include_pdfs=include_pdfs, force=force, limit=limit)
         total = len(candidates)
         logger.info("KNOWLEDGE_BULK_OCR: started total=%s", total)
-        stats = {"candidates": total, "processed": 0, "ok": 0, "empty": 0, "errors": 0, "skipped": 0}
+        stats = {"candidates": total, "processed": 0, "ok_local": 0, "ok": 0, "low_quality": 0, "empty": 0, "errors": 0, "skipped": 0}
         reindex_item_ids: set[int] = set()
 
         def emit(event: dict[str, object]) -> None:
@@ -965,9 +1008,12 @@ class KnowledgeRepository:
             status = str(result.get("status") or "")
             chars = int(result.get("chars") or 0)
             stats["processed"] += 1
-            if status == "ok":
-                stats["ok"] += 1
-                logger.info("KNOWLEDGE_BULK_OCR: ok attachment_id=%s chars=%s", attachment_id, chars)
+            if status in {"ok", "ok_local"}:
+                stats["ok_local"] += 1; stats["ok"] += 1
+                logger.info("KNOWLEDGE_BULK_OCR: ok_local attachment_id=%s chars=%s", attachment_id, chars)
+            elif status == "low_quality":
+                stats["low_quality"] += 1
+                logger.info("KNOWLEDGE_BULK_OCR: low_quality attachment_id=%s", attachment_id)
             elif status == "empty":
                 stats["empty"] += 1
                 logger.info("KNOWLEDGE_BULK_OCR: empty attachment_id=%s", attachment_id)
@@ -983,8 +1029,44 @@ class KnowledgeRepository:
             self.reindex_item(item_id)
         elapsed = time.monotonic() - started
         cancelled = bool(cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)())
-        logger.info("KNOWLEDGE_BULK_OCR: finished ok=%s empty=%s errors=%s", stats["ok"], stats["empty"], stats["errors"])
+        logger.info("KNOWLEDGE_BULK_OCR: ok_local=%s low_quality=%s empty=%s errors=%s", stats["ok_local"], stats["low_quality"], stats["empty"], stats["errors"])
         return {**stats, "seconds": elapsed, "cancelled": cancelled}
+
+    def list_pending_ai_ocr_attachments(self, *, limit: int | None = None) -> list[sqlite3.Row]:
+        query = """
+            SELECT ka.*, ki.title AS item_title
+            FROM knowledge_attachments ka
+            JOIN knowledge_items ki ON ki.id = ka.item_id
+            WHERE ki.status != 'deleted' AND COALESCE(ka.ocr_status, '') IN ('low_quality', 'empty')
+            ORDER BY ka.item_id ASC, ka.id ASC
+        """
+        params: tuple[object, ...] = ()
+        if limit is not None:
+            query += " LIMIT ?"
+            params = (max(1, int(limit)),)
+        return self.conn.execute(query, params).fetchall()
+
+    def bulk_improve_pending_ocr_with_ai(self, *, limit: int = 25, cancel_event: object | None = None, progress_callback: object | None = None) -> dict[str, int | bool]:
+        rows = self.list_pending_ai_ocr_attachments(limit=limit)
+        logger.info("KNOWLEDGE_BULK_OCR: ai_batch started total=%s", len(rows))
+        stats = {"candidates": len(rows), "processed": 0, "ok": 0, "errors": 0}
+        reindex_item_ids: set[int] = set()
+        for row in rows:
+            if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
+                break
+            if callable(progress_callback):
+                progress_callback({"type": "log", "message": f"IA OCR: {row['original_filename'] or row['stored_filename']}"})
+            result = self.improve_attachment_ocr_with_ai(int(row["id"]), reindex=False)
+            stats["processed"] += 1
+            if result.get("ok"):
+                stats["ok"] += 1
+                reindex_item_ids.add(int(row["item_id"]))
+            else:
+                stats["errors"] += 1
+        for item_id in sorted(reindex_item_ids):
+            self.reindex_item(item_id)
+        logger.info("KNOWLEDGE_BULK_OCR: ai_batch finished ok=%s errors=%s", stats["ok"], stats["errors"])
+        return {**stats, "cancelled": bool(cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)())}
 
     def update_indexed_text(self, item_id: int, indexed_text: str) -> None:
         self.conn.execute(
