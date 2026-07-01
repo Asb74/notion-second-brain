@@ -31,11 +31,20 @@ _EMAIL_WEIGHTS = {
 def emails_available(conn: sqlite3.Connection) -> bool:
     """Return True when the local emails cache table exists and contains rows."""
     try:
-        row = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'emails'").fetchone()
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'emails'"
+        ).fetchone()
         if row is None:
             return False
         count_row = conn.execute("SELECT COUNT(1) AS total FROM emails").fetchone()
-        return int(count_row["total"] if isinstance(count_row, sqlite3.Row) else count_row[0]) > 0
+        return (
+            int(
+                count_row["total"]
+                if isinstance(count_row, sqlite3.Row)
+                else count_row[0]
+            )
+            > 0
+        )
     except sqlite3.Error:
         return False
 
@@ -58,7 +67,9 @@ def search_federated(
         include_emails,
     )
     if conn is None and knowledge_repository is None:
-        raise ValueError("search_federated necesita una conexión SQLite o un KnowledgeRepository")
+        raise ValueError(
+            "search_federated necesita una conexión SQLite o un KnowledgeRepository"
+        )
 
     per_source_limit = max(1, int(limit or 30))
     knowledge_results: list[dict[str, Any]] = []
@@ -72,7 +83,9 @@ def search_federated(
                 repository=knowledge_repository,
                 conn=conn if knowledge_repository is None else None,
             )
-            knowledge_results = [_normalize_knowledge_result(item) for item in raw_knowledge]
+            knowledge_results = [
+                _normalize_knowledge_result(item) for item in raw_knowledge
+            ]
         except Exception:  # noqa: BLE001
             logger.exception("FEDERATED_SEARCH: knowledge search failed")
     logger.info("FEDERATED_SEARCH: knowledge_results=%s", len(knowledge_results))
@@ -85,7 +98,13 @@ def search_federated(
     logger.info("FEDERATED_SEARCH: email_results=%s", len(email_results))
 
     results = [*knowledge_results, *email_results]
-    results.sort(key=lambda item: (-float(item.get("score") or 0.0), str(item.get("date") or "")), reverse=False)
+    results.sort(
+        key=lambda item: (
+            -float(item.get("score") or 0.0),
+            str(item.get("date") or ""),
+        ),
+        reverse=False,
+    )
     final_results = results[: max(1, int(limit or 30))]
     logger.info("FEDERATED_SEARCH: total=%s", len(final_results))
     return final_results
@@ -108,7 +127,9 @@ def _normalize_knowledge_result(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _search_emails(query: str, conn: sqlite3.Connection, limit: int) -> list[dict[str, Any]]:
+def _search_emails(
+    query: str, conn: sqlite3.Connection, limit: int
+) -> list[dict[str, Any]]:
     if not emails_available(conn):
         return []
     phrases = extract_phrases(query)
@@ -117,7 +138,7 @@ def _search_emails(query: str, conn: sqlite3.Connection, limit: int) -> list[dic
         return []
     rows = conn.execute(
         """
-        SELECT gmail_id, subject, sender, real_sender, received_at, body_text, status, category, type,
+        SELECT gmail_id, thread_id, subject, sender, real_sender, received_at, body_text, status, category, type,
                original_from, original_to, original_cc, original_reply_to, attachments_json, numero_pedido
         FROM emails
         ORDER BY received_at DESC
@@ -127,11 +148,16 @@ def _search_emails(query: str, conn: sqlite3.Connection, limit: int) -> list[dic
     ).fetchall()
     scored = [_score_email_row(row, terms, phrases) for row in rows]
     matches = [item for item in scored if item is not None]
-    matches.sort(key=lambda item: (-float(item["score"]), str(item.get("date") or "")), reverse=False)
+    matches.sort(
+        key=lambda item: (-float(item["score"]), str(item.get("date") or "")),
+        reverse=False,
+    )
     return matches[: max(1, int(limit))]
 
 
-def _score_email_row(row: sqlite3.Row, terms: list[str], phrases: list[str]) -> dict[str, Any] | None:
+def _score_email_row(
+    row: sqlite3.Row, terms: list[str], phrases: list[str]
+) -> dict[str, Any] | None:
     fields = _email_fields(row)
     score = 0.0
     matched_sources: list[str] = []
@@ -150,28 +176,58 @@ def _score_email_row(row: sqlite3.Row, terms: list[str], phrases: list[str]) -> 
     if score <= 0:
         return None
     gmail_id = str(row["gmail_id"] or "").strip()
-    sender = str(row["real_sender"] or row["sender"] or row["original_from"] or "").strip()
+    thread_id = str(row["thread_id"] or "").strip() if "thread_id" in row.keys() else ""
+    subject = str(row["subject"] or "Sin asunto")
+    sender = str(
+        row["real_sender"] or row["sender"] or row["original_from"] or ""
+    ).strip()
+    date = str(row["received_at"] or "")
+    body = str(row["body_text"] or "")
+    snippet = _make_email_snippet(fields, needles)
+    logger.info(
+        "FEDERATED_SEARCH: email result ids id=%s email_id=%s gmail_id=%s message_id=%s",
+        gmail_id,
+        gmail_id,
+        gmail_id,
+        "",
+    )
     return {
         "source": "email",
         "id": gmail_id,
-        "title": str(row["subject"] or "Sin asunto"),
+        "email_id": gmail_id,
+        "gmail_id": gmail_id,
+        "message_id": "",
+        "thread_id": thread_id,
+        "subject": subject,
+        "from": sender,
+        "sender": sender,
+        "date": date,
+        "body": body,
+        "title": subject,
         "subtitle": sender,
-        "date": str(row["received_at"] or ""),
         "type": "Email",
         "score": score,
         "match_source": ", ".join(matched_sources),
-        "snippet": _make_email_snippet(fields, needles),
+        "snippet": snippet,
         "raw": dict(row),
     }
 
 
 def _email_fields(row: sqlite3.Row) -> dict[str, str]:
     attachments = _attachment_names(str(row["attachments_json"] or "[]"))
-    recipients = " ".join(str(row[key] or "") for key in ("original_to", "original_cc", "original_reply_to"))
-    metadata = " ".join(str(row[key] or "") for key in ("received_at", "status", "category", "type", "numero_pedido"))
+    recipients = " ".join(
+        str(row[key] or "")
+        for key in ("original_to", "original_cc", "original_reply_to")
+    )
+    metadata = " ".join(
+        str(row[key] or "")
+        for key in ("received_at", "status", "category", "type", "numero_pedido")
+    )
     return {
         "subject": str(row["subject"] or ""),
-        "sender": " ".join(str(row[key] or "") for key in ("sender", "real_sender", "original_from")),
+        "sender": " ".join(
+            str(row[key] or "") for key in ("sender", "real_sender", "original_from")
+        ),
         "recipients": recipients,
         "attachments": attachments,
         "body": str(row["body_text"] or ""),
@@ -208,7 +264,9 @@ def _match_label(field: str) -> str:
     }.get(field, field)
 
 
-def _make_email_snippet(fields: dict[str, str], needles: list[str], context: int = 80) -> str:
+def _make_email_snippet(
+    fields: dict[str, str], needles: list[str], context: int = 80
+) -> str:
     for field in ("subject", "attachments", "sender", "recipients", "body", "metadata"):
         text = re.sub(r"\s+", " ", fields.get(field, "")).strip()
         folded = normalize_text(text)

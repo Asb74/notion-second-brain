@@ -42,6 +42,11 @@ def get_app_icon() -> tk.PhotoImage | None:
 
 def apply_app_icon(window: tk.Misc) -> None:
     """Apply global app icon to a Tk/Toplevel window when available."""
+    try:
+        title = window.title() if hasattr(window, "title") else ""
+    except Exception:  # noqa: BLE001
+        title = ""
+    logger.info("ICON_DEBUG aplicado a ventana secundaria title=%s", title)
     logger.info("ICON_DEBUG: intentando cargar icono %s", ICON_PATH)
     try:
         window.iconbitmap(str(ICON_PATH))

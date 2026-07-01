@@ -597,9 +597,27 @@ class KnowledgeQueryDialog(tk.Toplevel):
                 or source.get("subtitle")
                 or ""
             )
+            raw = source.get("raw") if isinstance(source.get("raw"), dict) else {}
             normalized["raw"] = {
-                "body_text": source.get("body") or source.get("snippet") or ""
+                **raw,
+                "body_text": source.get("body")
+                or raw.get("body_text")
+                or source.get("snippet")
+                or "",
             }
+            for key in (
+                "id",
+                "email_id",
+                "gmail_id",
+                "message_id",
+                "thread_id",
+                "subject",
+                "from",
+                "sender",
+                "body",
+            ):
+                if key in source:
+                    normalized[key] = source[key]
             return normalized
         normalized = dict(source)
         normalized["source"] = "knowledge"
@@ -651,22 +669,9 @@ class KnowledgeQueryDialog(tk.Toplevel):
                 "Crear nota", "Selecciona una fuente Email.", parent=self
             )
             return
-        gmail_id = str(source.get("id") or "").strip()
-        logger.info("KNOWLEDGE_QUERY_UI: create note from email id=%s", gmail_id)
-        if (
-            gmail_id
-            and self.on_create_note_from_email is not None
-            and self.on_create_note_from_email(gmail_id)
-        ):
+        if self._create_note_from_email_source(source):
             return
-        logger.info(
-            "FEDERATED_ANSWER: open_source_error reason=create_note_from_email_unavailable"
-        )
-        messagebox.showwarning(
-            "Crear nota",
-            "La fuente ya no está disponible o no se pudo iniciar el flujo existente.",
-            parent=self,
-        )
+        self._show_email_result_dialog(source, note_only_message=True)
 
     def _open_source(self, source: dict[str, object]) -> None:
         source_type = str(source.get("source") or "knowledge")
@@ -676,13 +681,7 @@ class KnowledgeQueryDialog(tk.Toplevel):
         )
         try:
             if source_type == "email":
-                if (
-                    source_id
-                    and self.on_open_email is not None
-                    and self.on_open_email(source_id)
-                ):
-                    return
-                self._show_email_result_dialog(source)
+                self.open_email_source(source)
                 return
             note_id = int(source.get("note_id") or source.get("id") or 0)
             if note_id <= 0 or self.on_open_note is None:
@@ -720,15 +719,7 @@ class KnowledgeQueryDialog(tk.Toplevel):
             return
         source = str(result.get("source") or "knowledge")
         if source == "email":
-            gmail_id = str(result.get("id") or "").strip()
-            logger.info("KNOWLEDGE_QUERY_UI: open source source=email id=%s", gmail_id)
-            if (
-                gmail_id
-                and self.on_open_email is not None
-                and self.on_open_email(gmail_id)
-            ):
-                return
-            self._show_email_result_dialog(result)
+            self.open_email_source(result)
             return
         note_id = int(result.get("note_id") or result.get("id") or 0)
         if note_id <= 0:
@@ -737,18 +728,77 @@ class KnowledgeQueryDialog(tk.Toplevel):
         if self.on_open_note is not None:
             self.on_open_note(note_id)
 
-    def _show_email_result_dialog(self, result: dict[str, object]) -> None:
-        raw = result.get("raw") if isinstance(result.get("raw"), dict) else {}
-        gmail_id = str(result.get("id") or "").strip()
+    def _email_source_id(self, source: dict[str, object]) -> str:
+        for key in ("id", "email_id", "gmail_id", "message_id"):
+            value = str(source.get(key) or "").strip()
+            if value:
+                return value
+        return ""
+
+    def _email_preview_text(self, source: dict[str, object]) -> str:
+        raw = source.get("raw") if isinstance(source.get("raw"), dict) else {}
+        return str(
+            source.get("body")
+            or raw.get("body_text")
+            or source.get("snippet")
+            or raw.get("snippet")
+            or ""
+        ).strip()
+
+    def open_email_source(self, source: dict[str, object]) -> None:
+        email_id = self._email_source_id(source)
+        logger.info(
+            "FEDERATED_ANSWER: open email source ids=%s",
+            {
+                key: source.get(key)
+                for key in ("id", "email_id", "gmail_id", "message_id", "thread_id")
+            },
+        )
+        if email_id and self.on_open_email is not None:
+            try:
+                if self.on_open_email(email_id):
+                    logger.info(
+                        "FEDERATED_ANSWER: email opened in manager id=%s", email_id
+                    )
+                    return
+            except Exception as exc:  # noqa: BLE001
+                logger.info(
+                    "FEDERATED_ANSWER: email manager open failed reason=%s", exc
+                )
+        if self._email_preview_text(source):
+            subject = str(source.get("subject") or source.get("title") or "Sin asunto")
+            logger.info("FEDERATED_ANSWER: email opened fallback subject=%s", subject)
+            self._show_email_result_dialog(source)
+            return
+        logger.info("FEDERATED_ANSWER: email unavailable reason=missing_id_and_preview")
+        messagebox.showwarning(
+            "Fuente no disponible", "La fuente ya no está disponible.", parent=self
+        )
+
+    def _create_note_from_email_source(self, source: dict[str, object]) -> bool:
+        email_id = self._email_source_id(source)
+        logger.info("KNOWLEDGE_QUERY_UI: create note from email id=%s", email_id)
+        return bool(
+            email_id
+            and self.on_create_note_from_email is not None
+            and self.on_create_note_from_email(email_id)
+        )
+
+    def _show_email_result_dialog(
+        self, result: dict[str, object], note_only_message: bool = False
+    ) -> None:
+        gmail_id = self._email_source_id(result)
+        preview_text = self._email_preview_text(result)
         dialog = tk.Toplevel(self)
         dialog.title("Resultado Email")
+        apply_app_icon(dialog)
         dialog.geometry("760x520")
         dialog.transient(self)
         dialog.columnconfigure(0, weight=1)
         dialog.rowconfigure(1, weight=1)
         header = (
-            f"Asunto: {result.get('title') or ''}\n"
-            f"Remitente: {result.get('subtitle') or result.get('location') or result.get('from') or ''}\n"
+            f"Asunto: {result.get('subject') or result.get('title') or ''}\n"
+            f"Remitente: {result.get('subtitle') or result.get('location') or result.get('from') or result.get('sender') or ''}\n"
             f"Fecha: {result.get('date') or ''}"
         )
         ttk.Label(dialog, text=header, padding=12, justify="left").grid(
@@ -756,32 +806,36 @@ class KnowledgeQueryDialog(tk.Toplevel):
         )
         text = tk.Text(dialog, wrap="word")
         text.grid(row=1, column=0, sticky="nsew", padx=12)
-        text.insert("1.0", str(raw.get("body_text") or result.get("snippet") or ""))
+        text.insert(
+            "1.0",
+            preview_text or "Este resultado solo está disponible como vista previa.",
+        )
         text.configure(state="disabled")
         buttons = ttk.Frame(dialog, padding=12)
         buttons.grid(row=2, column=0, sticky="ew")
 
         def open_email() -> None:
             logger.info("KNOWLEDGE_QUERY_UI: open source source=email id=%s", gmail_id)
+            if not gmail_id:
+                messagebox.showinfo(
+                    "Resultado Email",
+                    "Este resultado solo está disponible como vista previa.",
+                    parent=dialog,
+                )
+                return
             if self.on_open_email is not None and self.on_open_email(gmail_id):
+                logger.info("FEDERATED_ANSWER: email opened in manager id=%s", gmail_id)
                 dialog.destroy()
             else:
-                logger.info(
-                    "FEDERATED_ANSWER: open_source_error reason=email_manager_unavailable"
-                )
-                messagebox.showwarning(
-                    "Fuente no disponible",
-                    "La fuente ya no está disponible.",
+                messagebox.showinfo(
+                    "Resultado Email",
+                    "Este resultado solo está disponible como vista previa.",
                     parent=dialog,
                 )
 
         def create_note() -> None:
             logger.info("KNOWLEDGE_QUERY_UI: create note from email id=%s", gmail_id)
-            if (
-                gmail_id
-                and self.on_create_note_from_email is not None
-                and self.on_create_note_from_email(gmail_id)
-            ):
+            if self._create_note_from_email_source(result):
                 dialog.destroy()
             else:
                 logger.info(
@@ -793,9 +847,18 @@ class KnowledgeQueryDialog(tk.Toplevel):
                     parent=dialog,
                 )
 
-        ttk.Button(buttons, text="Abrir en gestor de emails", command=open_email).pack(
-            side="left", padx=(0, 8)
+        manager_button = ttk.Button(
+            buttons, text="Abrir en gestor de emails", command=open_email
         )
+        if not gmail_id:
+            manager_button.configure(state="disabled")
+        manager_button.pack(side="left", padx=(0, 8))
+        if note_only_message:
+            messagebox.showinfo(
+                "Crear nota",
+                "No se pudo abrir el gestor. Puedes revisar la vista previa del email.",
+                parent=dialog,
+            )
         ttk.Button(buttons, text="Crear nota desde email", command=create_note).pack(
             side="left", padx=(0, 8)
         )
