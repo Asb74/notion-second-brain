@@ -706,6 +706,78 @@ class KnowledgeRepository:
         if item_id is not None:
             self.reindex_item(item_id)
 
+    def update_attachment_ocr(
+        self, attachment_id: int, ocr_text: str = "", ocr_status: str = "", *, commit: bool = True
+    ) -> None:
+        self.conn.execute(
+            """
+            UPDATE knowledge_attachments
+            SET ocr_text = ?, ocr_status = ?, ocr_updated_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (ocr_text, ocr_status, self._now(), self._now(), attachment_id),
+        )
+        if commit:
+            self.conn.commit()
+
+    def ocr_attachment(self, attachment_id: int, *, reindex: bool = True) -> dict[str, object]:
+        row = self.get_attachment(attachment_id)
+        if row is None:
+            return {"ok": False, "status": "error", "chars": 0, "message": "Adjunto no encontrado."}
+        path = str(row["stored_path"] or "")
+        mime = str(row["mime_type"] or "")
+        item_id = int(row["item_id"])
+        try:
+            from app.services.knowledge_ocr_service import (
+                is_image_candidate,
+                is_ocr_available,
+                is_pdf_candidate,
+                ocr_image,
+                ocr_pdf,
+                should_ocr_attachment,
+            )
+
+            available, reason = is_ocr_available()
+            if not available:
+                self.update_attachment_ocr(attachment_id, "", "unavailable")
+                return {"ok": False, "status": "unavailable", "chars": 0, "message": reason}
+            existing_text = ""
+            if is_pdf_candidate(path, mime):
+                from app.services.knowledge_indexer_service import extract_text_from_attachment
+
+                existing_text = extract_text_from_attachment(path, mime, str(row["original_filename"] or ""))
+            if not should_ocr_attachment(path, mime, existing_text):
+                return {"ok": True, "status": "skipped", "chars": 0, "message": "OCR omitido: el adjunto no es candidato."}
+            if is_image_candidate(path, mime):
+                text = ocr_image(path)
+            else:
+                text = ocr_pdf(path)
+            status = "ok" if text.strip() else "empty"
+            self.update_attachment_ocr(attachment_id, text, status)
+            logger.info("KNOWLEDGE_OCR: saved note_id=%s attachment_id=%s chars=%s", item_id, attachment_id, len(text))
+            if reindex:
+                self.reindex_item(item_id)
+            return {"ok": True, "status": status, "chars": len(text), "message": "OCR finalizado."}
+        except Exception as exc:  # noqa: BLE001
+            logger.info("KNOWLEDGE_OCR: error reason=%s", exc)
+            self.update_attachment_ocr(attachment_id, "", "error")
+            return {"ok": False, "status": "error", "chars": 0, "message": str(exc)}
+
+    def ocr_item_attachments(self, item_id: int) -> dict[str, int]:
+        total = ok = empty = errors = 0
+        for row in self.list_attachments(item_id):
+            total += 1
+            result = self.ocr_attachment(int(row["id"]), reindex=False)
+            status = str(result.get("status") or "")
+            if status == "ok":
+                ok += 1
+            elif status == "empty":
+                empty += 1
+            elif status not in {"skipped"}:
+                errors += 1
+        self.reindex_item(item_id)
+        return {"total": total, "ok": ok, "empty": empty, "errors": errors}
+
     def update_indexed_text(self, item_id: int, indexed_text: str) -> None:
         self.conn.execute(
             """
@@ -725,11 +797,15 @@ class KnowledgeRepository:
         note["tags"] = self.get_tags_for_item(item_id)
         return note
 
-    def reindex_item(self, item_id: int) -> dict[str, int | bool]:
+    def reindex_item(self, item_id: int, *, apply_ocr: bool = False) -> dict[str, int | bool]:
         note = self._item_for_index(item_id)
         if note is None:
             return {"ok": False, "chars": 0}
         attachments = [dict(row) for row in self.list_attachments(item_id)]
+        if apply_ocr:
+            for attachment in attachments:
+                self.ocr_attachment(int(attachment["id"]), reindex=False)
+            attachments = [dict(row) for row in self.list_attachments(item_id)]
         payload = index_note(note, attachments)
         indexed_text = str(payload.get("indexed_text") or "")
         self.conn.execute("UPDATE knowledge_items SET indexed_text = ? WHERE id = ?", (indexed_text, item_id))
@@ -744,19 +820,19 @@ class KnowledgeRepository:
             logger.warning("KNOWLEDGE_ENTITY: error note_id=%s reason=%s", item_id, exc)
         return {"ok": True, "chars": chars}
 
-    def reindex_all(self) -> dict[str, int | float]:
+    def reindex_all(self, *, apply_ocr: bool = False) -> dict[str, int | float]:
         rows = self.conn.execute(
             "SELECT id FROM knowledge_items WHERE status != 'deleted' ORDER BY id ASC"
         ).fetchall()
         total = len(rows)
-        logger.info("KNOWLEDGE_INDEX: reindex started total=%s", total)
+        logger.info("KNOWLEDGE_INDEX: reindex started total=%s apply_ocr=%s", total, apply_ocr)
         started = time.monotonic()
         ok = 0
         errors = 0
         for row in rows:
             item_id = int(row["id"])
             try:
-                result = self.reindex_item(item_id)
+                result = self.reindex_item(item_id, apply_ocr=apply_ocr)
                 if result.get("ok"):
                     ok += 1
                 else:
