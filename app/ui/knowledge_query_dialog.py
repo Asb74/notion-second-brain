@@ -12,7 +12,7 @@ from tkinter import messagebox, ttk
 from app.services.knowledge_answer_service import (
     KnowledgeAnswerConfigError,
     KnowledgeAnswerGenerationError,
-    answer_question_from_knowledge,
+    answer_question_from_federated_results,
 )
 from app.services.federated_search_service import emails_available, search_federated
 from app.ui.app_icons import apply_app_icon
@@ -266,38 +266,35 @@ class KnowledgeQueryDialog(tk.Toplevel):
         if not question:
             messagebox.showwarning("Preguntar a Knowledge", "Escribe una pregunta para responder.", parent=self)
             return
-        if not self.current_results:
-            self._set_answer_text("No he encontrado información suficiente en Knowledge para responder con seguridad.")
-            self.status_var.set("No hay resultados locales para responder con IA.")
+        answer_results = self._current_results_for_active_sources()
+        if not answer_results:
+            self._set_answer_text("No hay resultados sobre los que responder.")
+            self.status_var.set("No hay resultados sobre los que responder.")
             return
         self._set_answering(True)
-        self.status_var.set("Generando respuesta IA usando solo resultados locales...")
-        self._set_answer_text("Generando respuesta IA...")
-        knowledge_results = [dict(result.get("raw") or result) for result in self.current_results if result.get("source") == "knowledge"]
-        if not knowledge_results:
-            self._set_answering(False)
-            self._set_answer_text("La respuesta IA de la Fase 5A usa solo Knowledge. No hay resultados Knowledge seleccionables.")
-            self.status_var.set("Responder con IA queda limitado a Knowledge en esta fase.")
-            return
-        threading.Thread(target=self._answer_worker, args=(question, knowledge_results), daemon=True).start()
+        scope = self._answer_scope_label(answer_results)
+        self.status_var.set(f"Generando respuesta IA basada en: {scope}...")
+        self._set_answer_text(f"Generando respuesta IA basada en: {scope}...")
+        federated_results = [dict(result) for result in answer_results[:8]]
+        threading.Thread(target=self._answer_worker, args=(question, federated_results, scope), daemon=True).start()
 
-    def _answer_worker(self, question: str, results: list[dict[str, object]]) -> None:
+    def _answer_worker(self, question: str, results: list[dict[str, object]], scope: str) -> None:
         try:
-            payload = answer_question_from_knowledge(question, results)
+            payload = answer_question_from_federated_results(question, results)
         except KnowledgeAnswerConfigError as exc:
-            self.after(0, self._finish_answer, None, exc)
+            self.after(0, self._finish_answer, None, exc, scope)
             return
         except KnowledgeAnswerGenerationError as exc:
-            logger.exception("KNOWLEDGE_ANSWER: generation failed")
-            self.after(0, self._finish_answer, None, exc)
+            logger.exception("FEDERATED_ANSWER: generation failed")
+            self.after(0, self._finish_answer, None, exc, scope)
             return
         except Exception as exc:  # noqa: BLE001
-            logger.exception("KNOWLEDGE_ANSWER: unexpected UI worker error")
-            self.after(0, self._finish_answer, None, exc)
+            logger.exception("FEDERATED_ANSWER: unexpected UI worker error")
+            self.after(0, self._finish_answer, None, exc, scope)
             return
-        self.after(0, self._finish_answer, payload, None)
+        self.after(0, self._finish_answer, payload, None, scope)
 
-    def _finish_answer(self, payload: dict[str, object] | None, error: Exception | None) -> None:
+    def _finish_answer(self, payload: dict[str, object] | None, error: Exception | None, scope: str) -> None:
         self._set_answering(False)
         if error is not None or payload is None:
             if isinstance(error, KnowledgeAnswerConfigError):
@@ -308,8 +305,28 @@ class KnowledgeQueryDialog(tk.Toplevel):
             self.status_var.set(message.split("\n", maxsplit=1)[0])
             return
         answer = str(payload.get("answer") or "").strip()
-        self._set_answer_text(answer)
-        self.status_var.set("Respuesta IA generada usando solo Knowledge local.")
+        self._set_answer_text(f"Basada en: {scope}\n\n{answer}")
+        self.status_var.set(f"Respuesta IA generada basada en: {scope}.")
+
+    def _current_results_for_active_sources(self) -> list[dict[str, object]]:
+        include_knowledge = bool(self.include_knowledge_var.get())
+        include_emails = bool(self.include_emails_var.get()) and self.emails_available
+        return [
+            result
+            for result in self.current_results
+            if (result.get("source") == "knowledge" and include_knowledge)
+            or (result.get("source") == "email" and include_emails)
+        ]
+
+    @staticmethod
+    def _answer_scope_label(results: list[dict[str, object]]) -> str:
+        has_knowledge = any(result.get("source") == "knowledge" for result in results)
+        has_email = any(result.get("source") == "email" for result in results)
+        if has_knowledge and has_email:
+            return "Knowledge + Emails"
+        if has_email:
+            return "Solo Emails"
+        return "Solo Knowledge"
 
     @staticmethod
     def _format_match_source(match_source: object) -> str:
