@@ -48,3 +48,7 @@ settings.local.*
 release/
 output/
 installer/
+# --- Firebase service account keys ---
+*firebase*.json
+*service-account*.json
+*adminsdk*.json

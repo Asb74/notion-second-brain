@@ -25,3 +25,4 @@ pytesseract>=0.3.10
 win10toast>=0.9
 Pillow>=10.0.0
 tkinterdnd2>=0.4.3
+firebase-admin>=6.5.0
