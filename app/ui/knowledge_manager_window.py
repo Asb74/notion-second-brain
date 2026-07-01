@@ -30,6 +30,7 @@ except Exception:  # noqa: BLE001
 from app.config.config_paths import app_data_dir, knowledge_attachments_dir
 from app.persistence.knowledge_repository import KnowledgeRepository
 from app.persistence.masters_repository import MastersRepository
+from app.services.knowledge_indexer_service import get_effective_ocr_origin, get_effective_ocr_text
 from app.services.knowledge_summary_service import (
     KnowledgeSummaryConfigError,
     KnowledgeSummaryGenerationError,
@@ -1894,7 +1895,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
     def _attachment_ocr_texts(self, row: sqlite3.Row) -> tuple[str, str, str]:
         raw = str(row["ocr_text_raw"] or row["ocr_text"] or "") if "ocr_text_raw" in row.keys() else str(row["ocr_text"] or "")
         corrected = str(row["ocr_text_corrected"] or "") if "ocr_text_corrected" in row.keys() else ""
-        return raw, corrected, corrected.strip() or raw
+        return raw, corrected, get_effective_ocr_text(row)
 
     def _ocr_selected_attachment_id(self) -> int | None:
         if not hasattr(self, "ocr_attachment_combo"):
@@ -1956,6 +1957,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
             self.ocr_info_var.set("Adjunto no encontrado.")
             return
         raw, corrected, active = self._attachment_ocr_texts(row)
+        origin = get_effective_ocr_origin(row)
         status = self._format_ocr_status(row)
         updated_at = str(row["ocr_updated_at"] or "") if "ocr_updated_at" in row.keys() else ""
         corrected_at = str(row["ocr_corrected_at"] or "") if "ocr_corrected_at" in row.keys() else ""
@@ -1963,9 +1965,9 @@ class KnowledgeManagerWindow(tk.Toplevel):
         mode = str(row["ocr_mode"] or "") if "ocr_mode" in row.keys() else ""
         rotation = row["ocr_rotation"] if "ocr_rotation" in row.keys() else None
         stored_chars = row["ocr_characters"] if "ocr_characters" in row.keys() else None
-        chars = int(stored_chars) if stored_chars not in (None, "") and not corrected.strip() else len(active)
+        chars = len(active)
         self.ocr_info_var.set(
-            f"{filename} | Estado: {status or 'sin OCR'} | Modo OCR: {mode or '—'} | "
+            f"{filename} | Estado: {status or 'sin OCR'} | Origen: {origin or '—'} | Modo OCR: {mode or '—'} | "
             f"Rotación: {rotation if rotation is not None else '—'}° | Caracteres: {chars} | "
             f"Fecha OCR: {updated_at or '—'} | Corregido: {'sí' if corrected.strip() else 'no'}{f' ({corrected_at})' if corrected_at else ''}"
         )
@@ -2033,6 +2035,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
         if row is None:
             self.refresh_attachments(); return
         raw, corrected, active = self._attachment_ocr_texts(row)
+        origin = get_effective_ocr_origin(row)
         status = self._format_ocr_status(row)
         updated_at = str(row["ocr_updated_at"] or "") if "ocr_updated_at" in row.keys() else ""
         filename = str(row["original_filename"] or row["stored_filename"] or "Adjunto")
@@ -2040,11 +2043,11 @@ class KnowledgeManagerWindow(tk.Toplevel):
         mode = str(row["ocr_mode"] or "") if "ocr_mode" in row.keys() else ""
         rotation = row["ocr_rotation"] if "ocr_rotation" in row.keys() else None
         stored_chars = row["ocr_characters"] if "ocr_characters" in row.keys() else None
-        chars = int(stored_chars) if stored_chars not in (None, "") and not corrected.strip() else len(active)
+        chars = len(active)
         info = ttk.Label(
             popup,
             text=(
-                f"{filename} | Estado: {status or 'sin OCR'} | Modo OCR: {mode or '—'} | "
+                f"{filename} | Estado: {status or 'sin OCR'} | Origen: {origin or '—'} | Modo OCR: {mode or '—'} | "
                 f"Rotación: {rotation if rotation is not None else '—'}° | Caracteres: {chars} | "
                 f"Fecha OCR: {updated_at or '—'} | Corregido: {'sí' if corrected.strip() else 'no'}"
             ),
@@ -2094,11 +2097,15 @@ class KnowledgeManagerWindow(tk.Toplevel):
         if status is None:
             return ""
         normalized_status = str(status).strip().lower()
+        if normalized_status == "ok_ai" and get_effective_ocr_origin(row) != "IA":
+            return "empty IA"
         return {
             "ok": "ok local",
             "ok_local": "ok local",
-            "low_quality": "pendiente (baja calidad)",
+            "low_quality": "low quality",
             "ok_ai": "ok IA",
+            "empty_ai": "empty IA",
+            "error_ai": "error IA",
             "empty": "sin texto",
             "sin texto": "sin texto",
             "error": "error",
@@ -2168,6 +2175,9 @@ class KnowledgeManagerWindow(tk.Toplevel):
             chars = int(result.get("chars") or 0)
             if status == "unavailable":
                 message = str(result.get("message") or "OCR no disponible. Instala Tesseract OCR y pytesseract.")
+                messagebox.showwarning("OCR Knowledge", message, parent=self)
+            elif status in {"empty_ai", "error_ai", "error"}:
+                message = str(result.get("message") or "La IA no ha podido extraer texto útil.")
                 messagebox.showwarning("OCR Knowledge", message, parent=self)
             elif status in {"empty", "low_quality"}:
                 message = "OCR local insuficiente. Queda pendiente."

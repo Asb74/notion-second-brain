@@ -58,6 +58,31 @@ def _value(mapping: Any, key: str, default: Any = "") -> Any:
         return default
 
 
+
+def get_effective_ocr_text(attachment_row: Any) -> str:
+    """Return the OCR text that should be displayed and indexed for an attachment."""
+    corrected = str(_value(attachment_row, "ocr_text_corrected", "") or "").strip()
+    if corrected:
+        return corrected
+    ai_text = str(_value(attachment_row, "ocr_text_ai", "") or "").strip()
+    if ai_text:
+        return ai_text
+    status = str(_value(attachment_row, "ocr_status", "") or "").strip().lower()
+    if status in {"ok", "ok_local"}:
+        return str(_value(attachment_row, "ocr_text_raw", "") or _value(attachment_row, "ocr_text", "") or "").strip()
+    return ""
+
+
+def get_effective_ocr_origin(attachment_row: Any) -> str:
+    if str(_value(attachment_row, "ocr_text_corrected", "") or "").strip():
+        return "corregido"
+    if str(_value(attachment_row, "ocr_text_ai", "") or "").strip():
+        return "IA"
+    if get_effective_ocr_text(attachment_row):
+        return "local"
+    return ""
+
+
 def _trim(text: str, limit: int, *, context: str) -> str:
     if len(text) <= limit:
         return text
@@ -223,15 +248,11 @@ def build_indexed_text(note: dict[str, Any] | Any, attachments: list[dict[str, A
             parts.append(extract_text_from_attachment(path, mime, filename))
         elif filename:
             logger.info("KNOWLEDGE_INDEX: attachment skipped filename=%s reason=missing_path", filename)
-        corrected_ocr_text = str(_value(attachment, "ocr_text_corrected", "") or "").strip()
-        ai_ocr_text = str(_value(attachment, "ocr_text_ai", "") or "").strip()
-        raw_ocr_text = str(_value(attachment, "ocr_text_raw", "") or _value(attachment, "ocr_text", "") or "").strip()
-        status = str(_value(attachment, "ocr_status", "") or "").strip().lower()
-        raw_is_valid = status in {"ok", "ok_local"}
-        ocr_text = corrected_ocr_text or ai_ocr_text or (raw_ocr_text if raw_is_valid else "")
+        ocr_text = get_effective_ocr_text(attachment)
         if ocr_text:
             normalized_ocr_text = normalize_ocr_text_for_search(ocr_text)
-            marker = "OCR corregido" if corrected_ocr_text else "OCR IA" if ai_ocr_text else "OCR local"
+            origin = get_effective_ocr_origin(attachment)
+            marker = "OCR corregido" if origin == "corregido" else "OCR IA" if origin == "IA" else "OCR local"
             parts.append(f"[{marker}: {filename or 'adjunto'}]\n{ocr_text}")
             if normalized_ocr_text:
                 parts.append(f"[{marker}_NORMALIZADO: {filename or 'adjunto'}]\n{normalized_ocr_text}")

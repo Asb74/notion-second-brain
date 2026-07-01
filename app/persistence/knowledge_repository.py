@@ -723,7 +723,7 @@ class KnowledgeRepository:
             """
             UPDATE knowledge_attachments
             SET ocr_text = ?, ocr_text_raw = ?, ocr_status = ?, ocr_updated_at = ?, updated_at = ?,
-                ocr_mode = ?, ocr_rotation = ?, ocr_characters = ?, ocr_quality_score = NULL, ocr_quality_reason = NULL
+                ocr_mode = ?, ocr_engine = ?, ocr_rotation = ?, ocr_characters = ?, ocr_quality_score = NULL, ocr_quality_reason = NULL
             WHERE id = ?
             """,
             (
@@ -733,6 +733,7 @@ class KnowledgeRepository:
                 now,
                 now,
                 ocr_mode,
+                "local" if ocr_status in {"ok", "ok_local", "low_quality", "empty"} else "",
                 ocr_rotation,
                 ocr_characters if ocr_characters is not None else len(ocr_text),
                 attachment_id,
@@ -845,25 +846,45 @@ class KnowledgeRepository:
         from app.services.knowledge_ocr_service import improve_ocr_with_ai
 
         current = str(row["ocr_text_raw"] or row["ocr_text"] or "")
-        logger.info("KNOWLEDGE_OCR: ai requested attachment_id=%s", attachment_id)
+        filename = str(row["original_filename"] or row["stored_filename"] or "")
+        logger.info("KNOWLEDGE_OCR_AI: requested attachment_id=%s filename=%s", attachment_id, filename)
         result = improve_ocr_with_ai(str(row["stored_path"] or ""), str(row["mime_type"] or ""), current)
-        if not result.get("ok"):
-            return {"ok": False, "status": result.get("status", "unavailable"), "message": result.get("message", "No hay configuración IA disponible."), "chars": 0}
-        text = str(result.get("text") or "")
+        text = str(result.get("text") or "").strip()
+        item_id = int(row["item_id"])
+        if not result.get("ok") or not text:
+            status = str(result.get("status") or "empty_ai")
+            if status not in {"empty_ai", "error"}:
+                status = "error"
+            now = self._now()
+            self.conn.execute(
+                """
+                UPDATE knowledge_attachments
+                SET ocr_status = ?, ocr_updated_at = ?, updated_at = ?, ocr_engine = ?, ocr_characters = ?
+                WHERE id = ?
+                """,
+                (status, now, now, "ai", 0, attachment_id),
+            )
+            self.conn.commit()
+            if status == "error":
+                logger.info("KNOWLEDGE_OCR_AI: error attachment_id=%s reason=%s", attachment_id, result.get("message") or "ai_error")
+            else:
+                logger.info("KNOWLEDGE_OCR_AI: empty attachment_id=%s reason=%s", attachment_id, result.get("message") or "no_useful_text")
+            return {"ok": False, "status": status, "message": "La IA no ha podido extraer texto útil.", "chars": 0, "attachment_id": attachment_id}
         now = self._now()
         self.conn.execute(
             """
             UPDATE knowledge_attachments
-            SET ocr_text_ai = ?, ocr_status = ?, ocr_updated_at = ?, updated_at = ?, ocr_quality_score = ?, ocr_quality_reason = ?
+            SET ocr_text_ai = ?, ocr_status = ?, ocr_updated_at = ?, updated_at = ?,
+                ocr_engine = ?, ocr_mode = ?, ocr_characters = ?, ocr_quality_score = ?, ocr_quality_reason = ?
             WHERE id = ?
             """,
-            (text, "ok_ai", now, now, float(result.get("confidence") or 0.0), "IA visual", attachment_id),
+            (text, "ok_ai", now, now, "ai", "ai", len(text), float(result.get("confidence") or 0.0), "IA visual", attachment_id),
         )
         self.conn.commit()
-        item_id = int(row["item_id"])
-        logger.info("KNOWLEDGE_OCR: ai finished attachment_id=%s chars=%s", attachment_id, len(text))
+        logger.info("KNOWLEDGE_OCR_AI: saved attachment_id=%s status=ok_ai chars=%s", attachment_id, len(text))
         if reindex:
             self.reindex_item(item_id)
+            logger.info("KNOWLEDGE_OCR_AI: reindexed note_id=%s", item_id)
         return {"ok": True, "status": "ok_ai", "chars": len(text), "message": "OCR mejorado con IA.", "attachment_id": attachment_id}
 
     def ignore_attachment_ocr(self, attachment_id: int) -> None:
