@@ -527,16 +527,13 @@ class KnowledgeManagerWindow(tk.Toplevel):
             try:
                 summary = MobileFirebasePublishService(self.repo.conn).publish_all()
             except MobileFirebasePublishError as exc:
-                logger.warning("MOBILE_FIREBASE_UI: sincronización no completada: %s", exc)
-                self.after(0, lambda: self._show_mobile_firebase_publish_error(str(exc)))
+                error_message = str(exc)
+                logger.warning("MOBILE_FIREBASE_UI: sincronización no completada: %s", error_message)
+                self.after(0, lambda msg=error_message: self._show_mobile_firebase_publish_error(msg))
             except Exception as exc:  # noqa: BLE001
+                error_message = f"Error inesperado sincronizando datos móviles: {exc}"
                 logger.exception("MOBILE_FIREBASE_UI: error inesperado sincronizando datos móviles")
-                self.after(
-                    0,
-                    lambda: self._show_mobile_firebase_publish_error(
-                        f"Error inesperado sincronizando datos móviles: {exc}"
-                    ),
-                )
+                self.after(0, lambda msg=error_message: self._show_mobile_firebase_publish_error(msg))
             else:
                 self.after(0, lambda: self._show_mobile_firebase_publish_summary(summary.to_message()))
 
@@ -559,11 +556,13 @@ class KnowledgeManagerWindow(tk.Toplevel):
             try:
                 message = MobileFirebasePublishService(self.repo.conn).test_connection()
             except MobileFirebasePublishError as exc:
-                logger.warning("MOBILE_FIREBASE_UI: prueba de conexión no completada: %s", exc)
-                self.after(0, lambda: self._show_mobile_firebase_publish_error(str(exc)))
+                error_message = str(exc)
+                logger.warning("MOBILE_FIREBASE_UI: prueba de conexión no completada: %s", error_message)
+                self.after(0, lambda msg=error_message: self._show_mobile_firebase_publish_error(msg))
             except Exception as exc:  # noqa: BLE001
+                error_message = f"Error inesperado probando Firebase: {exc}"
                 logger.exception("MOBILE_FIREBASE_UI: error inesperado probando Firebase")
-                self.after(0, lambda: self._show_mobile_firebase_publish_error(f"Error inesperado probando Firebase: {exc}"))
+                self.after(0, lambda msg=error_message: self._show_mobile_firebase_publish_error(msg))
             else:
                 self.after(0, lambda: self._show_mobile_firebase_connection_ok(message))
 
