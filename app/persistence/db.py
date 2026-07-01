@@ -298,6 +298,12 @@ def ensure_knowledge_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE knowledge_attachments ADD COLUMN ocr_corrected_at TEXT")
     if "ocr_status" not in knowledge_attachment_columns:
         conn.execute("ALTER TABLE knowledge_attachments ADD COLUMN ocr_status TEXT")
+    if "ocr_mode" not in knowledge_attachment_columns:
+        conn.execute("ALTER TABLE knowledge_attachments ADD COLUMN ocr_mode TEXT")
+    if "ocr_rotation" not in knowledge_attachment_columns:
+        conn.execute("ALTER TABLE knowledge_attachments ADD COLUMN ocr_rotation INTEGER")
+    if "ocr_characters" not in knowledge_attachment_columns:
+        conn.execute("ALTER TABLE knowledge_attachments ADD COLUMN ocr_characters INTEGER")
 
     conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_items_indexed_text ON knowledge_items(indexed_text)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_attachments_item ON knowledge_attachments(item_id)")
