@@ -131,45 +131,42 @@ def _knowledge_navigable_source_from_result(
 
 
 def _email_source_from_result(result: dict[str, Any] | Any) -> dict[str, Any]:
-    return {
+    raw = _raw_result(result)
+    gmail_id = str(
+        _result_value(result, "gmail_id", _result_value(result, "id", "")) or ""
+    )
+    email_id = str(_result_value(result, "email_id", gmail_id) or "")
+    message_id = str(_result_value(result, "message_id", "") or "")
+    thread_id = str(_result_value(result, "thread_id", "") or "")
+    sender = str(
+        _result_value(
+            result,
+            "real_sender",
+            _result_value(
+                result,
+                "sender",
+                _result_value(
+                    result, "original_from", _result_value(result, "subtitle", "")
+                ),
+            ),
+        )
+        or ""
+    )
+    source = {
         "source": "email",
-        "id": str(
-            _result_value(result, "gmail_id", _result_value(result, "id", "")) or ""
-        ),
+        "id": str(_result_value(result, "id", gmail_id or email_id) or ""),
+        "email_id": email_id,
+        "gmail_id": gmail_id,
+        "message_id": message_id,
+        "thread_id": thread_id,
         "subject": str(
             _result_value(
                 result, "subject", _result_value(result, "title", "Sin asunto")
             )
             or "Sin asunto"
         ),
-        "from": str(
-            _result_value(
-                result,
-                "real_sender",
-                _result_value(
-                    result,
-                    "sender",
-                    _result_value(
-                        result, "original_from", _result_value(result, "subtitle", "")
-                    ),
-                ),
-            )
-            or ""
-        ),
-        "sender": str(
-            _result_value(
-                result,
-                "real_sender",
-                _result_value(
-                    result,
-                    "sender",
-                    _result_value(
-                        result, "original_from", _result_value(result, "subtitle", "")
-                    ),
-                ),
-            )
-            or ""
-        ),
+        "from": sender,
+        "sender": sender,
         "date": str(
             _result_value(result, "received_at", _result_value(result, "date", ""))
             or ""
@@ -179,7 +176,15 @@ def _email_source_from_result(result: dict[str, Any] | Any) -> dict[str, Any]:
         "body": str(
             _result_value(result, "body_text", _result_value(result, "body", "")) or ""
         ),
+        "raw": dict(raw) if isinstance(raw, dict) else {},
     }
+    logger.info(
+        "FEDERATED_ANSWER: source email ids id=%s email_id=%s gmail_id=%s",
+        source["id"],
+        source["email_id"],
+        source["gmail_id"],
+    )
+    return source
 
 
 def _score(result: dict[str, Any] | Any) -> float:
