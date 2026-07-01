@@ -31,7 +31,7 @@ from app.config.config_paths import app_data_dir, knowledge_attachments_dir
 from app.persistence.knowledge_repository import KnowledgeRepository
 from app.persistence.masters_repository import MastersRepository
 from app.services.knowledge_indexer_service import get_effective_ocr_origin, get_effective_ocr_text
-from app.services.mobile_master_publish_service import MobileMasterPublishError, MobileMasterPublishService
+from app.services.mobile_firebase_publish_service import MobileFirebasePublishError, MobileFirebasePublishService
 from app.services.knowledge_summary_service import (
     KnowledgeSummaryConfigError,
     KnowledgeSummaryGenerationError,
@@ -211,7 +211,8 @@ class KnowledgeManagerWindow(tk.Toplevel):
         ttk.Button(buttons, text="Reindexar Knowledge", command=self.reindex_knowledge).pack(side="left", padx=(0, 6))
         ttk.Button(buttons, text="Reindexar Knowledge con OCR", command=self.reindex_knowledge_with_ocr).pack(side="left", padx=(0, 6))
         ttk.Button(buttons, text="OCR masivo", command=self.open_bulk_ocr_dialog).pack(side="left", padx=(0, 6))
-        ttk.Button(buttons, text="Publicar maestros móvil", command=self.publish_mobile_masters).pack(side="left")
+        ttk.Button(buttons, text="Sincronizar datos móviles", command=self.publish_mobile_data).pack(side="left", padx=(0, 6))
+        ttk.Button(buttons, text="Probar conexión Firebase", command=self.test_mobile_firebase_connection).pack(side="left")
 
         ttk.Label(right, text="Título").grid(row=0, column=0, sticky="w", pady=(0, 4))
         ttk.Entry(right, textvariable=self.title_var).grid(row=0, column=1, sticky="ew", pady=(0, 4))
@@ -517,37 +518,60 @@ class KnowledgeManagerWindow(tk.Toplevel):
             self.topic_var.set("")
 
 
-    def publish_mobile_masters(self) -> None:
-        """Publish local Knowledge masters to Firebase Firestore for the mobile app."""
-        self.status_var.set("Publicando maestros móvil...")
-        logger.info("MOBILE_MASTERS_UI: publicación solicitada desde Knowledge Manager")
+    def publish_mobile_data(self) -> None:
+        """Publish local mobile users and Knowledge masters to Firebase Firestore."""
+        self.status_var.set("Sincronizando datos móviles...")
+        logger.info("MOBILE_FIREBASE_UI: sincronización solicitada desde Knowledge Manager")
 
         def worker() -> None:
             try:
-                summary = MobileMasterPublishService(self.repo.conn).publish()
-            except MobileMasterPublishError as exc:
-                logger.warning("MOBILE_MASTERS_UI: publicación no completada: %s", exc)
-                self.after(0, lambda: self._show_mobile_master_publish_error(str(exc)))
+                summary = MobileFirebasePublishService(self.repo.conn).publish_all()
+            except MobileFirebasePublishError as exc:
+                logger.warning("MOBILE_FIREBASE_UI: sincronización no completada: %s", exc)
+                self.after(0, lambda: self._show_mobile_firebase_publish_error(str(exc)))
             except Exception as exc:  # noqa: BLE001
-                logger.exception("MOBILE_MASTERS_UI: error inesperado publicando maestros móvil")
+                logger.exception("MOBILE_FIREBASE_UI: error inesperado sincronizando datos móviles")
                 self.after(
                     0,
-                    lambda: self._show_mobile_master_publish_error(
-                        f"Error inesperado publicando maestros móvil: {exc}"
+                    lambda: self._show_mobile_firebase_publish_error(
+                        f"Error inesperado sincronizando datos móviles: {exc}"
                     ),
                 )
             else:
-                self.after(0, lambda: self._show_mobile_master_publish_summary(summary.to_message()))
+                self.after(0, lambda: self._show_mobile_firebase_publish_summary(summary.to_message()))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _show_mobile_master_publish_summary(self, message: str) -> None:
-        self.status_var.set("Maestros móvil publicados")
-        messagebox.showinfo("Publicar maestros móvil", message, parent=self)
+    def _show_mobile_firebase_publish_summary(self, message: str) -> None:
+        self.status_var.set("Datos móviles sincronizados")
+        messagebox.showinfo("Sincronizar datos móviles", message, parent=self)
 
-    def _show_mobile_master_publish_error(self, message: str) -> None:
-        self.status_var.set("Error publicando maestros móvil")
-        messagebox.showerror("Publicar maestros móvil", message, parent=self)
+    def _show_mobile_firebase_publish_error(self, message: str) -> None:
+        self.status_var.set("Error sincronizando datos móviles")
+        messagebox.showerror("Sincronizar datos móviles", message, parent=self)
+
+    def test_mobile_firebase_connection(self) -> None:
+        """Test Firebase Admin SDK credentials and Firestore connectivity."""
+        self.status_var.set("Probando conexión Firebase...")
+        logger.info("MOBILE_FIREBASE_UI: prueba de conexión solicitada")
+
+        def worker() -> None:
+            try:
+                message = MobileFirebasePublishService(self.repo.conn).test_connection()
+            except MobileFirebasePublishError as exc:
+                logger.warning("MOBILE_FIREBASE_UI: prueba de conexión no completada: %s", exc)
+                self.after(0, lambda: self._show_mobile_firebase_publish_error(str(exc)))
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("MOBILE_FIREBASE_UI: error inesperado probando Firebase")
+                self.after(0, lambda: self._show_mobile_firebase_publish_error(f"Error inesperado probando Firebase: {exc}"))
+            else:
+                self.after(0, lambda: self._show_mobile_firebase_connection_ok(message))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_mobile_firebase_connection_ok(self, message: str) -> None:
+        self.status_var.set("Conexión Firebase correcta")
+        messagebox.showinfo("Probar conexión Firebase", message, parent=self)
 
 
     def open_entities_window(self, entity_id: int | None = None) -> None:
