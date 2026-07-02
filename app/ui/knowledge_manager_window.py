@@ -32,7 +32,7 @@ from app.persistence.knowledge_repository import KnowledgeRepository
 from app.persistence.masters_repository import MastersRepository
 from app.services.knowledge_indexer_service import get_effective_ocr_origin, get_effective_ocr_text
 from app.services.mobile_firebase_publish_service import MobileFirebasePublishError, MobileFirebasePublishService
-from app.services.mobile_notes_import_service import MobileNotesImportError, MobileNotesImportService
+from app.services.mobile_notes_import_service import MobileNotesImportError, MobileNotesImportService, MobileNotesImportSummary
 from app.services.knowledge_summary_service import (
     KnowledgeSummaryConfigError,
     KnowledgeSummaryGenerationError,
@@ -202,19 +202,36 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self.tree.configure(yscrollcommand=scrollbar.set)
 
         buttons = ttk.Frame(left)
-        buttons.grid(row=4, column=0, sticky="ew", pady=(8, 0))
-        ttk.Button(buttons, text="Nueva nota", command=self.new_item).pack(side="left", padx=(0, 6))
-        ttk.Button(buttons, text="Guardar", command=self.save_item).pack(side="left", padx=(0, 6))
-        ttk.Button(buttons, text="Eliminar", command=self.delete_item).pack(side="left", padx=(0, 6))
-        ttk.Button(buttons, text="Refrescar", command=self.refresh_items).pack(side="left", padx=(0, 6))
-        ttk.Button(buttons, text="Preguntar a Knowledge", command=self.open_query_dialog).pack(side="left", padx=(0, 6))
-        ttk.Button(buttons, text="Entidades", command=self.open_entities_window).pack(side="left", padx=(0, 6))
-        ttk.Button(buttons, text="Reindexar Knowledge", command=self.reindex_knowledge).pack(side="left", padx=(0, 6))
-        ttk.Button(buttons, text="Reindexar Knowledge con OCR", command=self.reindex_knowledge_with_ocr).pack(side="left", padx=(0, 6))
-        ttk.Button(buttons, text="OCR masivo", command=self.open_bulk_ocr_dialog).pack(side="left", padx=(0, 6))
-        ttk.Button(buttons, text="Sincronizar datos móviles", command=self.publish_mobile_data).pack(side="left", padx=(0, 6))
-        ttk.Button(buttons, text="Importar notas móviles", command=self.import_mobile_notes).pack(side="left", padx=(0, 6))
-        ttk.Button(buttons, text="Probar conexión Firebase", command=self.test_mobile_firebase_connection).pack(side="left")
+        buttons.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        buttons.columnconfigure(0, weight=1)
+        buttons.columnconfigure(1, weight=1)
+        buttons.columnconfigure(2, weight=1)
+
+        note_buttons = ttk.LabelFrame(buttons, text="Nota")
+        note_buttons.grid(row=0, column=0, sticky="nsew", padx=(0, 6), pady=(0, 6))
+        ttk.Button(note_buttons, text="Nueva", command=self.new_item).grid(row=0, column=0, sticky="ew", padx=4, pady=3)
+        ttk.Button(note_buttons, text="Guardar", command=self.save_item).grid(row=0, column=1, sticky="ew", padx=4, pady=3)
+        ttk.Button(note_buttons, text="Eliminar", command=self.delete_item).grid(row=1, column=0, sticky="ew", padx=4, pady=3)
+        ttk.Button(note_buttons, text="Refrescar", command=self.refresh_items).grid(row=1, column=1, sticky="ew", padx=4, pady=3)
+        note_buttons.columnconfigure(0, weight=1)
+        note_buttons.columnconfigure(1, weight=1)
+
+        ai_buttons = ttk.LabelFrame(buttons, text="IA / OCR")
+        ai_buttons.grid(row=0, column=1, sticky="nsew", padx=(0, 6), pady=(0, 6))
+        ttk.Button(ai_buttons, text="Preguntar", command=self.open_query_dialog).grid(row=0, column=0, sticky="ew", padx=4, pady=3)
+        ttk.Button(ai_buttons, text="Entidades", command=self.open_entities_window).grid(row=0, column=1, sticky="ew", padx=4, pady=3)
+        ttk.Button(ai_buttons, text="Reindexar", command=self.reindex_knowledge).grid(row=1, column=0, sticky="ew", padx=4, pady=3)
+        ttk.Button(ai_buttons, text="Reindexar OCR", command=self.reindex_knowledge_with_ocr).grid(row=1, column=1, sticky="ew", padx=4, pady=3)
+        ttk.Button(ai_buttons, text="OCR masivo", command=self.open_bulk_ocr_dialog).grid(row=2, column=0, columnspan=2, sticky="ew", padx=4, pady=3)
+        ai_buttons.columnconfigure(0, weight=1)
+        ai_buttons.columnconfigure(1, weight=1)
+
+        mobile_buttons = ttk.LabelFrame(buttons, text="Móvil")
+        mobile_buttons.grid(row=0, column=2, sticky="nsew", pady=(0, 6))
+        ttk.Button(mobile_buttons, text="Sincronizar", command=self.publish_mobile_data).grid(row=0, column=0, sticky="ew", padx=4, pady=3)
+        ttk.Button(mobile_buttons, text="Importar notas", command=self.import_mobile_notes).grid(row=1, column=0, sticky="ew", padx=4, pady=3)
+        ttk.Button(mobile_buttons, text="Probar Firebase", command=self.test_mobile_firebase_connection).grid(row=2, column=0, sticky="ew", padx=4, pady=3)
+        mobile_buttons.columnconfigure(0, weight=1)
 
         ttk.Label(right, text="Título").grid(row=0, column=0, sticky="w", pady=(0, 4))
         ttk.Entry(right, textvariable=self.title_var).grid(row=0, column=1, sticky="ew", pady=(0, 4))
@@ -592,14 +609,40 @@ class KnowledgeManagerWindow(tk.Toplevel):
                 logger.exception("MOBILE_NOTES_IMPORT_UI: error inesperado importando notas móviles")
                 self.after(0, lambda msg=error_message: self._show_mobile_notes_import_error(msg))
             else:
-                self.after(0, lambda: self._show_mobile_notes_import_summary(summary.to_message()))
+                self.after(0, lambda result=summary: self._show_mobile_notes_import_summary(result))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _show_mobile_notes_import_summary(self, message: str) -> None:
-        self.status_var.set("Notas móviles importadas")
+    def _show_mobile_notes_import_summary(self, summary: MobileNotesImportSummary) -> None:
+        self.status_var.set("Notas móviles importadas" if summary.notes_with_error == 0 else "Importación móvil finalizada con errores")
         self.refresh_items()
-        messagebox.showinfo("Importar notas móviles", message, parent=self)
+        dialog = tk.Toplevel(self)
+        dialog.title("Importación de notas móviles")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.geometry("640x460")
+        dialog.columnconfigure(0, weight=1)
+        dialog.rowconfigure(0, weight=1)
+
+        text = ScrolledText(dialog, wrap="word", height=18)
+        text.grid(row=0, column=0, sticky="nsew", padx=12, pady=(12, 8))
+        text.insert("1.0", summary.to_message())
+        text.configure(state="disabled")
+
+        actions = ttk.Frame(dialog)
+        actions.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 12))
+        actions.columnconfigure(0, weight=1)
+
+        log_path = summary.log_path
+        view_log = ttk.Button(
+            actions,
+            text="Ver log",
+            command=lambda: open_file_with_default_app(log_path) if log_path and log_path.exists() else None,
+        )
+        view_log.grid(row=0, column=1, padx=(0, 8))
+        if not log_path or not log_path.exists():
+            view_log.state(["disabled"])
+        ttk.Button(actions, text="Cerrar", command=dialog.destroy).grid(row=0, column=2)
 
     def _show_mobile_notes_import_error(self, message: str) -> None:
         self.status_var.set("Error importando notas móviles")
