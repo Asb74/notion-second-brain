@@ -64,6 +64,8 @@ class MobileNotesImportSummary:
     attachments_expected: int = 0
     attachments_found: int = 0
     attachments_downloaded: int = 0
+    storage_attachments_deleted: int = 0
+    storage_delete_errors: int = 0
     duration_seconds: float = 0.0
     error_details: list[MobileNoteImportErrorDetail] = field(default_factory=list)
     log_path: Path | None = None
@@ -80,6 +82,8 @@ class MobileNotesImportSummary:
             f"Adjuntos esperados: {self.attachments_expected}",
             f"Adjuntos encontrados: {self.attachments_found}",
             f"Adjuntos descargados: {self.attachments_downloaded}",
+            f"Adjuntos borrados de Storage: {self.storage_attachments_deleted}",
+            f"Errores de borrado Storage: {self.storage_delete_errors}",
             f"Duración: {self.duration_seconds:.2f} segundos",
         ]
         if self.error_details:
@@ -101,12 +105,15 @@ class MobileNotesImportService:
         credentials_path: Path | str | None = None,
         desktop_id: str = DESKTOP_ID,
         storage_bucket_name: str | None = None,
+        delete_storage_after_import: bool = True,
     ):
         self.conn = conn
         self.repo = KnowledgeRepository(conn)
         self.credentials_path = Path(credentials_path) if credentials_path else DEFAULT_FIREBASE_CREDENTIALS_PATH
         self.desktop_id = desktop_id.strip() or DESKTOP_ID
         self.storage_bucket_name = self._resolve_storage_bucket_name(storage_bucket_name)
+        # Future-ready service option: can be wired to global app configuration later.
+        self.delete_storage_after_import = delete_storage_after_import
         self._db: Any | None = None
         self._bucket: Any | None = None
         self._run_logger: logging.Logger = logger
@@ -218,9 +225,44 @@ class MobileNotesImportService:
         self._run_logger.info("MOBILE_NOTES_IMPORT: nota creada mobile_note_id=%s note_id=%s adjuntos=%s", mobile_note_id, item_id, len(attachments))
         return item_id
 
-    def mark_note_imported(self, mobile_note_id: str) -> None:
+    def mark_note_imported(self, mobile_note_id: str) -> str:
         db, _bucket = self._ensure_firebase()
-        db.collection(NOTES_COLLECTION).document(mobile_note_id).set({"sync_status": "imported", "imported_at": self._now(), "imported_by_desktop_id": self.desktop_id}, merge=True)
+        imported_at = self._now()
+        db.collection(NOTES_COLLECTION).document(mobile_note_id).set({"sync_status": "imported", "imported_at": imported_at, "imported_by_desktop_id": self.desktop_id}, merge=True)
+        return imported_at
+
+    def delete_storage_attachment(self, storage_path: str) -> None:
+        if not storage_path:
+            raise ValueError("El adjunto móvil no tiene storage_path para borrar.")
+        _db, bucket = self._ensure_firebase()
+        normalized_path = self._normalize_storage_path(storage_path, getattr(bucket, "name", "") or self.storage_bucket_name)
+        blob = bucket.blob(normalized_path)
+        self._run_logger.info("MOBILE_NOTES_IMPORT: borrando adjunto Storage raw=%s normalized=%s bucket=%s", storage_path, normalized_path, getattr(bucket, "name", "") or self.storage_bucket_name)
+        try:
+            exists = blob.exists() if hasattr(blob, "exists") else True
+            if not exists:
+                self._run_logger.warning("MOBILE_NOTES_IMPORT: adjunto Storage no existe normalized=%s", normalized_path)
+                return
+            blob.delete()
+            self._run_logger.info("MOBILE_NOTES_IMPORT: delete Storage OK normalized=%s", normalized_path)
+        except Exception as exc:  # noqa: BLE001
+            self._run_logger.warning("MOBILE_NOTES_IMPORT: delete Storage error normalized=%s error=%s", normalized_path, exc)
+            raise RuntimeError(self._format_storage_delete_error(exc, normalized_path)) from exc
+
+    def mark_attachment_storage_deleted(self, mobile_note_id: str, mobile_attachment_id: str, imported_at: str) -> None:
+        db, _bucket = self._ensure_firebase()
+        now = self._now()
+        db.collection(NOTES_COLLECTION).document(mobile_note_id).collection("attachments").document(mobile_attachment_id).set(
+            {"sync_status": "deleted", "imported_at": imported_at, "deleted_at": now, "storage_deleted": True, "error_message": None},
+            merge=True,
+        )
+
+    def mark_attachment_storage_delete_error(self, mobile_note_id: str, mobile_attachment_id: str, imported_at: str, error_message: str) -> None:
+        db, _bucket = self._ensure_firebase()
+        db.collection(NOTES_COLLECTION).document(mobile_note_id).collection("attachments").document(mobile_attachment_id).set(
+            {"sync_status": "imported", "imported_at": imported_at, "storage_deleted": False, "delete_error_message": error_message[:2000]},
+            merge=True,
+        )
 
     def mark_note_error(self, mobile_note_id: str, error_message: str) -> None:
         db, _bucket = self._ensure_firebase()
@@ -231,7 +273,7 @@ class MobileNotesImportService:
         self._setup_run_logger()
         self._run_logger.info("MOBILE_NOTES_IMPORT: inicio importación Firebase → Knowledge")
         self._run_logger.info("MOBILE_NOTES_IMPORT: credencial usada=%s", self.credentials_path)
-        imported = downloaded = errors = expected_total = found_total = 0
+        imported = downloaded = errors = expected_total = found_total = deleted_total = delete_errors = 0
         error_details: list[MobileNoteImportErrorDetail] = []
         notes: list[dict[str, Any]] = []
         try:
@@ -262,8 +304,23 @@ class MobileNotesImportService:
                     if expected > len(local_attachments):
                         raise RuntimeError(f"La nota esperaba {expected} adjuntos, pero solo se encontraron/descargaron {len(local_attachments)}.")
                     self.create_knowledge_note_from_mobile(note, local_attachments)
-                    self.mark_note_imported(mobile_note_id)
+                    imported_at = self.mark_note_imported(mobile_note_id)
                     imported += 1
+                    if self.delete_storage_after_import:
+                        for attachment in local_attachments:
+                            try:
+                                self.delete_storage_attachment(attachment.storage_path)
+                                self.mark_attachment_storage_deleted(mobile_note_id, attachment.mobile_attachment_id, imported_at)
+                                deleted_total += 1
+                            except Exception as delete_exc:  # noqa: BLE001
+                                delete_errors += 1
+                                delete_message = str(delete_exc) or delete_exc.__class__.__name__
+                                error_details.append(MobileNoteImportErrorDetail(mobile_note_id, title, f"Error borrando Storage attachment_id={attachment.mobile_attachment_id}: {delete_message}"))
+                                self._run_logger.warning("MOBILE_NOTES_IMPORT: no se pudo borrar Storage mobile_note_id=%s attachment_id=%s storage_path=%s error=%s", mobile_note_id, attachment.mobile_attachment_id, attachment.storage_path, delete_message)
+                                try:
+                                    self.mark_attachment_storage_delete_error(mobile_note_id, attachment.mobile_attachment_id, imported_at, delete_message)
+                                except Exception:  # noqa: BLE001
+                                    self._run_logger.exception("MOBILE_NOTES_IMPORT: no se pudo marcar error delete Storage mobile_note_id=%s attachment_id=%s", mobile_note_id, attachment.mobile_attachment_id)
                 except Exception as exc:  # noqa: BLE001
                     errors += 1
                     message = str(exc) or exc.__class__.__name__
@@ -273,10 +330,22 @@ class MobileNotesImportService:
                         self.mark_note_error(mobile_note_id, message)
                     except Exception:  # noqa: BLE001
                         self._run_logger.exception("MOBILE_NOTES_IMPORT: no se pudo marcar error mobile_note_id=%s", mobile_note_id)
-            return MobileNotesImportSummary(len(notes), imported, errors, expected_total, found_total, downloaded, time.monotonic() - start, error_details, self._log_path)
+            return MobileNotesImportSummary(
+                notes_found=len(notes),
+                notes_imported=imported,
+                notes_with_error=errors,
+                attachments_expected=expected_total,
+                attachments_found=found_total,
+                attachments_downloaded=downloaded,
+                storage_attachments_deleted=deleted_total,
+                storage_delete_errors=delete_errors,
+                duration_seconds=time.monotonic() - start,
+                error_details=error_details,
+                log_path=self._log_path,
+            )
         finally:
-            summary_line = "MOBILE_NOTES_IMPORT: resumen final notes=%s imported=%s errors=%s expected=%s found=%s downloaded=%s duration=%.2f"
-            self._run_logger.info(summary_line, len(notes), imported, errors, expected_total, found_total, downloaded, time.monotonic() - start)
+            summary_line = "MOBILE_NOTES_IMPORT: resumen final notes=%s imported=%s errors=%s expected=%s found=%s downloaded=%s deleted_count=%s delete_errors=%s duration=%.2f"
+            self._run_logger.info(summary_line, len(notes), imported, errors, expected_total, found_total, downloaded, deleted_total, delete_errors, time.monotonic() - start)
             self._teardown_run_logger()
 
     def _setup_run_logger(self) -> None:
@@ -325,6 +394,19 @@ class MobileNotesImportService:
         else:
             firebase_code = "storage-error"
         return f"Error descargando adjunto desde Storage ({firebase_code}, código={code or 'desconocido'}): {message}. Ruta: {path}"
+
+    @staticmethod
+    def _format_storage_delete_error(exc: Exception, path: str) -> str:
+        code = getattr(exc, "code", "") or getattr(exc, "status_code", "") or getattr(getattr(exc, "response", None), "status_code", "")
+        message = str(exc)
+        lower = message.lower()
+        if "not found" in lower or code == 404:
+            firebase_code = "object-not-found"
+        elif "permission" in lower or "forbidden" in lower or code in {401, 403}:
+            firebase_code = "permission-denied"
+        else:
+            firebase_code = "storage-delete-error"
+        return f"Error borrando adjunto de Storage ({firebase_code}, código={code or 'desconocido'}): {message}. Ruta: {path}"
 
     def _ensure_firebase(self) -> tuple[Any, Any]:
         if self._db is None or self._bucket is None:
