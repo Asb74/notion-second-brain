@@ -123,7 +123,7 @@ def extract_ai_ocr_text(response: object) -> str:
     return text if any(char.isalnum() for char in text) else ""
 
 
-def evaluate_ocr_quality(text: str) -> dict[str, object]:
+def evaluate_ocr_quality(text: str, file_path: str | Path | None = None) -> dict[str, object]:
     """Conservative local OCR quality heuristic for hybrid OCR decisions."""
     cleaned = _clean_text(text)
     useful_chars = sum(1 for char in cleaned if char.isalnum())
@@ -150,14 +150,14 @@ def evaluate_ocr_quality(text: str) -> dict[str, object]:
     if re.search(r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b|\b\d+[,.]\d{2}\b|\b\+?\d{6,}\b", cleaned):
         score += 0.05
     score = round(min(score, 1.0), 2)
-    if useful_chars < 10:
-        quality, reason = "empty", "menos de 10 caracteres útiles"
+    if useful_chars < 20:
+        quality, reason = "empty", "menos de 20 caracteres útiles"
         score = 0.0
     elif useful_chars < 60 or len(real_words) < 5 or symbol_ratio > 0.35 or short_line_ratio > 0.55 or score < 0.65:
         quality, reason = "low_quality", f"texto insuficiente o ruidoso (chars={useful_chars}, palabras={len(real_words)}, símbolos={symbol_ratio:.0%})"
     else:
         quality, reason = "ok", "texto suficiente para indexación local"
-    return {"quality": quality, "score": score, "reason": reason, "chars": useful_chars, "words": len(real_words)}
+    return {"quality": quality, "is_good_enough": quality == "ok", "score": int(round(score * 100)), "reason": reason, "chars": useful_chars, "words": len(real_words), "file_path": str(file_path or "")}
 
 
 def _render_pdf_first_page_data_url(path: str) -> str:

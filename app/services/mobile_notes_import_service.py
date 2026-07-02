@@ -19,6 +19,7 @@ from urllib.parse import unquote, urlparse
 from app.config.config_paths import app_data_dir, knowledge_attachments_dir
 from app.persistence.knowledge_repository import KnowledgeRepository
 from app.services.mobile_firebase_publish_service import DEFAULT_FIREBASE_CREDENTIALS_PATH
+from app.services.knowledge_ocr_service import is_image_candidate
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,21 @@ class MobileNoteImportErrorDetail:
 
 
 @dataclass(frozen=True)
+class MobileImportAiCandidate:
+    """Attachment whose local OCR should be reviewed before optional AI improvement."""
+
+    selected: bool
+    mobile_note_id: str
+    note_title: str
+    attachment_id: int
+    filename: str
+    local_path: str
+    ocr_score: int
+    reason: str
+    ocr_text_preview: str
+
+
+@dataclass(frozen=True)
 class MobileNotesImportSummary:
     """Counters for a Firebase → Desktop mobile notes import run."""
 
@@ -64,6 +80,10 @@ class MobileNotesImportSummary:
     attachments_expected: int = 0
     attachments_found: int = 0
     attachments_downloaded: int = 0
+    attachments_deleted: int = 0
+    ocr_local_executed: int = 0
+    ocr_acceptable: int = 0
+    ai_candidates: list[MobileImportAiCandidate] = field(default_factory=list)
     duration_seconds: float = 0.0
     error_details: list[MobileNoteImportErrorDetail] = field(default_factory=list)
     log_path: Path | None = None
@@ -80,6 +100,10 @@ class MobileNotesImportSummary:
             f"Adjuntos esperados: {self.attachments_expected}",
             f"Adjuntos encontrados: {self.attachments_found}",
             f"Adjuntos descargados: {self.attachments_downloaded}",
+            f"Adjuntos borrados de Storage: {self.attachments_deleted}",
+            f"OCR local ejecutado: {self.ocr_local_executed}",
+            f"OCR aceptable: {self.ocr_acceptable}",
+            f"Candidatos a IA: {len(self.ai_candidates)}",
             f"Duración: {self.duration_seconds:.2f} segundos",
         ]
         if self.error_details:
@@ -186,7 +210,7 @@ class MobileNotesImportService:
             raise RuntimeError(self._format_storage_error(exc, normalized_path)) from exc
         return DownloadedMobileAttachment("", filename, local_path, normalized_path, str(getattr(blob, "content_type", "") or mimetypes.guess_type(filename)[0] or ""), int(getattr(blob, "size", 0) or local_path.stat().st_size))
 
-    def create_knowledge_note_from_mobile(self, note_data: dict[str, Any], attachments: list[DownloadedMobileAttachment]) -> int:
+    def create_knowledge_note_from_mobile(self, note_data: dict[str, Any], attachments: list[DownloadedMobileAttachment]) -> tuple[int, list[dict[str, object]]]:
         mobile_note_id = str(note_data.get("mobile_note_id") or "").strip()
         existing = self.conn.execute(
             "SELECT id FROM knowledge_items WHERE source_type = 'mobile' AND source_id = ? AND status != 'deleted' LIMIT 1",
@@ -195,7 +219,7 @@ class MobileNotesImportService:
         if existing is not None:
             existing_id = int(existing["id"] if hasattr(existing, "keys") else existing[0])
             self._run_logger.info("MOBILE_NOTES_IMPORT: nota móvil ya existía mobile_note_id=%s note_id=%s", mobile_note_id, existing_id)
-            return existing_id
+            return existing_id, []
         area = str(note_data.get("area") or "")
         topic = str(note_data.get("topic") or "")
         item_id = self.repo.create_item(
@@ -213,10 +237,39 @@ class MobileNotesImportService:
         if created_at:
             self.conn.execute("UPDATE knowledge_items SET created_at = ? WHERE id = ?", (created_at, item_id))
             self.conn.commit()
+        ocr_results: list[dict[str, object]] = []
         for attachment in attachments:
-            self.repo.add_attachment(item_id, attachment.original_filename, attachment.stored_path.name, str(attachment.stored_path), attachment.mime_type, attachment.file_size, source_type="mobile")
+            attachment_id = self.repo.add_attachment(item_id, attachment.original_filename, attachment.stored_path.name, str(attachment.stored_path), attachment.mime_type, attachment.file_size, source_type="mobile")
+            if not is_image_candidate(attachment.stored_path, attachment.mime_type):
+                self._run_logger.info("MOBILE_NOTES_IMPORT_OCR: local=%s ocr_executed=no reason=not_image candidate_ai=no", attachment.stored_path)
+                continue
+            try:
+                result = self.repo.ocr_attachment(attachment_id, reindex=False, force=True)
+            except Exception as exc:  # noqa: BLE001
+                result = {"ok": False, "status": "error", "chars": 0, "message": str(exc), "quality": {"score": 0, "reason": str(exc)}}
+            quality = result.get("quality") if isinstance(result.get("quality"), dict) else {}
+            status = str(result.get("status") or "")
+            score = int(float(quality.get("score") or 0))
+            reason = str(quality.get("reason") or result.get("message") or status)
+            text = str(self.repo.get_attachment(attachment_id)["ocr_text"] or "") if self.repo.get_attachment(attachment_id) is not None else ""
+            candidate_ai = status in {"low_quality", "empty", "error", "unavailable"}
+            self._run_logger.info(
+                "MOBILE_NOTES_IMPORT_OCR: local=%s ocr_executed=yes chars=%s score=%s reason=%s candidate_ai=%s",
+                attachment.stored_path, len(text), score, reason, "yes" if candidate_ai else "no",
+            )
+            ocr_results.append({
+                "attachment_id": attachment_id,
+                "filename": attachment.original_filename,
+                "local_path": str(attachment.stored_path),
+                "status": status,
+                "score": score,
+                "reason": reason,
+                "text": text,
+                "candidate_ai": candidate_ai,
+            })
+        self.repo.reindex_item(item_id)
         self._run_logger.info("MOBILE_NOTES_IMPORT: nota creada mobile_note_id=%s note_id=%s adjuntos=%s", mobile_note_id, item_id, len(attachments))
-        return item_id
+        return item_id, ocr_results
 
     def mark_note_imported(self, mobile_note_id: str) -> None:
         db, _bucket = self._ensure_firebase()
@@ -231,7 +284,8 @@ class MobileNotesImportService:
         self._setup_run_logger()
         self._run_logger.info("MOBILE_NOTES_IMPORT: inicio importación Firebase → Knowledge")
         self._run_logger.info("MOBILE_NOTES_IMPORT: credencial usada=%s", self.credentials_path)
-        imported = downloaded = errors = expected_total = found_total = 0
+        imported = downloaded = errors = expected_total = found_total = ocr_executed = ocr_ok = 0
+        ai_candidates: list[MobileImportAiCandidate] = []
         error_details: list[MobileNoteImportErrorDetail] = []
         notes: list[dict[str, Any]] = []
         try:
@@ -261,7 +315,23 @@ class MobileNotesImportService:
                         self._run_logger.info("MOBILE_NOTES_IMPORT: descarga OK attachment_id=%s local=%s", attachment_doc.get("mobile_attachment_id") or "", downloaded_attachment.stored_path)
                     if expected > len(local_attachments):
                         raise RuntimeError(f"La nota esperaba {expected} adjuntos, pero solo se encontraron/descargaron {len(local_attachments)}.")
-                    self.create_knowledge_note_from_mobile(note, local_attachments)
+                    _item_id, ocr_results = self.create_knowledge_note_from_mobile(note, local_attachments)
+                    for ocr_result in ocr_results:
+                        ocr_executed += 1
+                        if not bool(ocr_result.get("candidate_ai")):
+                            ocr_ok += 1
+                        else:
+                            ai_candidates.append(MobileImportAiCandidate(
+                                selected=True,
+                                mobile_note_id=mobile_note_id,
+                                note_title=title,
+                                attachment_id=int(ocr_result.get("attachment_id") or 0),
+                                filename=str(ocr_result.get("filename") or ""),
+                                local_path=str(ocr_result.get("local_path") or ""),
+                                ocr_score=int(ocr_result.get("score") or 0),
+                                reason=str(ocr_result.get("reason") or ""),
+                                ocr_text_preview=str(ocr_result.get("text") or "")[:300],
+                            ))
                     self.mark_note_imported(mobile_note_id)
                     imported += 1
                 except Exception as exc:  # noqa: BLE001
@@ -273,7 +343,7 @@ class MobileNotesImportService:
                         self.mark_note_error(mobile_note_id, message)
                     except Exception:  # noqa: BLE001
                         self._run_logger.exception("MOBILE_NOTES_IMPORT: no se pudo marcar error mobile_note_id=%s", mobile_note_id)
-            return MobileNotesImportSummary(len(notes), imported, errors, expected_total, found_total, downloaded, time.monotonic() - start, error_details, self._log_path)
+            return MobileNotesImportSummary(len(notes), imported, errors, expected_total, found_total, downloaded, 0, ocr_executed, ocr_ok, ai_candidates, time.monotonic() - start, error_details, self._log_path)
         finally:
             summary_line = "MOBILE_NOTES_IMPORT: resumen final notes=%s imported=%s errors=%s expected=%s found=%s downloaded=%s duration=%.2f"
             self._run_logger.info(summary_line, len(notes), imported, errors, expected_total, found_total, downloaded, time.monotonic() - start)

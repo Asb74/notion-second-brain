@@ -618,31 +618,126 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self.refresh_items()
         dialog = tk.Toplevel(self)
         dialog.title("Importación de notas móviles")
+        apply_app_icon(dialog)
         dialog.transient(self)
         dialog.grab_set()
-        dialog.geometry("640x460")
+        dialog.geometry("980x620")
+        dialog.minsize(820, 520)
         dialog.columnconfigure(0, weight=1)
-        dialog.rowconfigure(0, weight=1)
+        dialog.rowconfigure(1, weight=1)
 
-        text = ScrolledText(dialog, wrap="word", height=18)
-        text.grid(row=0, column=0, sticky="nsew", padx=12, pady=(12, 8))
-        text.insert("1.0", summary.to_message())
-        text.configure(state="disabled")
+        summary_frame = ttk.LabelFrame(dialog, text="Resumen", padding=8)
+        summary_frame.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 8))
+        labels = [
+            ("Notas encontradas", summary.notes_found),
+            ("Notas importadas", summary.notes_imported),
+            ("Notas con error", summary.notes_with_error),
+            ("Adjuntos esperados", summary.attachments_expected),
+            ("Adjuntos encontrados", summary.attachments_found),
+            ("Adjuntos descargados", summary.attachments_downloaded),
+            ("Adjuntos borrados de Storage", summary.attachments_deleted),
+            ("OCR local ejecutado", summary.ocr_local_executed),
+            ("OCR aceptable", summary.ocr_acceptable),
+            ("Candidatos a IA", len(summary.ai_candidates)),
+            ("Duración", f"{summary.duration_seconds:.2f} s"),
+        ]
+        for index, (label, value) in enumerate(labels):
+            row = index // 4
+            col = (index % 4) * 2
+            ttk.Label(summary_frame, text=f"{label}:").grid(row=row, column=col, sticky="w", padx=(0, 4), pady=2)
+            ttk.Label(summary_frame, text=str(value)).grid(row=row, column=col + 1, sticky="w", padx=(0, 16), pady=2)
+
+        body = ttk.Frame(dialog, padding=(12, 0, 12, 8))
+        body.grid(row=1, column=0, sticky="nsew")
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(0, weight=1)
+        candidate_vars: dict[int, tk.BooleanVar] = {}
+        if summary.ai_candidates:
+            table_frame = ttk.LabelFrame(body, text="Archivos candidatos a mejora IA", padding=8)
+            table_frame.grid(row=0, column=0, sticky="nsew")
+            table_frame.columnconfigure(0, weight=1)
+            table_frame.rowconfigure(0, weight=1)
+            columns = ("selected", "note", "file", "score", "reason", "preview")
+            tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="none", height=12)
+            headings = {
+                "selected": "Enviar",
+                "note": "Nota",
+                "file": "Archivo",
+                "score": "Puntuación OCR",
+                "reason": "Motivo",
+                "preview": "Vista previa OCR",
+            }
+            widths = {"selected": 70, "note": 160, "file": 170, "score": 110, "reason": 220, "preview": 280}
+            for col, heading in headings.items():
+                tree.heading(col, text=heading)
+                tree.column(col, width=widths[col], anchor="w", stretch=col in {"reason", "preview"})
+            for candidate in summary.ai_candidates:
+                candidate_vars[candidate.attachment_id] = tk.BooleanVar(value=candidate.selected)
+                tree.insert("", "end", iid=str(candidate.attachment_id), values=("☑", candidate.note_title, candidate.filename, candidate.ocr_score, candidate.reason, candidate.ocr_text_preview.replace("\n", " ")))
+            scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
+            tree.configure(yscrollcommand=scrollbar.set)
+            tree.grid(row=0, column=0, sticky="nsew")
+            scrollbar.grid(row=0, column=1, sticky="ns")
+
+            def toggle_candidate(event: tk.Event) -> None:
+                if tree.identify_column(event.x) != "#1":
+                    return
+                item_id = tree.identify_row(event.y)
+                if not item_id:
+                    return
+                attachment_id = int(item_id)
+                var = candidate_vars[attachment_id]
+                var.set(not var.get())
+                values = list(tree.item(item_id, "values"))
+                values[0] = "☑" if var.get() else "☐"
+                tree.item(item_id, values=values)
+
+            tree.bind("<Button-1>", toggle_candidate)
+        else:
+            ttk.Label(body, text="No hay archivos pendientes de mejora con IA.").grid(row=0, column=0, sticky="nsew", pady=24)
 
         actions = ttk.Frame(dialog)
-        actions.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 12))
+        actions.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 12))
         actions.columnconfigure(0, weight=1)
 
+        def send_selected_to_ai() -> None:
+            selected_ids = [attachment_id for attachment_id, var in candidate_vars.items() if var.get()]
+            self._send_mobile_import_candidates_to_ai(selected_ids, dialog)
+
+        send_button = ttk.Button(actions, text="Enviar seleccionados a IA", command=send_selected_to_ai)
+        send_button.grid(row=0, column=1, padx=(0, 8))
+        if not summary.ai_candidates:
+            send_button.state(["disabled"])
+        ttk.Button(actions, text="No enviar ahora", command=dialog.destroy).grid(row=0, column=2, padx=(0, 8))
         log_path = summary.log_path
-        view_log = ttk.Button(
-            actions,
-            text="Ver log",
-            command=lambda: open_file_with_default_app(log_path) if log_path and log_path.exists() else None,
-        )
-        view_log.grid(row=0, column=1, padx=(0, 8))
+        view_log = ttk.Button(actions, text="Ver log", command=lambda: open_file_with_default_app(log_path) if log_path and log_path.exists() else None)
+        view_log.grid(row=0, column=3, padx=(0, 8))
         if not log_path or not log_path.exists():
             view_log.state(["disabled"])
-        ttk.Button(actions, text="Cerrar", command=dialog.destroy).grid(row=0, column=2)
+        ttk.Button(actions, text="Cerrar", command=dialog.destroy).grid(row=0, column=4)
+
+    def _send_mobile_import_candidates_to_ai(self, attachment_ids: list[int], dialog: tk.Toplevel) -> None:
+        if not attachment_ids:
+            messagebox.showinfo("OCR IA", "No hay archivos seleccionados.", parent=dialog)
+            return
+        if not messagebox.askyesno("OCR IA", f"Se enviarán {len(attachment_ids)} archivos seleccionados a IA visual. Puede tener coste. ¿Continuar?", parent=dialog):
+            return
+        logger.info("MOBILE_NOTES_IMPORT_AI: selected=%s", len(attachment_ids))
+        sent = ok = errors = 0
+        for attachment_id in attachment_ids:
+            sent += 1
+            result = self.repo.improve_attachment_ocr_with_ai(attachment_id, reindex=False)
+            if result.get("ok"):
+                ok += 1
+            else:
+                errors += 1
+            logger.info("MOBILE_NOTES_IMPORT_AI: attachment_id=%s status=%s ok=%s", attachment_id, result.get("status"), result.get("ok"))
+        for attachment_id in attachment_ids:
+            row = self.repo.get_attachment(attachment_id)
+            if row is not None:
+                self.repo.reindex_item(int(row["item_id"]))
+        self.refresh_items()
+        messagebox.showinfo("OCR IA", f"Seleccionados: {len(attachment_ids)}\nEnviados: {sent}\nCorrectos: {ok}\nErrores: {errors}", parent=dialog)
 
     def _show_mobile_notes_import_error(self, message: str) -> None:
         self.status_var.set("Error importando notas móviles")
