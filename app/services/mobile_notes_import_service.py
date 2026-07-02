@@ -19,7 +19,6 @@ from urllib.parse import unquote, urlparse
 from app.config.config_paths import app_data_dir, knowledge_attachments_dir
 from app.persistence.knowledge_repository import KnowledgeRepository
 from app.services.mobile_firebase_publish_service import DEFAULT_FIREBASE_CREDENTIALS_PATH
-from app.services.knowledge_ocr_service import is_image_candidate
 
 logger = logging.getLogger(__name__)
 
@@ -255,22 +254,15 @@ class MobileNotesImportService:
         ocr_results: list[dict[str, object]] = []
         for attachment in attachments:
             attachment_id = self.repo.add_attachment(item_id, attachment.original_filename, attachment.stored_path.name, str(attachment.stored_path), attachment.mime_type, attachment.file_size, source_type="mobile")
-            if not is_image_candidate(attachment.stored_path, attachment.mime_type):
-                self._run_logger.info("MOBILE_NOTES_IMPORT_OCR: local=%s ocr_executed=no reason=not_image candidate_ai=no", attachment.stored_path)
-                continue
-            try:
-                result = self.repo.ocr_attachment(attachment_id, reindex=False, force=True)
-            except Exception as exc:  # noqa: BLE001
-                result = {"ok": False, "status": "error", "chars": 0, "message": str(exc), "quality": {"score": 0, "reason": str(exc)}}
-            quality = result.get("quality") if isinstance(result.get("quality"), dict) else {}
-            status = str(result.get("status") or "")
-            score = int(float(quality.get("score") or 0))
-            reason = str(quality.get("reason") or result.get("message") or status)
-            text = str(self.repo.get_attachment(attachment_id)["ocr_text"] or "") if self.repo.get_attachment(attachment_id) is not None else ""
+            row = self.repo.get_attachment(attachment_id)
+            status = str(row["ocr_status"] or "") if row is not None else ""
+            score = int(float(row["ocr_quality_score"] or 0)) if row is not None and "ocr_quality_score" in row.keys() else 0
+            reason = str(row["ocr_quality_reason"] or status) if row is not None and "ocr_quality_reason" in row.keys() else status
+            text = str(row["ocr_text"] or "") if row is not None else ""
             candidate_ai = status in {"low_quality", "empty", "error", "unavailable"}
             self._run_logger.info(
-                "MOBILE_NOTES_IMPORT_OCR: local=%s ocr_executed=yes chars=%s score=%s reason=%s candidate_ai=%s",
-                attachment.stored_path, len(text), score, reason, "yes" if candidate_ai else "no",
+                "MOBILE_NOTES_IMPORT_OCR: shared_pipeline=yes local=%s status=%s chars=%s score=%s reason=%s candidate_ai=%s",
+                attachment.stored_path, status or "not_candidate", len(text), score, reason, "yes" if candidate_ai else "no",
             )
             ocr_results.append({
                 "attachment_id": attachment_id,
