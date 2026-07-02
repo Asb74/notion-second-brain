@@ -621,24 +621,22 @@ class KnowledgeManagerWindow(tk.Toplevel):
         apply_app_icon(dialog)
         dialog.transient(self)
         dialog.grab_set()
-        dialog.geometry("980x620")
-        dialog.minsize(820, 520)
+        dialog.geometry("1180x720")
+        dialog.minsize(980, 600)
         dialog.columnconfigure(0, weight=1)
         dialog.rowconfigure(1, weight=1)
+        is_ai_processing = tk.BooleanVar(value=False)
+        flow_finalized = tk.BooleanVar(value=not summary.delete_storage_after_import)
+        candidate_by_id = {candidate.attachment_id: candidate for candidate in summary.ai_candidates}
 
         summary_frame = ttk.LabelFrame(dialog, text="Resumen", padding=8)
         summary_frame.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 8))
         labels = [
-            ("Notas encontradas", summary.notes_found),
-            ("Notas importadas", summary.notes_imported),
-            ("Notas con error", summary.notes_with_error),
-            ("Adjuntos esperados", summary.attachments_expected),
-            ("Adjuntos encontrados", summary.attachments_found),
-            ("Adjuntos descargados", summary.attachments_downloaded),
-            ("Adjuntos borrados de Storage", summary.attachments_deleted),
-            ("OCR local ejecutado", summary.ocr_local_executed),
-            ("OCR aceptable", summary.ocr_acceptable),
-            ("Candidatos a IA", len(summary.ai_candidates)),
+            ("Notas encontradas", summary.notes_found), ("Notas importadas", summary.notes_imported),
+            ("Notas con error", summary.notes_with_error), ("Adjuntos esperados", summary.attachments_expected),
+            ("Adjuntos encontrados", summary.attachments_found), ("Adjuntos descargados", summary.attachments_downloaded),
+            ("Adjuntos borrados de Storage", summary.attachments_deleted), ("OCR local ejecutado", summary.ocr_local_executed),
+            ("OCR aceptable", summary.ocr_acceptable), ("Candidatos a IA", len(summary.ai_candidates)),
             ("Duración", f"{summary.duration_seconds:.2f} s"),
         ]
         for index, (label, value) in enumerate(labels):
@@ -649,95 +647,209 @@ class KnowledgeManagerWindow(tk.Toplevel):
 
         body = ttk.Frame(dialog, padding=(12, 0, 12, 8))
         body.grid(row=1, column=0, sticky="nsew")
-        body.columnconfigure(0, weight=1)
+        body.columnconfigure(0, weight=3)
+        body.columnconfigure(1, weight=2)
         body.rowconfigure(0, weight=1)
         candidate_vars: dict[int, tk.BooleanVar] = {}
+        row_status: dict[int, str] = {}
+        preview_image_ref: dict[str, object] = {}
+
+        preview_frame = ttk.LabelFrame(body, text="Vista previa de imagen seleccionada", padding=8)
+        preview_frame.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        preview_frame.columnconfigure(0, weight=1)
+        preview_frame.rowconfigure(1, weight=1)
+        preview_status_var = tk.StringVar(value="Selecciona una fila para ver la imagen.")
+        ttk.Label(preview_frame, textvariable=preview_status_var, wraplength=360).grid(row=0, column=0, sticky="ew")
+        preview_label = ttk.Label(preview_frame, anchor="center")
+        preview_label.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
+
+        tree: ttk.Treeview | None = None
         if summary.ai_candidates:
             table_frame = ttk.LabelFrame(body, text="Archivos candidatos a mejora IA", padding=8)
             table_frame.grid(row=0, column=0, sticky="nsew")
             table_frame.columnconfigure(0, weight=1)
             table_frame.rowconfigure(0, weight=1)
-            columns = ("selected", "note", "file", "score", "reason", "preview")
-            tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="none", height=12)
-            headings = {
-                "selected": "Enviar",
-                "note": "Nota",
-                "file": "Archivo",
-                "score": "Puntuación OCR",
-                "reason": "Motivo",
-                "preview": "Vista previa OCR",
-            }
-            widths = {"selected": 70, "note": 160, "file": 170, "score": 110, "reason": 220, "preview": 280}
+            columns = ("selected", "note", "file", "score", "status", "reason", "preview")
+            tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse", height=14)
+            headings = {"selected": "Enviar", "note": "Nota", "file": "Archivo", "score": "OCR", "status": "Estado", "reason": "Motivo", "preview": "Vista previa OCR"}
+            widths = {"selected": 60, "note": 150, "file": 160, "score": 70, "status": 100, "reason": 190, "preview": 240}
             for col, heading in headings.items():
                 tree.heading(col, text=heading)
                 tree.column(col, width=widths[col], anchor="w", stretch=col in {"reason", "preview"})
             for candidate in summary.ai_candidates:
-                candidate_vars[candidate.attachment_id] = tk.BooleanVar(value=candidate.selected)
-                tree.insert("", "end", iid=str(candidate.attachment_id), values=("☑", candidate.note_title, candidate.filename, candidate.ocr_score, candidate.reason, candidate.ocr_text_preview.replace("\n", " ")))
+                local_exists = bool(candidate.local_path and Path(candidate.local_path).exists())
+                candidate_vars[candidate.attachment_id] = tk.BooleanVar(value=candidate.selected and local_exists)
+                status = "pendiente" if local_exists else "sin archivo local"
+                row_status[candidate.attachment_id] = status
+                tree.insert("", "end", iid=str(candidate.attachment_id), values=("☑" if candidate_vars[candidate.attachment_id].get() else "☐", candidate.note_title, candidate.filename, candidate.ocr_score, status, candidate.reason, candidate.ocr_text_preview.replace("\n", " ")))
+                if not local_exists:
+                    logger.warning("MOBILE_NOTES_IMPORT_AI_REVIEW: local_path no existe attachment_id=%s local=%s", candidate.attachment_id, candidate.local_path)
             scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
             tree.configure(yscrollcommand=scrollbar.set)
             tree.grid(row=0, column=0, sticky="nsew")
             scrollbar.grid(row=0, column=1, sticky="ns")
 
+            def update_tree_row(attachment_id: int) -> None:
+                if tree is None:
+                    return
+                candidate = candidate_by_id[attachment_id]
+                values = list(tree.item(str(attachment_id), "values"))
+                values[0] = "☑" if candidate_vars[attachment_id].get() else "☐"
+                values[4] = row_status.get(attachment_id, "pendiente")
+                tree.item(str(attachment_id), values=values)
+
+            def load_preview(_event: tk.Event | None = None) -> None:
+                if tree is None or not tree.selection():
+                    return
+                attachment_id = int(tree.selection()[0])
+                candidate = candidate_by_id[attachment_id]
+                logger.info("MOBILE_NOTES_IMPORT_AI_REVIEW: selección fila attachment_id=%s local=%s", attachment_id, candidate.local_path)
+                path = Path(candidate.local_path)
+                if not path.exists():
+                    preview_label.configure(image="", text="No se pudo cargar la vista previa")
+                    preview_status_var.set(f"No existe el archivo local: {path}")
+                    logger.warning("MOBILE_NOTES_IMPORT_AI_REVIEW: preview error missing attachment_id=%s local=%s", attachment_id, path)
+                    return
+                try:
+                    image_module = importlib.import_module("PIL.Image")
+                    image_tk_module = importlib.import_module("PIL.ImageTk")
+                    image = image_module.open(path)
+                    image.thumbnail((420, 460), image_module.Resampling.LANCZOS)
+                    photo = image_tk_module.PhotoImage(image)
+                    preview_image_ref["image"] = photo
+                    preview_label.configure(image=photo, text="")
+                    preview_status_var.set(f"{candidate.filename} — {image.width}×{image.height}")
+                    logger.info("MOBILE_NOTES_IMPORT_AI_REVIEW: preview OK attachment_id=%s", attachment_id)
+                except Exception as exc:  # noqa: BLE001
+                    preview_label.configure(image="", text="No se pudo cargar la vista previa")
+                    preview_status_var.set("No se pudo cargar la vista previa")
+                    logger.exception("MOBILE_NOTES_IMPORT_AI_REVIEW: preview error attachment_id=%s error=%s", attachment_id, exc)
+
             def toggle_candidate(event: tk.Event) -> None:
-                if tree.identify_column(event.x) != "#1":
+                if tree is None or is_ai_processing.get() or tree.identify_column(event.x) != "#1":
                     return
                 item_id = tree.identify_row(event.y)
                 if not item_id:
                     return
                 attachment_id = int(item_id)
-                var = candidate_vars[attachment_id]
-                var.set(not var.get())
-                values = list(tree.item(item_id, "values"))
-                values[0] = "☑" if var.get() else "☐"
-                tree.item(item_id, values=values)
+                candidate = candidate_by_id[attachment_id]
+                if not candidate.local_path or not Path(candidate.local_path).exists():
+                    messagebox.showwarning("OCR IA", "Este candidato no tiene archivo local y no se puede enviar a IA.", parent=dialog)
+                    return
+                candidate_vars[attachment_id].set(not candidate_vars[attachment_id].get())
+                update_tree_row(attachment_id)
 
+            tree.bind("<<TreeviewSelect>>", load_preview)
             tree.bind("<Button-1>", toggle_candidate)
         else:
             ttk.Label(body, text="No hay archivos pendientes de mejora con IA.").grid(row=0, column=0, sticky="nsew", pady=24)
 
+        status_var = tk.StringVar(value="Pendiente de decisión: envía a IA o pulsa 'No enviar ahora'.")
+        progress = ttk.Progressbar(dialog, mode="indeterminate")
+        ttk.Label(dialog, textvariable=status_var).grid(row=2, column=0, sticky="ew", padx=12)
+        progress.grid(row=3, column=0, sticky="ew", padx=12, pady=(2, 8))
+
         actions = ttk.Frame(dialog)
-        actions.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 12))
+        actions.grid(row=4, column=0, sticky="ew", padx=12, pady=(0, 12))
         actions.columnconfigure(0, weight=1)
 
+        def finalize_storage(reason: str) -> None:
+            if flow_finalized.get() or not summary.delete_storage_after_import:
+                return
+            logger.info("MOBILE_NOTES_IMPORT_STORAGE_DELETE: inicio posterior reason=%s count=%s", reason, len(summary.storage_attachments))
+            deleted, delete_errors = MobileNotesImportService(self.repo.conn).finalize_storage_after_import(summary.storage_attachments)
+            flow_finalized.set(True)
+            logger.info("MOBILE_NOTES_IMPORT_STORAGE_DELETE: fin posterior deleted=%s errors=%s", deleted, delete_errors)
+
+        def close_dialog() -> None:
+            logger.info("MOBILE_NOTES_IMPORT_AI_REVIEW: cerrar solicitado processing=%s", is_ai_processing.get())
+            if is_ai_processing.get():
+                messagebox.showwarning("OCR IA", "La mejora con IA está en curso. Espere a que termine.", parent=dialog)
+                return
+            dialog.destroy()
+
+        def skip_ai() -> None:
+            logger.info("MOBILE_NOTES_IMPORT_AI_REVIEW: decisión usuario no enviar ahora")
+            finalize_storage("skip_ai")
+            status_var.set("IA omitida expresamente. Puede cerrar la ventana.")
+            close_button.state(["!disabled"])
+
         def send_selected_to_ai() -> None:
-            selected_ids = [attachment_id for attachment_id, var in candidate_vars.items() if var.get()]
-            self._send_mobile_import_candidates_to_ai(selected_ids, dialog)
+            selected_ids = [attachment_id for attachment_id, var in candidate_vars.items() if var.get() and Path(candidate_by_id[attachment_id].local_path).exists()]
+            missing = [attachment_id for attachment_id, var in candidate_vars.items() if var.get() and not Path(candidate_by_id[attachment_id].local_path).exists()]
+            if missing:
+                messagebox.showwarning("OCR IA", f"{len(missing)} candidato(s) sin archivo local no se enviarán a IA.", parent=dialog)
+            if not selected_ids:
+                messagebox.showinfo("OCR IA", "No hay archivos seleccionados válidos.", parent=dialog)
+                return
+            if not messagebox.askyesno("OCR IA", f"Se enviarán {len(selected_ids)} archivos seleccionados a IA visual. Puede tener coste. ¿Continuar?", parent=dialog):
+                return
+            logger.info("MOBILE_NOTES_IMPORT_AI: inicio selected=%s", len(selected_ids))
+            is_ai_processing.set(True)
+            for button in (send_button, skip_button, close_button):
+                button.state(["disabled"])
+            progress.start(12)
+            status_var.set("Procesando mejora IA... no cierre esta ventana")
+
+            def worker() -> None:
+                sent = ok = errors = 0
+                for index, attachment_id in enumerate(selected_ids, start=1):
+                    logger.info("MOBILE_NOTES_IMPORT_AI: enviando attachment_id=%s index=%s total=%s", attachment_id, index, len(selected_ids))
+                    dialog.after(0, lambda aid=attachment_id, idx=index: (row_status.__setitem__(aid, "procesando"), update_tree_row(aid), status_var.set(f"Procesando {idx} de {len(selected_ids)}")))
+                    sent += 1
+                    try:
+                        result = self.repo.improve_attachment_ocr_with_ai(attachment_id, reindex=False)
+                        row_status[attachment_id] = "completado" if result.get("ok") else "error"
+                        ok += 1 if result.get("ok") else 0
+                        errors += 0 if result.get("ok") else 1
+                        logger.info("MOBILE_NOTES_IMPORT_AI: attachment_id=%s status=%s ok=%s", attachment_id, result.get("status"), result.get("ok"))
+                    except Exception as exc:  # noqa: BLE001
+                        row_status[attachment_id] = "error"
+                        errors += 1
+                        logger.exception("MOBILE_NOTES_IMPORT_AI: error attachment_id=%s error=%s", attachment_id, exc)
+                    dialog.after(0, lambda aid=attachment_id: update_tree_row(aid))
+                for aid, var in candidate_vars.items():
+                    if aid not in selected_ids and row_status.get(aid) == "pendiente":
+                        row_status[aid] = "omitido"
+                item_ids = set()
+                for attachment_id in selected_ids:
+                    row = self.repo.get_attachment(attachment_id)
+                    if row is not None:
+                        item_ids.add(int(row["item_id"]))
+                for item_id in item_ids:
+                    self.repo.reindex_item(item_id)
+                self.refresh_items()
+                try:
+                    finalize_storage("ai_finished")
+                except Exception:  # noqa: BLE001
+                    logger.exception("MOBILE_NOTES_IMPORT_STORAGE_DELETE: error finalizando tras IA")
+                logger.info("MOBILE_NOTES_IMPORT_AI: fin sent=%s ok=%s errors=%s", sent, ok, errors)
+                dialog.after(0, lambda: finish_ai(sent, ok, errors))
+
+            def finish_ai(sent: int, ok: int, errors: int) -> None:
+                is_ai_processing.set(False)
+                progress.stop()
+                close_button.state(["!disabled"])
+                view_log.state(["!disabled"] if log_path and log_path.exists() else ["disabled"])
+                status_var.set(f"IA terminada. Procesados: {sent}. Correctos: {ok}. Errores: {errors}.")
+                messagebox.showinfo("OCR IA", f"Procesados: {sent}\nCorrectos: {ok}\nErrores: {errors}", parent=dialog)
+
+            threading.Thread(target=worker, daemon=True).start()
 
         send_button = ttk.Button(actions, text="Enviar seleccionados a IA", command=send_selected_to_ai)
         send_button.grid(row=0, column=1, padx=(0, 8))
         if not summary.ai_candidates:
             send_button.state(["disabled"])
-        ttk.Button(actions, text="No enviar ahora", command=dialog.destroy).grid(row=0, column=2, padx=(0, 8))
+        skip_button = ttk.Button(actions, text="No enviar ahora", command=skip_ai)
+        skip_button.grid(row=0, column=2, padx=(0, 8))
         log_path = summary.log_path
         view_log = ttk.Button(actions, text="Ver log", command=lambda: open_file_with_default_app(log_path) if log_path and log_path.exists() else None)
         view_log.grid(row=0, column=3, padx=(0, 8))
         if not log_path or not log_path.exists():
             view_log.state(["disabled"])
-        ttk.Button(actions, text="Cerrar", command=dialog.destroy).grid(row=0, column=4)
-
-    def _send_mobile_import_candidates_to_ai(self, attachment_ids: list[int], dialog: tk.Toplevel) -> None:
-        if not attachment_ids:
-            messagebox.showinfo("OCR IA", "No hay archivos seleccionados.", parent=dialog)
-            return
-        if not messagebox.askyesno("OCR IA", f"Se enviarán {len(attachment_ids)} archivos seleccionados a IA visual. Puede tener coste. ¿Continuar?", parent=dialog):
-            return
-        logger.info("MOBILE_NOTES_IMPORT_AI: selected=%s", len(attachment_ids))
-        sent = ok = errors = 0
-        for attachment_id in attachment_ids:
-            sent += 1
-            result = self.repo.improve_attachment_ocr_with_ai(attachment_id, reindex=False)
-            if result.get("ok"):
-                ok += 1
-            else:
-                errors += 1
-            logger.info("MOBILE_NOTES_IMPORT_AI: attachment_id=%s status=%s ok=%s", attachment_id, result.get("status"), result.get("ok"))
-        for attachment_id in attachment_ids:
-            row = self.repo.get_attachment(attachment_id)
-            if row is not None:
-                self.repo.reindex_item(int(row["item_id"]))
-        self.refresh_items()
-        messagebox.showinfo("OCR IA", f"Seleccionados: {len(attachment_ids)}\nEnviados: {sent}\nCorrectos: {ok}\nErrores: {errors}", parent=dialog)
+        close_button = ttk.Button(actions, text="Cerrar", command=close_dialog)
+        close_button.grid(row=0, column=4)
+        dialog.protocol("WM_DELETE_WINDOW", close_dialog)
 
     def _show_mobile_notes_import_error(self, message: str) -> None:
         self.status_var.set("Error importando notas móviles")

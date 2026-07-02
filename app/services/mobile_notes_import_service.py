@@ -65,9 +65,22 @@ class MobileImportAiCandidate:
     attachment_id: int
     filename: str
     local_path: str
+    storage_path: str
     ocr_score: int
     reason: str
     ocr_text_preview: str
+
+
+@dataclass(frozen=True)
+class MobileImportedStorageAttachment:
+    """Storage object that may be deleted once the user finalizes optional AI review."""
+
+    mobile_note_id: str
+    mobile_attachment_id: str
+    attachment_id: int
+    storage_path: str
+    local_path: str
+    filename: str
 
 
 @dataclass(frozen=True)
@@ -87,6 +100,8 @@ class MobileNotesImportSummary:
     duration_seconds: float = 0.0
     error_details: list[MobileNoteImportErrorDetail] = field(default_factory=list)
     log_path: Path | None = None
+    storage_attachments: list[MobileImportedStorageAttachment] = field(default_factory=list)
+    delete_storage_after_import: bool = True
 
     @property
     def errors(self) -> int:
@@ -261,6 +276,8 @@ class MobileNotesImportService:
                 "attachment_id": attachment_id,
                 "filename": attachment.original_filename,
                 "local_path": str(attachment.stored_path),
+                "mobile_attachment_id": attachment.mobile_attachment_id,
+                "storage_path": attachment.storage_path,
                 "status": status,
                 "score": score,
                 "reason": reason,
@@ -286,6 +303,7 @@ class MobileNotesImportService:
         self._run_logger.info("MOBILE_NOTES_IMPORT: credencial usada=%s", self.credentials_path)
         imported = downloaded = errors = expected_total = found_total = ocr_executed = ocr_ok = 0
         ai_candidates: list[MobileImportAiCandidate] = []
+        storage_attachments: list[MobileImportedStorageAttachment] = []
         error_details: list[MobileNoteImportErrorDetail] = []
         notes: list[dict[str, Any]] = []
         try:
@@ -316,6 +334,24 @@ class MobileNotesImportService:
                     if expected > len(local_attachments):
                         raise RuntimeError(f"La nota esperaba {expected} adjuntos, pero solo se encontraron/descargaron {len(local_attachments)}.")
                     _item_id, ocr_results = self.create_knowledge_note_from_mobile(note, local_attachments)
+                    for attachment in local_attachments:
+                        row = self.conn.execute(
+                            """
+                            SELECT id FROM knowledge_attachments
+                            WHERE item_id = ? AND stored_path = ?
+                            ORDER BY id DESC LIMIT 1
+                            """,
+                            (_item_id, str(attachment.stored_path)),
+                        ).fetchone()
+                        if row is not None:
+                            storage_attachments.append(MobileImportedStorageAttachment(
+                                mobile_note_id=mobile_note_id,
+                                mobile_attachment_id=attachment.mobile_attachment_id,
+                                attachment_id=int(row["id"] if hasattr(row, "keys") else row[0]),
+                                storage_path=attachment.storage_path,
+                                local_path=str(attachment.stored_path),
+                                filename=attachment.original_filename,
+                            ))
                     for ocr_result in ocr_results:
                         ocr_executed += 1
                         if not bool(ocr_result.get("candidate_ai")):
@@ -328,6 +364,7 @@ class MobileNotesImportService:
                                 attachment_id=int(ocr_result.get("attachment_id") or 0),
                                 filename=str(ocr_result.get("filename") or ""),
                                 local_path=str(ocr_result.get("local_path") or ""),
+                                storage_path=str(ocr_result.get("storage_path") or ""),
                                 ocr_score=int(ocr_result.get("score") or 0),
                                 reason=str(ocr_result.get("reason") or ""),
                                 ocr_text_preview=str(ocr_result.get("text") or "")[:300],
@@ -343,11 +380,37 @@ class MobileNotesImportService:
                         self.mark_note_error(mobile_note_id, message)
                     except Exception:  # noqa: BLE001
                         self._run_logger.exception("MOBILE_NOTES_IMPORT: no se pudo marcar error mobile_note_id=%s", mobile_note_id)
-            return MobileNotesImportSummary(len(notes), imported, errors, expected_total, found_total, downloaded, 0, ocr_executed, ocr_ok, ai_candidates, time.monotonic() - start, error_details, self._log_path)
+            return MobileNotesImportSummary(len(notes), imported, errors, expected_total, found_total, downloaded, 0, ocr_executed, ocr_ok, ai_candidates, time.monotonic() - start, error_details, self._log_path, storage_attachments)
         finally:
             summary_line = "MOBILE_NOTES_IMPORT: resumen final notes=%s imported=%s errors=%s expected=%s found=%s downloaded=%s duration=%.2f"
             self._run_logger.info(summary_line, len(notes), imported, errors, expected_total, found_total, downloaded, time.monotonic() - start)
             self._teardown_run_logger()
+
+    def finalize_storage_after_import(self, storage_attachments: list[MobileImportedStorageAttachment]) -> tuple[int, int]:
+        """Delete imported Firebase Storage objects after the review flow is finalized."""
+        if not storage_attachments:
+            return 0, 0
+        db, bucket = self._ensure_firebase()
+        deleted = errors = 0
+        for attachment in storage_attachments:
+            local_path = Path(attachment.local_path)
+            if not local_path.exists():
+                errors += 1
+                self._run_logger.warning("MOBILE_NOTES_IMPORT_STORAGE_DELETE: omitido sin local attachment_id=%s local=%s", attachment.attachment_id, local_path)
+                continue
+            try:
+                normalized_path = self._normalize_storage_path(attachment.storage_path, getattr(bucket, "name", ""))
+                bucket.blob(normalized_path).delete()
+                deleted += 1
+                self._run_logger.info("MOBILE_NOTES_IMPORT_STORAGE_DELETE: OK attachment_id=%s storage_path=%s", attachment.attachment_id, normalized_path)
+                try:
+                    db.collection(NOTES_COLLECTION).document(attachment.mobile_note_id).collection("attachments").document(attachment.mobile_attachment_id).set({"deleted": True, "storage_deleted": True, "storage_deleted_at": self._now()}, merge=True)
+                except Exception:  # noqa: BLE001
+                    self._run_logger.exception("MOBILE_NOTES_IMPORT_STORAGE_DELETE: no se pudo marcar Firestore attachment_id=%s", attachment.attachment_id)
+            except Exception:  # noqa: BLE001
+                errors += 1
+                self._run_logger.exception("MOBILE_NOTES_IMPORT_STORAGE_DELETE: error attachment_id=%s storage_path=%s", attachment.attachment_id, attachment.storage_path)
+        return deleted, errors
 
     def _setup_run_logger(self) -> None:
         logs_dir = app_data_dir() / "logs"
