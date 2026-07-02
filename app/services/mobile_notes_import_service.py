@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import mimetypes
+import os
 import re
 import sqlite3
 import time
@@ -24,6 +25,8 @@ logger = logging.getLogger(__name__)
 FIREBASE_APP_NAME = "sansebas_nexus_mobile_import"
 NOTES_COLLECTION = "nexus_mobile_notes"
 DESKTOP_ID = "nexus_desktop"
+DEFAULT_MOBILE_IMPORT_STORAGE_BUCKET = "sansebas-nexus.firebasestorage.app"
+MOBILE_IMPORT_STORAGE_BUCKET_ENV = "MOBILE_NOTES_IMPORT_STORAGE_BUCKET"
 
 
 class MobileNotesImportError(RuntimeError):
@@ -92,11 +95,18 @@ class MobileNotesImportSummary:
 class MobileNotesImportService:
     """Import uploaded mobile notes from Firestore and Firebase Storage into Knowledge."""
 
-    def __init__(self, conn: sqlite3.Connection, credentials_path: Path | str | None = None, desktop_id: str = DESKTOP_ID):
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        credentials_path: Path | str | None = None,
+        desktop_id: str = DESKTOP_ID,
+        storage_bucket_name: str | None = None,
+    ):
         self.conn = conn
         self.repo = KnowledgeRepository(conn)
         self.credentials_path = Path(credentials_path) if credentials_path else DEFAULT_FIREBASE_CREDENTIALS_PATH
         self.desktop_id = desktop_id.strip() or DESKTOP_ID
+        self.storage_bucket_name = self._resolve_storage_bucket_name(storage_bucket_name)
         self._db: Any | None = None
         self._bucket: Any | None = None
         self._run_logger: logging.Logger = logger
@@ -120,18 +130,16 @@ class MobileNotesImportService:
             ) from exc
 
         try:
-            options: dict[str, str] = {}
-            project_id = self._credentials_project_id()
-            if project_id:
-                options["storageBucket"] = f"{project_id}.appspot.com"
+            options: dict[str, str] = {"storageBucket": self.storage_bucket_name}
             try:
                 app = firebase_admin.get_app(FIREBASE_APP_NAME)
             except ValueError:
                 cred = credentials.Certificate(str(self.credentials_path))
                 app = firebase_admin.initialize_app(cred, options=options, name=FIREBASE_APP_NAME)
             self._db = firestore.client(app=app)
-            self._bucket = storage.bucket(app=app)
-            self._run_logger.info("MOBILE_NOTES_IMPORT: Firebase inicializado correctamente bucket=%s", getattr(self._bucket, "name", ""))
+            self._bucket = storage.bucket(name=self.storage_bucket_name, app=app)
+            bucket_name = getattr(self._bucket, "name", "") or self.storage_bucket_name
+            self._run_logger.info("MOBILE_NOTES_IMPORT: Firebase inicializado correctamente bucket=%s", bucket_name)
             return self._db, self._bucket
         except Exception as exc:  # noqa: BLE001
             self._run_logger.exception("MOBILE_NOTES_IMPORT: error inicializando Firebase")
@@ -323,16 +331,17 @@ class MobileNotesImportService:
             return self.initialize_firebase()
         return self._db, self._bucket
 
+    @staticmethod
+    def _resolve_storage_bucket_name(storage_bucket_name: str | None = None) -> str:
+        return (
+            storage_bucket_name
+            or os.getenv(MOBILE_IMPORT_STORAGE_BUCKET_ENV)
+            or DEFAULT_MOBILE_IMPORT_STORAGE_BUCKET
+        ).strip()
+
     def _validate_credentials_file(self) -> None:
         if not self.credentials_path.exists() or not self.credentials_path.is_file():
             raise MobileNotesImportError(f"No se encontró la clave Firebase Admin SDK en: {self.credentials_path}")
-
-    def _credentials_project_id(self) -> str:
-        try:
-            return str(json.loads(self.credentials_path.read_text(encoding="utf-8")).get("project_id") or "").strip()
-        except Exception:  # noqa: BLE001
-            self._run_logger.debug("No se pudo leer project_id de credenciales Firebase", exc_info=True)
-            return ""
 
     def _find_topic_id(self, topic: str, area: str = "") -> int | None:
         cleaned_topic = topic.strip()
