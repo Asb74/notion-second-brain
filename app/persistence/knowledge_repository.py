@@ -684,20 +684,20 @@ class KnowledgeRepository:
         return attachment_id
 
     def _run_automatic_attachment_ocr(self, attachment_id: int, item_id: int) -> None:
-        """Run the shared OCR pipeline for every new OCR-capable attachment source."""
+        """Run the shared document OCR pipeline for every new OCR-capable attachment source."""
         try:
             row = self.get_attachment(attachment_id)
             if row is None:
                 return
-            from app.services.knowledge_ocr_service import should_ocr_attachment
+            from app.services.document_ocr_pipeline_service import DocumentOcrPipelineService
 
-            path = str(row["stored_path"] or "")
-            mime = str(row["mime_type"] or "")
-            if not should_ocr_attachment(path, mime):
-                logger.info("KNOWLEDGE_OCR_PIPELINE: auto skipped attachment_id=%s source=%s reason=not_candidate", attachment_id, row["source_type"] if "source_type" in row.keys() else "")
-                return
-            logger.info("KNOWLEDGE_OCR_PIPELINE: auto started attachment_id=%s source=%s", attachment_id, row["source_type"] if "source_type" in row.keys() else "")
-            self.ocr_attachment(attachment_id, reindex=False, force=False)
+            logger.info(
+                "KNOWLEDGE_OCR_PIPELINE: auto delegated attachment_id=%s note_id=%s source=%s",
+                attachment_id,
+                item_id,
+                row["source_type"] if "source_type" in row.keys() else "",
+            )
+            DocumentOcrPipelineService(self).process_attachment(row, note_id=item_id)
         except Exception as exc:  # noqa: BLE001
             logger.info("KNOWLEDGE_OCR_PIPELINE: auto failed note_id=%s attachment_id=%s reason=%s", item_id, attachment_id, exc)
 
@@ -790,72 +790,31 @@ class KnowledgeRepository:
         force: bool = False,
         max_pdf_pages: int = 5,
     ) -> dict[str, object]:
+        """Run OCR for one attachment through the shared advanced document pipeline."""
         row = self.get_attachment(attachment_id)
         if row is None:
             return {"ok": False, "status": "error", "chars": 0, "message": "Adjunto no encontrado."}
-        path = str(row["stored_path"] or "")
-        mime = str(row["mime_type"] or "")
         item_id = int(row["item_id"])
         if not force and str(row["ocr_status"] or "").lower() in {"ok", "ok_local", "ok_ai", "corrected"}:
             return {"ok": True, "status": "skipped", "chars": 0, "message": "OCR omitido: ya existe OCR válido."}
         try:
-            from app.services.knowledge_ocr_service import (
-                is_image_candidate,
-                is_ocr_available,
-                is_pdf_candidate,
-                evaluate_ocr_quality,
-                ocr_image_result,
-                ocr_pdf,
-                should_ocr_attachment,
-            )
+            from app.services.document_ocr_pipeline_service import DocumentOcrPipelineService
 
-            available, reason = is_ocr_available()
-            if not available:
-                previous_raw = str(row["ocr_text_raw"] or row["ocr_text"] or "") if "ocr_text_raw" in row.keys() else str(row["ocr_text"] or "")
-                self.update_attachment_ocr(attachment_id, previous_raw, "unavailable")
-                return {"ok": False, "status": "unavailable", "chars": 0, "message": reason}
-            self.update_attachment_ocr(attachment_id, str(row["ocr_text_raw"] or row["ocr_text"] or "") if "ocr_text_raw" in row.keys() else str(row["ocr_text"] or ""), "running")
-            existing_text = ""
-            if is_pdf_candidate(path, mime):
-                existing_text = extract_text_from_attachment(path, mime, str(row["original_filename"] or ""))
-            if not force and not should_ocr_attachment(path, mime, existing_text):
-                self.update_attachment_ocr(attachment_id, str(row["ocr_text_raw"] or row["ocr_text"] or "") if "ocr_text_raw" in row.keys() else str(row["ocr_text"] or ""), "skipped")
-                return {"ok": True, "status": "skipped", "chars": 0, "message": "OCR omitido: el adjunto no es candidato."}
-            logger.info("KNOWLEDGE_OCR: rerun started attachment_id=%s", attachment_id)
-            ocr_mode = ""
-            ocr_rotation = None
-            if is_image_candidate(path, mime):
-                image_result = ocr_image_result(path)
-                text = image_result.text
-                ocr_mode = image_result.mode
-                ocr_rotation = image_result.rotation
-            else:
-                text = ocr_pdf(path, max_pages=max_pdf_pages)
-                ocr_mode = "PDF multipase avanzado"
-            quality = evaluate_ocr_quality(text)
-            status = "ok_local" if quality["quality"] == "ok" else str(quality["quality"])
             self.update_attachment_ocr(
                 attachment_id,
-                text,
-                status,
-                ocr_mode=ocr_mode,
-                ocr_rotation=ocr_rotation,
-                ocr_characters=len(text),
+                str(row["ocr_text_raw"] or row["ocr_text"] or "") if "ocr_text_raw" in row.keys() else str(row["ocr_text"] or ""),
+                "running",
             )
-            self.conn.execute(
-                "UPDATE knowledge_attachments SET ocr_quality_score = ?, ocr_quality_reason = ? WHERE id = ?",
-                (float(quality.get("score") or 0.0), str(quality.get("reason") or ""), attachment_id),
-            )
-            self.conn.commit()
-            logger.info("KNOWLEDGE_OCR: local finished note_id=%s attachment_id=%s file=%s mime_type=%s extension=%s quality=%s score=%s chars=%s preview=%r", item_id, attachment_id, path, mime, Path(path).suffix.lower(), status, quality.get("score"), quality.get("chars"), text[:200])
-            if status == "low_quality":
-                logger.info("KNOWLEDGE_OCR: low_quality attachment_id=%s reason=%s", attachment_id, quality.get("reason"))
-            if reindex and status == "ok_local":
+            logger.info("KNOWLEDGE_OCR: shared pipeline rerun started attachment_id=%s force=%s", attachment_id, force)
+            result = DocumentOcrPipelineService(self).process_attachment(row, note_id=item_id)
+            if reindex and str(result.get("status") or "") == "ok_local":
                 self.reindex_item(item_id)
-            message = "OCR local correcto." if status == "ok_local" else "OCR local insuficiente; pendiente de IA." if status == "low_quality" else "OCR sin texto detectado."
-            return {"ok": status == "ok_local", "status": status, "chars": len(text), "mode": ocr_mode, "rotation": ocr_rotation, "quality": quality, "message": message, "attachment_id": attachment_id}
+            status = str(result.get("status") or "")
+            message = "OCR local correcto." if status == "ok_local" else "OCR local insuficiente; pendiente de IA." if status == "low_quality" else "OCR sin texto detectado." if status == "empty" else str(result.get("error") or "OCR procesado.")
+            result["message"] = message
+            return result
         except Exception as exc:  # noqa: BLE001
-            logger.info("KNOWLEDGE_OCR: error reason=%s", exc)
+            logger.info("KNOWLEDGE_OCR: shared pipeline error reason=%s", exc)
             self.update_attachment_ocr(attachment_id, str(row["ocr_text_raw"] or row["ocr_text"] or "") if "ocr_text_raw" in row.keys() else str(row["ocr_text"] or ""), "error")
             return {"ok": False, "status": "error", "chars": 0, "message": str(exc)}
 
