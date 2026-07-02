@@ -67,9 +67,10 @@ def get_effective_ocr_text(attachment_row: Any) -> str:
     ai_text = str(_value(attachment_row, "ocr_text_ai", "") or "").strip()
     if ai_text:
         return ai_text
+    raw_text = str(_value(attachment_row, "ocr_text_raw", "") or _value(attachment_row, "ocr_text", "") or "").strip()
     status = str(_value(attachment_row, "ocr_status", "") or "").strip().lower()
-    if status in {"ok", "ok_local"}:
-        return str(_value(attachment_row, "ocr_text_raw", "") or _value(attachment_row, "ocr_text", "") or "").strip()
+    if raw_text and (not status or status in {"ok", "ok_local"}):
+        return raw_text
     return ""
 
 
@@ -252,7 +253,7 @@ def build_indexed_text(note: dict[str, Any] | Any, attachments: list[dict[str, A
         if ocr_text:
             normalized_ocr_text = normalize_ocr_text_for_search(ocr_text)
             origin = get_effective_ocr_origin(attachment)
-            marker = "OCR corregido" if origin == "corregido" else "OCR IA" if origin == "IA" else "OCR local"
+            marker = "OCR corregido" if origin == "corregido" else "OCR IA" if origin == "IA" else "OCR"
             parts.append(f"[{marker}: {filename or 'adjunto'}]\n{ocr_text}")
             if normalized_ocr_text:
                 parts.append(f"[{marker}_NORMALIZADO: {filename or 'adjunto'}]\n{normalized_ocr_text}")

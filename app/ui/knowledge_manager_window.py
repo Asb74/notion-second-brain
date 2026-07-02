@@ -2436,13 +2436,18 @@ class KnowledgeManagerWindow(tk.Toplevel):
         if status is None:
             return ""
         normalized_status = str(status).strip().lower()
-        if normalized_status == "ok_ai" and get_effective_ocr_origin(row) != "IA":
+        origin = get_effective_ocr_origin(row)
+        if origin == "IA":
+            return "IA"
+        if origin == "local":
+            return "local"
+        if normalized_status == "ok_ai":
             return "empty IA"
         return {
-            "ok": "ok local",
-            "ok_local": "ok local",
+            "ok": "ok",
+            "ok_local": "local",
             "low_quality": "low quality",
-            "ok_ai": "ok IA",
+            "ok_ai": "IA",
             "empty_ai": "empty IA",
             "error_ai": "error IA",
             "empty": "sin texto",
@@ -2519,7 +2524,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
                 message = str(result.get("message") or "La IA no ha podido extraer texto útil.")
                 messagebox.showwarning("OCR Knowledge", message, parent=self)
             elif status in {"empty", "low_quality"}:
-                message = "OCR local insuficiente. Queda pendiente."
+                message = "No se detectó texto con OCR local. Puede enviarse a IA." if status == "empty" else "OCR local insuficiente. Puede enviarse a IA."
                 answer = messagebox.askyesnocancel(
                     "OCR / Mejorar",
                     "El OCR local no ha obtenido texto suficiente.\n¿Quieres intentar reconocimiento con IA?\n\nSí = Usar IA\nNo = Dejar pendiente\nCancelar = Ignorar OCR",
@@ -2530,8 +2535,10 @@ class KnowledgeManagerWindow(tk.Toplevel):
                     self._start_ai_ocr_attachment(attachment_id)
                 elif answer is None and attachment_id:
                     self.repo.ignore_attachment_ocr(attachment_id); self.refresh_attachments(); self.refresh_ocr_tab()
-            elif status in {"ok", "ok_local", "ok_ai"}:
-                message = f"OCR finalizado: {chars} caracteres"
+            elif status == "ok_ai":
+                message = str(result.get("message") or "Texto IA guardado correctamente en la nota")
+            elif status in {"ok", "ok_local"}:
+                message = f"OCR local guardado correctamente en la nota: {chars} caracteres"
             else:
                 message = str(result.get("message") or "OCR finalizado")
         self.status_var.set(message)
