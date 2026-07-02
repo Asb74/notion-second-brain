@@ -32,6 +32,7 @@ from app.persistence.knowledge_repository import KnowledgeRepository
 from app.persistence.masters_repository import MastersRepository
 from app.services.knowledge_indexer_service import get_effective_ocr_origin, get_effective_ocr_text
 from app.services.mobile_firebase_publish_service import MobileFirebasePublishError, MobileFirebasePublishService
+from app.services.mobile_notes_import_service import MobileNotesImportError, MobileNotesImportService
 from app.services.knowledge_summary_service import (
     KnowledgeSummaryConfigError,
     KnowledgeSummaryGenerationError,
@@ -212,6 +213,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
         ttk.Button(buttons, text="Reindexar Knowledge con OCR", command=self.reindex_knowledge_with_ocr).pack(side="left", padx=(0, 6))
         ttk.Button(buttons, text="OCR masivo", command=self.open_bulk_ocr_dialog).pack(side="left", padx=(0, 6))
         ttk.Button(buttons, text="Sincronizar datos móviles", command=self.publish_mobile_data).pack(side="left", padx=(0, 6))
+        ttk.Button(buttons, text="Importar notas móviles", command=self.import_mobile_notes).pack(side="left", padx=(0, 6))
         ttk.Button(buttons, text="Probar conexión Firebase", command=self.test_mobile_firebase_connection).pack(side="left")
 
         ttk.Label(right, text="Título").grid(row=0, column=0, sticky="w", pady=(0, 4))
@@ -572,6 +574,36 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self.status_var.set("Conexión Firebase correcta")
         messagebox.showinfo("Probar conexión Firebase", message, parent=self)
 
+
+    def import_mobile_notes(self) -> None:
+        """Import uploaded mobile notes from Firebase into local Knowledge."""
+        self.status_var.set("Importando notas móviles...")
+        logger.info("MOBILE_NOTES_IMPORT_UI: importación solicitada desde Knowledge Manager")
+
+        def worker() -> None:
+            try:
+                summary = MobileNotesImportService(self.repo.conn).import_all_pending_notes()
+            except MobileNotesImportError as exc:
+                error_message = str(exc)
+                logger.warning("MOBILE_NOTES_IMPORT_UI: importación no completada: %s", error_message)
+                self.after(0, lambda msg=error_message: self._show_mobile_notes_import_error(msg))
+            except Exception as exc:  # noqa: BLE001
+                error_message = f"Error inesperado importando notas móviles: {exc}"
+                logger.exception("MOBILE_NOTES_IMPORT_UI: error inesperado importando notas móviles")
+                self.after(0, lambda msg=error_message: self._show_mobile_notes_import_error(msg))
+            else:
+                self.after(0, lambda: self._show_mobile_notes_import_summary(summary.to_message()))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_mobile_notes_import_summary(self, message: str) -> None:
+        self.status_var.set("Notas móviles importadas")
+        self.refresh_items()
+        messagebox.showinfo("Importar notas móviles", message, parent=self)
+
+    def _show_mobile_notes_import_error(self, message: str) -> None:
+        self.status_var.set("Error importando notas móviles")
+        messagebox.showerror("Importar notas móviles", message, parent=self)
 
     def open_entities_window(self, entity_id: int | None = None) -> None:
         if self._entities_window is not None and self._entities_window.winfo_exists():
