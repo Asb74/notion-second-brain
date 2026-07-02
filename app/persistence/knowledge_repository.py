@@ -719,7 +719,7 @@ class KnowledgeRepository:
         ocr_characters: int | None = None,
     ) -> None:
         now = self._now()
-        self.conn.execute(
+        cursor = self.conn.execute(
             """
             UPDATE knowledge_attachments
             SET ocr_text = ?, ocr_text_raw = ?, ocr_status = ?, ocr_updated_at = ?, updated_at = ?,
@@ -741,6 +741,7 @@ class KnowledgeRepository:
         )
         if commit:
             self.conn.commit()
+        logger.info("KNOWLEDGE_OCR_PERSIST: table=knowledge_attachments fields=ocr_text,ocr_text_raw,ocr_status attachment_id=%s rows=%s status=%s chars=%s", attachment_id, cursor.rowcount, ocr_status, len(ocr_text))
 
     def save_attachment_ocr_correction(self, attachment_id: int, corrected_text: str) -> dict[str, object]:
         row = self.get_attachment(attachment_id)
@@ -827,7 +828,7 @@ class KnowledgeRepository:
                 (float(quality.get("score") or 0.0), str(quality.get("reason") or ""), attachment_id),
             )
             self.conn.commit()
-            logger.info("KNOWLEDGE_OCR: local finished attachment_id=%s quality=%s score=%s chars=%s", attachment_id, status, quality.get("score"), quality.get("chars"))
+            logger.info("KNOWLEDGE_OCR: local finished note_id=%s attachment_id=%s file=%s mime_type=%s extension=%s quality=%s score=%s chars=%s preview=%r", item_id, attachment_id, path, mime, Path(path).suffix.lower(), status, quality.get("score"), quality.get("chars"), text[:200])
             if status == "low_quality":
                 logger.info("KNOWLEDGE_OCR: low_quality attachment_id=%s reason=%s", attachment_id, quality.get("reason"))
             if reindex and status == "ok_local":
@@ -859,33 +860,37 @@ class KnowledgeRepository:
             self.conn.execute(
                 """
                 UPDATE knowledge_attachments
-                SET ocr_status = ?, ocr_updated_at = ?, updated_at = ?, ocr_engine = ?, ocr_characters = ?
+                SET ocr_status = ?, ocr_updated_at = ?, updated_at = ?, ocr_engine = ?, ocr_characters = ?, ai_ocr_done = 0, ai_ocr_status = ?
                 WHERE id = ?
                 """,
-                (status, now, now, "ai", 0, attachment_id),
+                (status, now, now, "ai", 0, status, attachment_id),
             )
             self.conn.commit()
             if status == "error":
                 logger.info("KNOWLEDGE_OCR_AI: error attachment_id=%s reason=%s", attachment_id, result.get("message") or "ai_error")
             else:
                 logger.info("KNOWLEDGE_OCR_AI: empty attachment_id=%s reason=%s", attachment_id, result.get("message") or "no_useful_text")
-            return {"ok": False, "status": status, "message": "La IA no ha podido extraer texto útil.", "chars": 0, "attachment_id": attachment_id}
+            return {"ok": False, "status": status, "message": "No se pudo guardar el texto OCR IA en la nota" if status == "error" else "La IA no ha podido extraer texto útil.", "chars": 0, "attachment_id": attachment_id}
         now = self._now()
-        self.conn.execute(
+        cursor = self.conn.execute(
             """
             UPDATE knowledge_attachments
             SET ocr_text_ai = ?, ocr_status = ?, ocr_updated_at = ?, updated_at = ?,
-                ocr_engine = ?, ocr_mode = ?, ocr_characters = ?, ocr_quality_score = ?, ocr_quality_reason = ?
+                ocr_engine = ?, ocr_mode = ?, ocr_characters = ?, ocr_quality_score = ?, ocr_quality_reason = ?,
+                ai_ocr_done = 1, ai_ocr_created_at = ?, ai_ocr_status = ?
             WHERE id = ?
             """,
-            (text, "ok_ai", now, now, "ai", "ai", len(text), float(result.get("confidence") or 0.0), "IA visual", attachment_id),
+            (text, "ok_ai", now, now, "ai", "ai", len(text), float(result.get("confidence") or 0.0), "IA visual", now, "done", attachment_id),
         )
         self.conn.commit()
-        logger.info("KNOWLEDGE_OCR_AI: saved attachment_id=%s status=ok_ai chars=%s", attachment_id, len(text))
+        if cursor.rowcount != 1:
+            logger.error("KNOWLEDGE_OCR_AI: persist failed note_id=%s attachment_id=%s rows=%s", item_id, attachment_id, cursor.rowcount)
+            return {"ok": False, "status": "error_ai", "chars": len(text), "message": "No se pudo guardar el texto OCR IA en la nota", "attachment_id": attachment_id}
+        logger.info("KNOWLEDGE_OCR_AI: saved OK table=knowledge_attachments field=ocr_text_ai note_id=%s attachment_id=%s rows=%s chars=%s preview=%r", item_id, attachment_id, cursor.rowcount, len(text), text[:200])
         if reindex:
             self.reindex_item(item_id)
             logger.info("KNOWLEDGE_OCR_AI: reindexed note_id=%s", item_id)
-        return {"ok": True, "status": "ok_ai", "chars": len(text), "message": "OCR mejorado con IA.", "attachment_id": attachment_id}
+        return {"ok": True, "status": "ok_ai", "chars": len(text), "message": "Texto IA guardado correctamente en la nota", "attachment_id": attachment_id}
 
     def ignore_attachment_ocr(self, attachment_id: int) -> None:
         self.conn.execute("UPDATE knowledge_attachments SET ocr_status = ?, updated_at = ? WHERE id = ?", ("ignored", self._now(), attachment_id))

@@ -20,6 +20,7 @@ except Exception:  # noqa: BLE001
     pytesseract = None
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp"}
+IMAGE_MIME_TYPES = {"image/jpeg", "image/jpg", "image/png", "image/webp"}
 PDF_EXTENSIONS = {".pdf"}
 MAX_OCR_TEXT_CHARS = 120_000
 MAX_OCR_PDF_PAGES = 5
@@ -230,13 +231,33 @@ def is_ocr_available() -> tuple[bool, str]:
 def is_image_candidate(path: str | Path, mime: str = "") -> bool:
     suffix = Path(path).suffix.lower()
     normalized_mime = (mime or mimetypes.guess_type(str(path))[0] or "").lower()
-    return suffix in IMAGE_EXTENSIONS or normalized_mime.startswith("image/")
+    return suffix in IMAGE_EXTENSIONS or normalized_mime in IMAGE_MIME_TYPES
 
 
 def is_pdf_candidate(path: str | Path, mime: str = "") -> bool:
     suffix = Path(path).suffix.lower()
     normalized_mime = (mime or mimetypes.guess_type(str(path))[0] or "").lower()
     return suffix in PDF_EXTENSIONS or normalized_mime == "application/pdf"
+
+
+def _select_tesseract_lang(preferred: str = "spa+eng") -> str:
+    if pytesseract is None:
+        return preferred
+    try:
+        available = set(pytesseract.get_languages(config=""))
+    except Exception as exc:  # noqa: BLE001
+        logger.info("KNOWLEDGE_OCR: languages probe failed reason=%s fallback=%s", exc, preferred)
+        return preferred
+    wanted = [part for part in preferred.split("+") if part]
+    selected = [part for part in wanted if part in available]
+    if selected:
+        lang = "+".join(selected)
+    elif "eng" in available:
+        lang = "eng"
+    else:
+        lang = preferred
+    logger.info("KNOWLEDGE_OCR: languages available_spa=%s available_eng=%s requested=%s used=%s", "spa" in available, "eng" in available, preferred, lang)
+    return lang
 
 
 def _preprocess_image_for_ocr(image: object) -> list[tuple[str, object]]:
@@ -248,7 +269,9 @@ def _preprocess_image_for_ocr(image: object) -> list[tuple[str, object]]:
     resampling = getattr(image_mod, "Resampling", None)
     resample_filter = getattr(resampling, "LANCZOS", 1) if resampling is not None else 1
 
-    processed = image_ops.exif_transpose(image).convert("L")
+    original = image_ops.exif_transpose(image)
+    logger.info("KNOWLEDGE_OCR: image preprocess original_size=%s original_mode=%s", getattr(original, "size", None), getattr(original, "mode", ""))
+    processed = original.convert("RGB").convert("L")
     processed = image_ops.autocontrast(processed)
     processed = image_enhance.Contrast(processed).enhance(2.0)
     width, height = processed.size
@@ -292,6 +315,7 @@ def _run_tesseract_saved_image(image: object, lang: str, config: str) -> str:
 
 
 def _tesseract_image_to_result(image: object, lang: str) -> OcrResult:
+    lang = _select_tesseract_lang(lang)
     best = OcrResult()
     barcode_text = _read_optional_barcodes(image)
     for variant_name, processed in _preprocess_image_for_ocr(image):
@@ -305,7 +329,7 @@ def _tesseract_image_to_result(image: object, lang: str) -> OcrResult:
                     continue
                 chars = len(text)
                 words = _ocr_word_count(text)
-                candidate = OcrResult(text=text, mode=f"{variant_name} {config}", rotation=rotation, chars=chars, words=words)
+                candidate = OcrResult(text=text, mode=f"{variant_name} lang={lang} {config}", rotation=rotation, chars=chars, words=words)
                 if candidate.score() > best.score():
                     best = candidate
     if barcode_text:
@@ -332,11 +356,15 @@ def ocr_image_result(path: str, lang: str = "spa+eng") -> OcrResult:
         logger.info("KNOWLEDGE_OCR: skipped reason=%s", reason)
         return OcrResult()
     try:
-        logger.info("KNOWLEDGE_OCR: image started path=%s", path)
+        mime = mimetypes.guess_type(str(path))[0] or ""
+        size = Path(path).stat().st_size if Path(path).exists() else 0
+        logger.info("KNOWLEDGE_OCR: image started path=%s mime_type=%s extension=%s size=%s", path, mime, Path(path).suffix.lower(), size)
         image_mod = importlib.import_module("PIL.Image")
         with image_mod.open(path) as image:
+            logger.info("KNOWLEDGE_OCR: image opened dimensions=%s mode=%s format=%s", getattr(image, "size", None), getattr(image, "mode", ""), getattr(image, "format", ""))
             result = _tesseract_image_to_result(image, lang)
-        logger.info("KNOWLEDGE_OCR: image finished chars=%s mode=%s rotation=%s", result.chars, result.mode, result.rotation)
+        quality = evaluate_ocr_quality(result.text, path)
+        logger.info("KNOWLEDGE_OCR: image finished chars=%s score=%s mode=%s rotation=%s preview=%r", result.chars, quality.get("score"), result.mode, result.rotation, result.text[:200])
         return result
     except Exception as exc:  # noqa: BLE001
         logger.info("KNOWLEDGE_OCR: error reason=%s", exc)
