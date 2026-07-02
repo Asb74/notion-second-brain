@@ -9,6 +9,7 @@ import json
 import mimetypes
 import re
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,12 +21,13 @@ except Exception:  # noqa: BLE001
     pytesseract = None
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp"}
-IMAGE_MIME_TYPES = {"image/jpeg", "image/jpg", "image/png", "image/webp"}
+IMAGE_MIME_TYPES = {"image/jpeg", "image/jpg", "image/png", "image/webp", "image/tiff", "image/bmp", "image/x-ms-bmp"}
 PDF_EXTENSIONS = {".pdf"}
 MAX_OCR_TEXT_CHARS = 120_000
 MAX_OCR_PDF_PAGES = 5
 PDF_OCR_TEXT_THRESHOLD = 80
-OCR_CONFIGS = ("--oem 3 --psm 6", "--oem 3 --psm 11", "--oem 3 --psm 4", "--oem 3 --psm 12")
+OCR_CONFIGS = ("--oem 3 --psm 6", "--oem 3 --psm 11", "--oem 3 --psm 12")
+OCR_LANG_CANDIDATES = ("spa", "eng", "spa+eng")
 OCR_ROTATIONS = (0, 90, 180, 270)
 
 
@@ -38,8 +40,9 @@ class OcrResult:
     words: int = 0
     barcode_text: str = ""
 
-    def score(self) -> tuple[int, int]:
-        return self.words, self.chars
+    def score(self) -> tuple[int, int, int]:
+        quality = evaluate_ocr_quality(self.text) if self.text else {"score": 0}
+        return int(quality.get("score") or 0), self.words, self.chars
 
 
 def _configure_tesseract() -> None:
@@ -125,41 +128,48 @@ def extract_ai_ocr_text(response: object) -> str:
 
 
 def evaluate_ocr_quality(text: str, file_path: str | Path | None = None) -> dict[str, object]:
-    """Conservative local OCR quality heuristic for hybrid OCR decisions."""
+    """Evaluate OCR usefulness with document-aware signals, not only length."""
     cleaned = _clean_text(text)
     useful_chars = sum(1 for char in cleaned if char.isalnum())
-    words = re.findall(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9]{2,}", cleaned)
+    words = re.findall(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9][A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9._&+-]{1,}", cleaned)
     real_words = [word for word in words if any(char.isalpha() for char in word)]
     symbols = sum(1 for char in cleaned if not char.isalnum() and not char.isspace())
-    short_lines = sum(1 for line in cleaned.splitlines() if 0 < sum(1 for char in line if char.isalnum()) <= 2)
-    lines = max(1, len([line for line in cleaned.splitlines() if line.strip()]))
+    lines = [line for line in cleaned.splitlines() if line.strip()]
+    short_lines = sum(1 for line in lines if 0 < sum(1 for char in line if char.isalnum()) <= 2)
     symbol_ratio = symbols / max(1, len(cleaned))
-    short_line_ratio = short_lines / lines
-    score = 0.0
-    if useful_chars >= 80:
-        score += 0.35
-    elif useful_chars >= 40:
-        score += 0.2
-    if len(real_words) >= 8:
-        score += 0.35
-    elif len(real_words) >= 4:
-        score += 0.2
-    if symbol_ratio <= 0.18:
-        score += 0.15
-    if short_line_ratio <= 0.35:
-        score += 0.1
-    if re.search(r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b|\b\d+[,.]\d{2}\b|\b\+?\d{6,}\b", cleaned):
-        score += 0.05
-    score = round(min(score, 1.0), 2)
-    if useful_chars < 20:
-        quality, reason = "empty", "menos de 20 caracteres útiles"
-        score = 0.0
-    elif useful_chars < 60 or len(real_words) < 5 or symbol_ratio > 0.35 or short_line_ratio > 0.55 or score < 0.65:
-        quality, reason = "low_quality", f"texto insuficiente o ruidoso (chars={useful_chars}, palabras={len(real_words)}, símbolos={symbol_ratio:.0%})"
-    else:
-        quality, reason = "ok", "texto suficiente para indexación local"
-    return {"quality": quality, "is_good_enough": quality == "ok", "score": int(round(score * 100)), "reason": reason, "chars": useful_chars, "words": len(real_words), "file_path": str(file_path or "")}
+    short_line_ratio = short_lines / max(1, len(lines))
 
+    signals = {
+        "email": bool(re.search(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", cleaned, re.I)),
+        "phone": bool(re.search(r"(?<!\d)(?:\+?34[\s.-]?)?(?:[689]\d|9\d{1})[\d\s().-]{6,}\d", cleaned)),
+        "url": bool(re.search(r"\b(?:https?://|www\.)\S+|\b[A-Z0-9.-]+\.(?:com|es|net|org|io|eu)\b", cleaned, re.I)),
+        "date": bool(re.search(r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b", cleaned)),
+        "dni_nif": bool(re.search(r"\b(?:\d{8}[A-Z]|[XYZ]\d{7}[A-Z]|[A-Z]\d{7}[A-Z0-9])\b", cleaned, re.I)),
+        "address": bool(re.search(r"\b(?:calle|c/|avenida|avda|plaza|paseo|road|street|st\.)\b|\b\d{5}\b", cleaned, re.I)),
+        "company": bool(re.search(r"\b(?:s\.?l\.?|s\.?a\.?|ltd|inc|corp|group|grupo|consulting|solutions|nexus)\b", cleaned, re.I)),
+        "proper_names": len(re.findall(r"\b[A-ZÁÉÍÓÚÜÑ][a-záéíóúüñ]{2,}(?:\s+[A-ZÁÉÍÓÚÜÑ][a-záéíóúüñ]{2,})+\b", cleaned)) >= 1,
+    }
+    signal_count = sum(1 for matched in signals.values() if matched)
+
+    score = 0.0
+    score += min(useful_chars / 180, 1.0) * 0.22
+    score += min(len(real_words) / 14, 1.0) * 0.24
+    score += min(signal_count / 4, 1.0) * 0.34
+    if symbol_ratio <= 0.22:
+        score += 0.1
+    if short_line_ratio <= 0.4:
+        score += 0.1
+    score = round(min(score, 1.0), 2)
+
+    business_card_valid = signal_count >= 2 and useful_chars >= 25 and len(real_words) >= 2
+    if useful_chars < 12 and signal_count == 0:
+        quality, reason = "empty", "menos de 12 caracteres útiles y sin señales documentales"
+        score = 0.0
+    elif business_card_valid or (score >= 0.62 and useful_chars >= 30 and len(real_words) >= 3):
+        quality, reason = "ok", f"texto útil con señales={signal_count}, palabras={len(real_words)}"
+    else:
+        quality, reason = "low_quality", f"texto insuficiente o ruidoso (chars={useful_chars}, palabras={len(real_words)}, señales={signal_count}, símbolos={symbol_ratio:.0%})"
+    return {"quality": quality, "is_good_enough": quality == "ok", "score": int(round(score * 100)), "reason": reason, "chars": useful_chars, "words": len(real_words), "signals": signals, "file_path": str(file_path or "")}
 
 def _render_pdf_first_page_data_url(path: str) -> str:
     fitz = importlib.import_module("fitz")
@@ -260,6 +270,15 @@ def _select_tesseract_lang(preferred: str = "spa+eng") -> str:
     return lang
 
 
+
+def _available_tesseract_langs() -> list[str]:
+    selected: list[str] = []
+    for lang in OCR_LANG_CANDIDATES:
+        resolved = _select_tesseract_lang(lang)
+        if resolved and resolved not in selected:
+            selected.append(resolved)
+    return selected or ["eng"]
+
 def _preprocess_image_for_ocr(image: object) -> list[tuple[str, object]]:
     """Return PIL image variants optimized for difficult label/ticket OCR."""
     image_mod = importlib.import_module("PIL.Image")
@@ -315,23 +334,24 @@ def _run_tesseract_saved_image(image: object, lang: str, config: str) -> str:
 
 
 def _tesseract_image_to_result(image: object, lang: str) -> OcrResult:
-    lang = _select_tesseract_lang(lang)
+    langs = _available_tesseract_langs()
     best = OcrResult()
     barcode_text = _read_optional_barcodes(image)
     for variant_name, processed in _preprocess_image_for_ocr(image):
         for rotation in OCR_ROTATIONS:
             rotated = processed if rotation == 0 else processed.rotate(rotation, expand=True)
-            for config in OCR_CONFIGS:
-                try:
-                    text = _run_tesseract_saved_image(rotated, lang, config)
-                except Exception as exc:  # noqa: BLE001
-                    logger.info("KNOWLEDGE_OCR: tesseract config failed config=%s rotation=%s reason=%s", config, rotation, exc)
-                    continue
-                chars = len(text)
-                words = _ocr_word_count(text)
-                candidate = OcrResult(text=text, mode=f"{variant_name} lang={lang} {config}", rotation=rotation, chars=chars, words=words)
-                if candidate.score() > best.score():
-                    best = candidate
+            for lang in langs:
+                for config in OCR_CONFIGS:
+                    try:
+                        text = _run_tesseract_saved_image(rotated, lang, config)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.info("KNOWLEDGE_OCR: tesseract config failed lang=%s config=%s rotation=%s reason=%s", lang, config, rotation, exc)
+                        continue
+                    chars = len(text)
+                    words = _ocr_word_count(text)
+                    candidate = OcrResult(text=text, mode=f"{variant_name} lang={lang} {config}", rotation=rotation, chars=chars, words=words)
+                    if candidate.score() > best.score():
+                        best = candidate
     if barcode_text:
         combined = _clean_text(f"{best.text}\n\nQR/Código de barras:\n{barcode_text}")
         best = OcrResult(
@@ -358,13 +378,14 @@ def ocr_image_result(path: str, lang: str = "spa+eng") -> OcrResult:
     try:
         mime = mimetypes.guess_type(str(path))[0] or ""
         size = Path(path).stat().st_size if Path(path).exists() else 0
-        logger.info("KNOWLEDGE_OCR: image started path=%s mime_type=%s extension=%s size=%s", path, mime, Path(path).suffix.lower(), size)
+        start_time = time.perf_counter()
+        logger.info("KNOWLEDGE_OCR_PIPELINE: image started original=%s mime_type=%s extension=%s size=%s", path, mime, Path(path).suffix.lower(), size)
         image_mod = importlib.import_module("PIL.Image")
         with image_mod.open(path) as image:
-            logger.info("KNOWLEDGE_OCR: image opened dimensions=%s mode=%s format=%s", getattr(image, "size", None), getattr(image, "mode", ""), getattr(image, "format", ""))
+            logger.info("KNOWLEDGE_OCR_PIPELINE: image opened dimensions=%s mode=%s format=%s dpi=%s", getattr(image, "size", None), getattr(image, "mode", ""), getattr(image, "format", ""), getattr(image, "info", {}).get("dpi"))
             result = _tesseract_image_to_result(image, lang)
         quality = evaluate_ocr_quality(result.text, path)
-        logger.info("KNOWLEDGE_OCR: image finished chars=%s score=%s mode=%s rotation=%s preview=%r", result.chars, quality.get("score"), result.mode, result.rotation, result.text[:200])
+        logger.info("KNOWLEDGE_OCR_PIPELINE: image finished elapsed_ms=%s chars=%s words=%s score=%s decision=%s mode=%s rotation=%s preview=%r", int((time.perf_counter() - start_time) * 1000), result.chars, result.words, quality.get("score"), "OCR suficiente" if quality.get("is_good_enough") else "Candidato IA", result.mode, result.rotation, result.text[:200])
         return result
     except Exception as exc:  # noqa: BLE001
         logger.info("KNOWLEDGE_OCR: error reason=%s", exc)

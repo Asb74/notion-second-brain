@@ -679,8 +679,27 @@ class KnowledgeRepository:
         )
         self.conn.commit()
         attachment_id = int(cursor.lastrowid)
+        self._run_automatic_attachment_ocr(attachment_id, item_id)
         self.reindex_item(item_id)
         return attachment_id
+
+    def _run_automatic_attachment_ocr(self, attachment_id: int, item_id: int) -> None:
+        """Run the shared OCR pipeline for every new OCR-capable attachment source."""
+        try:
+            row = self.get_attachment(attachment_id)
+            if row is None:
+                return
+            from app.services.knowledge_ocr_service import should_ocr_attachment
+
+            path = str(row["stored_path"] or "")
+            mime = str(row["mime_type"] or "")
+            if not should_ocr_attachment(path, mime):
+                logger.info("KNOWLEDGE_OCR_PIPELINE: auto skipped attachment_id=%s source=%s reason=not_candidate", attachment_id, row["source_type"] if "source_type" in row.keys() else "")
+                return
+            logger.info("KNOWLEDGE_OCR_PIPELINE: auto started attachment_id=%s source=%s", attachment_id, row["source_type"] if "source_type" in row.keys() else "")
+            self.ocr_attachment(attachment_id, reindex=False, force=False)
+        except Exception as exc:  # noqa: BLE001
+            logger.info("KNOWLEDGE_OCR_PIPELINE: auto failed note_id=%s attachment_id=%s reason=%s", item_id, attachment_id, exc)
 
     def list_attachments(self, item_id: int) -> list[sqlite3.Row]:
         return self.conn.execute(
@@ -844,9 +863,13 @@ class KnowledgeRepository:
         row = self.get_attachment(attachment_id)
         if row is None:
             return {"ok": False, "status": "error", "message": "Adjunto no encontrado.", "chars": 0}
-        from app.services.knowledge_ocr_service import improve_ocr_with_ai
+        from app.services.knowledge_ocr_service import evaluate_ocr_quality, improve_ocr_with_ai
 
         current = str(row["ocr_text_raw"] or row["ocr_text"] or "")
+        local_quality = evaluate_ocr_quality(current, str(row["stored_path"] or "")) if current.strip() else {"is_good_enough": False}
+        if str(row["ocr_status"] or "").lower() in {"ok", "ok_local", "corrected"} and local_quality.get("is_good_enough"):
+            logger.info("KNOWLEDGE_OCR_AI: skipped attachment_id=%s reason=local_ocr_sufficient score=%s", attachment_id, local_quality.get("score"))
+            return {"ok": True, "status": "skipped", "message": "OCR local suficiente; no se usa IA.", "chars": len(current), "attachment_id": attachment_id, "quality": local_quality}
         filename = str(row["original_filename"] or row["stored_filename"] or "")
         logger.info("KNOWLEDGE_OCR_AI: requested attachment_id=%s filename=%s", attachment_id, filename)
         result = improve_ocr_with_ai(str(row["stored_path"] or ""), str(row["mime_type"] or ""), current)
