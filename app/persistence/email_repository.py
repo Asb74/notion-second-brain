@@ -47,7 +47,10 @@ class EmailRepository:
                 original_reply_to TEXT DEFAULT '',
                 entities_json TEXT,
                 pedido_json TEXT,
-                numero_pedido TEXT DEFAULT ''
+                numero_pedido TEXT DEFAULT '',
+                knowledge_note_id INTEGER,
+                knowledge_created_at TEXT,
+                knowledge_version INTEGER DEFAULT 0
             )
             """
         )
@@ -67,6 +70,9 @@ class EmailRepository:
         self._ensure_column("entities_json", "TEXT")
         self._ensure_column("pedido_json", "TEXT")
         self._ensure_column("numero_pedido", "TEXT DEFAULT ''")
+        self._ensure_column("knowledge_note_id", "INTEGER")
+        self._ensure_column("knowledge_created_at", "TEXT")
+        self._ensure_column("knowledge_version", "INTEGER DEFAULT 0")
 
         self.conn.execute(
             """
@@ -175,7 +181,8 @@ class EmailRepository:
         return self.conn.execute(
             f"""
             SELECT gmail_id, subject, sender, real_sender, received_at, body_text, body_html, status, category, type,
-                   original_from, original_to, original_cc, original_reply_to, attachments_json, entities_json, pedido_json, numero_pedido
+                   original_from, original_to, original_cc, original_reply_to, attachments_json, entities_json, pedido_json, numero_pedido,
+                   knowledge_note_id, knowledge_created_at, knowledge_version
             FROM emails
             WHERE type IN ({placeholders})
             ORDER BY received_at DESC
@@ -198,7 +205,8 @@ class EmailRepository:
         return self.conn.execute(
             """
             SELECT gmail_id, subject, sender, real_sender, received_at, body_text, body_html, status, category, type,
-                   original_from, original_to, original_cc, original_reply_to, attachments_json, entities_json, pedido_json, numero_pedido
+                   original_from, original_to, original_cc, original_reply_to, attachments_json, entities_json, pedido_json, numero_pedido,
+                   knowledge_note_id, knowledge_created_at, knowledge_version
             FROM emails
             WHERE gmail_id = ?
             """,
@@ -207,6 +215,35 @@ class EmailRepository:
 
     def update_status(self, gmail_id: str, status: str) -> None:
         self.conn.execute("UPDATE emails SET status = ? WHERE gmail_id = ?", (status, gmail_id))
+        self.conn.commit()
+
+    def mark_as_knowledge(self, gmail_id: str, note_id: int) -> None:
+        created_at = datetime.now(timezone.utc).isoformat()
+        self.conn.execute(
+            """
+            UPDATE emails
+            SET status = 'Conocimiento',
+                knowledge_note_id = ?,
+                knowledge_created_at = COALESCE(knowledge_created_at, ?),
+                knowledge_version = COALESCE(knowledge_version, 0) + 1
+            WHERE gmail_id = ?
+            """,
+            (int(note_id), created_at, gmail_id),
+        )
+        self.conn.commit()
+
+    def unlink_knowledge(self, gmail_id: str) -> None:
+        self.conn.execute(
+            """
+            UPDATE emails
+            SET knowledge_note_id = NULL,
+                knowledge_created_at = NULL,
+                knowledge_version = 0,
+                status = CASE WHEN status = 'Conocimiento' THEN '' ELSE status END
+            WHERE gmail_id = ?
+            """,
+            (gmail_id,),
+        )
         self.conn.commit()
 
     def update_type(self, gmail_id: str, new_type: str) -> None:
