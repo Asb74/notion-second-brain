@@ -1009,10 +1009,9 @@ class EmailManagerWindow(tk.Toplevel):
         y_scroll.grid(row=0, column=1, sticky="ns")
         self.tree.bind("<<TreeviewSelect>>", lambda _event: self._refresh_preview())
         self.tree.bind("<Button-3>", self._show_tree_context_menu)
+        self.tree.bind("<Double-1>", self._open_knowledge_from_tree_icon)
 
         self.tree_context_menu = tk.Menu(self.tree, tearoff=0)
-        self.tree_context_menu.add_command(label="Marcar como ignorado", command=self._mark_selected_as_ignored)
-        self.tree_context_menu.add_command(label="Guardar como conocimiento", command=self._save_selected_emails_as_knowledge)
 
         self.excel_filter = ExcelTreeFilter(
             master=self,
@@ -1633,6 +1632,9 @@ class EmailManagerWindow(tk.Toplevel):
                 "entities_json": row["entities_json"] or "",
                 "pedido_json": row["pedido_json"] or "",
                 "numero_pedido": row["numero_pedido"] or "",
+                "knowledge_note_id": str(row["knowledge_note_id"] or ""),
+                "knowledge_created_at": row["knowledge_created_at"] or "",
+                "knowledge_version": str(row["knowledge_version"] or ""),
             }
             self._all_rows.append(normalized)
             self._rows_by_id[str(row["gmail_id"])] = normalized
@@ -1664,6 +1666,9 @@ class EmailManagerWindow(tk.Toplevel):
                 tags = ("email_ignored",)
             elif status == "converted_to_note":
                 subject = f"✓ {subject}"
+                tags = ("email_converted",)
+            elif status == "Conocimiento" or row.get("knowledge_note_id"):
+                subject = f"🧠 {subject}"
                 tags = ("email_converted",)
             elif status == "forwarded":
                 subject = f"→ {subject}"
@@ -2064,6 +2069,17 @@ class EmailManagerWindow(tk.Toplevel):
                 skipped_count += 1
                 continue
 
+            existing_note_id = int(row["knowledge_note_id"] or 0)
+            update_existing = False
+            if existing_note_id:
+                update_existing = messagebox.askyesno(
+                    "Guardar como conocimiento",
+                    "La nota ya existe.\n¿Desea actualizarla?",
+                )
+                if not update_existing:
+                    skipped_count += 1
+                    continue
+
             subject = str(row["subject"] or "").strip()
             body_text = str(row["body_text"] or "").strip()
             body_html = str(row["body_html"] or "").strip()
@@ -2139,26 +2155,53 @@ class EmailManagerWindow(tk.Toplevel):
                     f"Adjuntos seleccionados: {len(selected_attachments)}",
                     f"Adjuntos omitidos: {omitted_count}",
                 ]
-                item_id = self.knowledge_repo.create_item(
-                    title=str(metadata.get("title") or title),
-                    content=str(metadata.get("content") or content),
-                    area=str(metadata.get("area") or ""),
-                    tipo=str(metadata.get("type") or ""),
-                    topic_id=metadata.get("topic_id") if isinstance(metadata.get("topic_id"), int) else None,
-                    tags=(
-                        [str(tag) for tag in metadata.get("tags", []) if str(tag).strip()]
-                        if isinstance(metadata.get("tags"), list)
-                        else []
-                    ),
-                    source_type=str(metadata.get("source") or "email"),
-                    source_id=str(row["gmail_id"] or gmail_id),
-                    summary="\n".join(part for part in summary_parts if part.strip()),
+                note_title = str(metadata.get("title") or title)
+                note_content = str(metadata.get("content") or content)
+                note_area = str(metadata.get("area") or "")
+                note_type = str(metadata.get("type") or "")
+                note_topic_id = metadata.get("topic_id") if isinstance(metadata.get("topic_id"), int) else None
+                note_tags = (
+                    [str(tag) for tag in metadata.get("tags", []) if str(tag).strip()]
+                    if isinstance(metadata.get("tags"), list)
+                    else []
                 )
-                imported_attachments, attachment_errors = self._import_email_attachments_to_knowledge(
-                    gmail_id=gmail_id,
-                    item_id=item_id,
-                    attachments=selected_attachments,
-                )
+                note_summary = "\n".join(part for part in summary_parts if part.strip())
+                if update_existing and existing_note_id:
+                    item_id = existing_note_id
+                    self.knowledge_repo.update_item(
+                        item_id=item_id,
+                        title=note_title,
+                        content=note_content,
+                        area=note_area,
+                        tipo=note_type,
+                        topic_id=note_topic_id,
+                        tags=note_tags,
+                        summary=note_summary,
+                    )
+                    action = "actualizar"
+                    imported_attachments = 0
+                    attachment_errors = 0
+                else:
+                    item_id = self.knowledge_repo.create_item(
+                        title=note_title,
+                        content=note_content,
+                        area=note_area,
+                        tipo=note_type,
+                        topic_id=note_topic_id,
+                        tags=note_tags,
+                        source_type=str(metadata.get("source") or "email"),
+                        source_id=str(row["gmail_id"] or gmail_id),
+                        summary=note_summary,
+                    )
+                    action = "crear"
+                    imported_attachments, attachment_errors = self._import_email_attachments_to_knowledge(
+                        gmail_id=gmail_id,
+                        item_id=item_id,
+                        attachments=selected_attachments,
+                    )
+                self.email_repo.mark_as_knowledge(gmail_id, item_id)
+                logger.info("EMAIL_TO_KNOWLEDGE: correo=%s nota=%s acción=%s", gmail_id, item_id, action)
+                self.system_log(f"EMAIL_TO_KNOWLEDGE: correo={gmail_id} nota={item_id} acción={action}")
                 imported_attachments_total += imported_attachments
                 attachment_errors_total += attachment_errors
                 logger.info("KNOWLEDGE_EMAIL_NOTE: saved with metadata gmail_id=%s item_id=%s", gmail_id, item_id)
@@ -2169,6 +2212,7 @@ class EmailManagerWindow(tk.Toplevel):
                 self.system_log(f"Error guardando email como conocimiento {gmail_id}: {exc}", level="ERROR")
                 skipped_count += 1
 
+        self.refresh_emails()
         messagebox.showinfo(
             "Guardar como conocimiento",
             "Nota guardada. "
@@ -2520,6 +2564,57 @@ class EmailManagerWindow(tk.Toplevel):
         self.email_repo.bulk_update_status(selected_ids, "ignored")
         self.refresh_emails()
 
+    def _selected_knowledge_note_id(self) -> int | None:
+        selected_ids = self._selected_ids()
+        if len(selected_ids) != 1:
+            return None
+        row = self._rows_by_id.get(selected_ids[0])
+        if not row:
+            return None
+        try:
+            note_id = int(row.get("knowledge_note_id") or 0)
+        except (TypeError, ValueError):
+            return None
+        return note_id or None
+
+    def _open_selected_knowledge(self) -> None:
+        note_id = self._selected_knowledge_note_id()
+        if note_id is None:
+            messagebox.showwarning("Conocimiento", "El correo seleccionado no tiene una nota vinculada.")
+            return
+        self._open_knowledge_note(note_id)
+
+    def _open_knowledge_note(self, note_id: int) -> None:
+        from app.ui.knowledge_manager_window import KnowledgeManagerWindow
+
+        for child in self.master.winfo_children():
+            if isinstance(child, KnowledgeManagerWindow) and child.winfo_exists():
+                child.select_note_by_id(note_id)
+                return
+        window = KnowledgeManagerWindow(self.master, self.db_connection)
+        window.select_note_by_id(note_id)
+
+    def _unlink_selected_knowledge(self) -> None:
+        selected_ids = self._selected_ids()
+        if len(selected_ids) != 1:
+            messagebox.showwarning("Conocimiento", "Selecciona un único correo para eliminar el vínculo.")
+            return
+        if not messagebox.askyesno("Eliminar vínculo", "¿Eliminar el vínculo con la nota de conocimiento?"):
+            return
+        self.email_repo.unlink_knowledge(selected_ids[0])
+        self.refresh_emails()
+
+    def _open_knowledge_from_tree_icon(self, event: tk.Event) -> str | None:
+        row_id = self.tree.identify_row(event.y)
+        if not row_id:
+            return None
+        row = self._rows_by_id.get(str(row_id), {})
+        if not row.get("knowledge_note_id"):
+            return None
+        self.tree.selection_set(row_id)
+        self._open_selected_knowledge()
+        return "break"
+
     def _show_tree_context_menu(self, event: tk.Event) -> str:
         region = self.tree.identify_region(event.x, event.y)
         column = self.tree.identify_column(event.x)
@@ -2537,6 +2632,21 @@ class EmailManagerWindow(tk.Toplevel):
                 self._refresh_preview()
 
             if self.tree_context_menu is not None:
+                self.tree_context_menu.delete(0, "end")
+                self.tree_context_menu.add_command(label="Marcar como ignorado", command=self._mark_selected_as_ignored)
+                note_id = self._selected_knowledge_note_id()
+                if note_id is None:
+                    self.tree_context_menu.add_command(
+                        label="Guardar como conocimiento",
+                        command=self._save_selected_emails_as_knowledge,
+                    )
+                else:
+                    self.tree_context_menu.add_command(label="Abrir conocimiento", command=self._open_selected_knowledge)
+                    self.tree_context_menu.add_command(
+                        label="Actualizar conocimiento",
+                        command=self._save_selected_emails_as_knowledge,
+                    )
+                    self.tree_context_menu.add_command(label="Eliminar vínculo", command=self._unlink_selected_knowledge)
                 try:
                     self.tree_context_menu.tk_popup(event.x_root, event.y_root)
                 finally:
