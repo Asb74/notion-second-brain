@@ -28,6 +28,7 @@ except Exception:  # noqa: BLE001
     DND_FILES = None
 
 from app.config.config_paths import app_data_dir, knowledge_attachments_dir
+from app.core.knowledge_events import knowledge_event_bus
 from app.persistence.knowledge_repository import KnowledgeRepository
 from app.persistence.masters_repository import MastersRepository
 from app.services.knowledge_indexer_service import get_effective_ocr_origin, get_effective_ocr_text
@@ -107,11 +108,52 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self.inbox_view_var = tk.StringVar(value=initial_view)
         self._summary_generation_in_progress = False
         self._entities_window: KnowledgeEntitiesWindow | None = None
+        self._unsubscribe_knowledge_created = knowledge_event_bus.subscribe_knowledge_created(
+            self._on_knowledge_created
+        )
+        self.bind("<Destroy>", self._on_destroy, add="+")
 
         self._build_layout()
         logger.info("KNOWLEDGE: ayuda contextual cargada")
         self._load_reference_values()
         self.refresh_items()
+
+    def _on_destroy(self, event: tk.Event) -> None:
+        """Release the shared event subscription when this toplevel closes."""
+        if event.widget is self and self._unsubscribe_knowledge_created is not None:
+            self._unsubscribe_knowledge_created()
+            self._unsubscribe_knowledge_created = None
+
+    def _on_knowledge_created(self, note_id: int) -> None:
+        """Rebuild the inbox and reveal an externally created knowledge item."""
+        try:
+            self.after(0, self._reload_after_knowledge_created, note_id)
+        except tk.TclError:
+            # The window may have closed between event delivery and scheduling.
+            return
+
+    def _reload_after_knowledge_created(self, note_id: int) -> None:
+        """Refresh counters/tree and select the newly captured inbox item."""
+        self.inbox_view_var.set("inbox")
+        self.refresh_items()
+        note_iid = f"note:{int(note_id)}"
+        if not self.tree.exists(note_iid):
+            # Active filters must not prevent the capture from being visible.
+            self.search_var.set("")
+            self.area_filter_var.set("Todas")
+            self.topic_filter_var.set("Todos")
+            self.type_filter_var.set("Todos")
+            self.refresh_items()
+        if self.tree.exists(note_iid):
+            parent_iid = self.tree.parent(note_iid)
+            while parent_iid:
+                self.tree.item(parent_iid, open=True)
+                parent_iid = self.tree.parent(parent_iid)
+            self.tree.selection_set(note_iid)
+            self.tree.focus(note_iid)
+            self.tree.see(note_iid)
+            self._on_item_selected()
+        logger.info("KNOWLEDGE_TREE: knowledge_created handled note_id=%s", note_id)
 
     def _maximize_window(self) -> None:
         """Open Knowledge Manager with as much screen space as the platform allows."""
