@@ -38,6 +38,7 @@ from app.core.email.email_classifier import is_internal_email, is_user_email
 from app.core.email.gmail_client import GmailClient
 from app.core.email.attachment_cache import AttachmentCache
 from app.core.email.mail_ingestion_service import MailIngestionService
+from app.core.knowledge_events import knowledge_event_bus
 from app.core.ml.email_classifier import EmailClassifier as MLEmailClassifier
 from app.core.models import NoteCreateRequest
 from app.core.outlook.outlook_service import OutlookService
@@ -2105,18 +2106,35 @@ class EmailManagerWindow(tk.Toplevel):
                 email_attachments = self._build_email_attachments(gmail_id)
                 logger.info("KNOWLEDGE_EMAIL_NOTE: attachments detected=%s", len(email_attachments))
                 self.system_log(f"KNOWLEDGE_EMAIL_NOTE: attachments detected={len(email_attachments)}")
-                # Capture must be one click: suggestions remain editable later in the inbox.
-                metadata = {
-                    "title": title,
-                    "content": content,
-                    "source": "email",
-                    "area": str(suggestions.get("area") or ""),
-                    "type": str(suggestions.get("type") or ""),
-                    "topic_id": None,
-                    "tags": [str(tag) for tag in suggestions.get("tags", ["Email"]) if str(tag).strip()],
-                }
-                selected_attachments = email_attachments
-                logger.info("KNOWLEDGE_EMAIL_NOTE: captura rápida adjuntos=%s", len(selected_attachments))
+                if update_existing:
+                    # A linked email has already been reviewed; do not ask again.
+                    metadata = {
+                        "title": title,
+                        "content": content,
+                        "source": "email",
+                        "area": str(suggestions.get("area") or ""),
+                        "type": str(suggestions.get("type") or ""),
+                        "topic_id": None,
+                        "tags": [str(tag) for tag in suggestions.get("tags", ["Email"]) if str(tag).strip()],
+                        "attachments": email_attachments,
+                    }
+                else:
+                    dialog = KnowledgeMetadataDialog(
+                        self,
+                        self.db_connection,
+                        title=title,
+                        content=content,
+                        source="email",
+                        suggestions=suggestions,
+                        attachments=email_attachments,
+                    )
+                    metadata = dialog.result
+                    if metadata is None:
+                        self.system_log(f"Guardado como conocimiento cancelado para email {gmail_id}")
+                        continue
+
+                selected_attachments = list(metadata.get("attachments") or [])
+                logger.info("KNOWLEDGE_EMAIL_NOTE: adjuntos seleccionados=%s", len(selected_attachments))
                 selected_indexes = {attachment.get("_dialog_index") for attachment in selected_attachments}
                 selected_names = {self._attachment_filename(attachment) for attachment in selected_attachments}
                 for index, attachment in enumerate(email_attachments):
@@ -2182,6 +2200,8 @@ class EmailManagerWindow(tk.Toplevel):
                     )
                 self.knowledge_repo.set_inbox_status(item_id, "inbox")
                 self.email_repo.mark_as_knowledge(gmail_id, item_id)
+                if action == "crear":
+                    knowledge_event_bus.emit_knowledge_created(item_id)
                 logger.info("EMAIL_TO_KNOWLEDGE: correo=%s nota=%s acción=%s", gmail_id, item_id, action)
                 self.system_log(f"EMAIL_TO_KNOWLEDGE: correo={gmail_id} nota={item_id} acción={action}")
                 imported_attachments_total += imported_attachments
