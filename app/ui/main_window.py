@@ -33,6 +33,9 @@ from app.config.config_paths import GMAIL_CREDENTIALS, GMAIL_TOKEN, open_google_
 from app.config.email_runtime_config import load_config
 from app.config.config_manager import ConfigManager
 from app.services.email_background_checker import EmailCheckerThread
+from app.services.knowledge_background_checker import KnowledgeBackgroundChecker
+from app.services.mobile_notes_import_service import MobileNotesImportService
+from app.persistence.knowledge_repository import KnowledgeRepository
 from app.ui.excel_filter import ExcelTreeFilter
 from app.ui.masters_dialog import MastersDialog
 from app.ui.email_manager_window import EmailManagerWindow
@@ -136,6 +139,7 @@ class MainWindow(ttk.Frame):
         self.email_queue: Queue[list[dict[str, str]]] = Queue()
         self.seen_email_ids: set[str] = set()
         self.email_checker_thread: EmailCheckerThread | None = None
+        self.knowledge_checker: KnowledgeBackgroundChecker | None = None
         self.mail_ingestion_service: MailIngestionService | None = None
         self.email_repo: EmailRepository | None = None
         self._email_queue_after_id: str | None = None
@@ -177,6 +181,9 @@ class MainWindow(ttk.Frame):
         self.refresh_actions()
         self.after(150, self._poll_queue)
         self._initialize_background_email_checker()
+        self._initialize_knowledge_background_checker()
+        self.master.bind("<<KnowledgeDownloadNow>>", self._download_knowledge_now)
+        self.master.bind("<<KnowledgeDownloadSettingsChanged>>", self._reconfigure_knowledge_background_checker)
         self.master.protocol("WM_DELETE_WINDOW", self._on_close_requested)
 
 
@@ -199,7 +206,8 @@ class MainWindow(ttk.Frame):
         menubar.add_cascade(label="Módulos", menu=modulos)
 
         conocimiento = tk.Menu(menubar, tearoff=0)
-        conocimiento.add_command(label="Knowledge Manager", command=self._open_knowledge_manager)
+        conocimiento.add_command(label="Bandeja de entrada", command=lambda: self._open_knowledge_manager("inbox"))
+        conocimiento.add_command(label="Biblioteca de conocimiento", command=lambda: self._open_knowledge_manager("classified"))
         conocimiento.add_command(label="Entidades de Knowledge", command=self._open_knowledge_entities_window)
         conocimiento.add_command(label="Preguntar a Knowledge", command=self._open_knowledge_query_dialog)
         conocimiento.add_command(label="Importar Evernote (.enex)", command=self._import_evernote_enex)
@@ -428,7 +436,7 @@ class MainWindow(ttk.Frame):
             self._knowledge_window.refresh_items()
 
 
-    def _open_knowledge_manager(self) -> KnowledgeManagerWindow | None:
+    def _open_knowledge_manager(self, initial_view: str = "classified") -> KnowledgeManagerWindow | None:
         if self.db_connection is None:
             messagebox.showerror("Error", "No hay conexión de base de datos disponible para Knowledge Manager.")
             return None
@@ -437,11 +445,12 @@ class MainWindow(ttk.Frame):
             self._knowledge_window.deiconify()
             self._knowledge_window.lift()
             self._knowledge_window.focus_force()
+            self._knowledge_window.set_inbox_view(initial_view)
             self._knowledge_window.refresh_items()
             return self._knowledge_window
 
         try:
-            self._knowledge_window = KnowledgeManagerWindow(self.master, self.db_connection)
+            self._knowledge_window = KnowledgeManagerWindow(self.master, self.db_connection, initial_view=initial_view)
             return self._knowledge_window
         except Exception as exc:  # noqa: BLE001
             logger.exception("No se pudo abrir Knowledge Manager")
@@ -1216,6 +1225,50 @@ class MainWindow(ttk.Frame):
         except Exception:  # noqa: BLE001
             logger.exception("Background email checker could not be initialized")
 
+    def _initialize_knowledge_background_checker(self) -> None:
+        if self.db_connection is None:
+            return
+        settings = self.config_manager.get_knowledge_auto_download_settings()
+        if not settings.get("enabled", False):
+            return
+        self.knowledge_checker = KnowledgeBackgroundChecker(
+            download_callback=self._run_existing_knowledge_download,
+            result_callback=self._on_knowledge_download_result,
+            interval_minutes=int(settings.get("interval_minutes", 10)),
+        )
+        self.knowledge_checker.start(run_immediately=bool(settings.get("on_startup", False)))
+
+    def _reconfigure_knowledge_background_checker(self, _event: tk.Event | None = None) -> None:
+        if self.knowledge_checker is not None:
+            self.knowledge_checker.stop()
+            self.knowledge_checker = None
+        self._initialize_knowledge_background_checker()
+
+    def _run_existing_knowledge_download(self) -> int:
+        """Reuse MobileNotesImportService.import_all_pending_notes, the manual download entry point."""
+        if self.db_connection is None:
+            return 0
+        return MobileNotesImportService(self.db_connection).import_all_pending_notes().notes_imported
+
+    def _on_knowledge_download_result(self, created: int, error: Exception | None) -> None:
+        self.after(0, lambda: self._apply_knowledge_download_result(created, error, manual=False))
+
+    def _download_knowledge_now(self, _event: tk.Event | None = None) -> None:
+        if self.knowledge_checker is None:
+            self.knowledge_checker = KnowledgeBackgroundChecker(self._run_existing_knowledge_download, self._on_knowledge_download_result, 10)
+        if self.knowledge_checker.trigger_now():
+            self.status_var.set("Descargando conocimiento en segundo plano...")
+
+    def _apply_knowledge_download_result(self, created: int, error: Exception | None, manual: bool = False) -> None:
+        if error:
+            logger.warning("KNOWLEDGE_BACKGROUND: resultado con error=%s", error)
+            self.status_var.set("Error en captura automática de conocimiento")
+            return
+        pending = KnowledgeRepository(self.db_connection).count_inbox_items() if self.db_connection else 0
+        self.status_var.set(f"Bandeja de entrada ({pending}): {created} nuevas entradas")
+        if self._knowledge_window is not None and self._knowledge_window.winfo_exists():
+            self._knowledge_window.refresh_items()
+
     def check_new_emails(self) -> list[dict[str, str]]:
         if self.mail_ingestion_service is None or self.email_repo is None:
             return []
@@ -1296,6 +1349,8 @@ class MainWindow(ttk.Frame):
         return {str(row["gmail_id"] or "").strip() for row in rows if str(row["gmail_id"] or "").strip()}
 
     def _on_close_requested(self) -> None:
+        if self.knowledge_checker is not None:
+            self.knowledge_checker.stop()
         if self.email_checker_thread is not None:
             self.email_checker_thread.stop()
             self.email_checker_thread.join(timeout=2)

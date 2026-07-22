@@ -59,6 +59,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "auto_check": True,
         "interval": 60,
     },
+    "knowledge_auto_download": {
+        "enabled": False,
+        "interval_minutes": 10,
+        "on_startup": False,
+        "silent": True,
+    },
     "order_validation": {
         "required_fields": list(DEFAULT_REQUIRED_ORDER_FIELDS),
     },
@@ -107,6 +113,9 @@ class ConfigManager:
     def get_email_settings(self) -> dict[str, Any]:
         """Return email runtime settings."""
         return dict(self.load().get("email_settings", {}))
+
+    def get_knowledge_auto_download_settings(self) -> dict[str, Any]:
+        return dict(self.load().get("knowledge_auto_download", {}))
 
     def get_order_validation(self) -> dict[str, Any]:
         """Return order validation runtime settings."""
@@ -161,6 +170,19 @@ class ConfigManager:
         if isinstance(raw_ocr_settings, dict):
             config["ocr_settings"] = {
                 "tesseract_path": str(raw_ocr_settings.get("tesseract_path", "") or "").strip(),
+            }
+
+        raw_knowledge = data.get("knowledge_auto_download", {})
+        if isinstance(raw_knowledge, dict):
+            try:
+                interval_minutes = max(1, int(raw_knowledge.get("interval_minutes", 10)))
+            except (TypeError, ValueError):
+                interval_minutes = 10
+            config["knowledge_auto_download"] = {
+                "enabled": bool(raw_knowledge.get("enabled", False)),
+                "interval_minutes": interval_minutes,
+                "on_startup": bool(raw_knowledge.get("on_startup", False)),
+                "silent": bool(raw_knowledge.get("silent", True)),
             }
 
         raw_order_validation = data.get("order_validation", {})

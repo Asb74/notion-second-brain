@@ -227,7 +227,7 @@ class MobileNotesImportService:
     def create_knowledge_note_from_mobile(self, note_data: dict[str, Any], attachments: list[DownloadedMobileAttachment]) -> tuple[int, list[dict[str, object]]]:
         mobile_note_id = str(note_data.get("mobile_note_id") or "").strip()
         existing = self.conn.execute(
-            "SELECT id FROM knowledge_items WHERE source_type = 'mobile' AND source_id = ? AND status != 'deleted' LIMIT 1",
+            "SELECT id FROM knowledge_items WHERE source_type IN ('download', 'mobile') AND source_id = ? AND status != 'deleted' LIMIT 1",
             (mobile_note_id,),
         ).fetchone()
         if existing is not None:
@@ -243,9 +243,11 @@ class MobileNotesImportService:
             topic_id=self._find_topic_id(topic, area),
             tipo=str(note_data.get("type") or note_data.get("tipo") or ""),
             tags=self._normalize_tags(note_data.get("tags")),
-            source_type="mobile",
+            source_type="download",
             source_id=mobile_note_id,
             source_path=json.dumps({"user_id": note_data.get("user_id") or "", "device_id": note_data.get("device_id") or "", "mobile_note_id": mobile_note_id, "topic": topic}, ensure_ascii=False),
+            inbox_status="inbox",
+            capture_source="download",
         )
         created_at = self._coerce_datetime_text(note_data.get("created_at"))
         if created_at:

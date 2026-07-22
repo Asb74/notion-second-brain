@@ -2070,15 +2070,8 @@ class EmailManagerWindow(tk.Toplevel):
                 continue
 
             existing_note_id = int(row["knowledge_note_id"] or 0)
-            update_existing = False
-            if existing_note_id:
-                update_existing = messagebox.askyesno(
-                    "Guardar como conocimiento",
-                    "La nota ya existe.\n¿Desea actualizarla?",
-                )
-                if not update_existing:
-                    skipped_count += 1
-                    continue
+            # Repeated clicks update the permanent email-linked item without interruption.
+            update_existing = bool(existing_note_id)
 
             subject = str(row["subject"] or "").strip()
             body_text = str(row["body_text"] or "").strip()
@@ -2112,32 +2105,18 @@ class EmailManagerWindow(tk.Toplevel):
                 email_attachments = self._build_email_attachments(gmail_id)
                 logger.info("KNOWLEDGE_EMAIL_NOTE: attachments detected=%s", len(email_attachments))
                 self.system_log(f"KNOWLEDGE_EMAIL_NOTE: attachments detected={len(email_attachments)}")
-                logger.info("KNOWLEDGE_EMAIL_NOTE: dialog opened")
-                self.system_log("KNOWLEDGE_EMAIL_NOTE: dialog opened")
-                dialog = KnowledgeMetadataDialog(
-                    self,
-                    self.db_connection,
-                    title=title,
-                    content=content,
-                    source="email",
-                    suggestions=suggestions,
-                    attachments=email_attachments,
-                )
-                metadata = dialog.result
-                if metadata is None:
-                    logger.info("KNOWLEDGE_EMAIL_NOTE: cancelled")
-                    self.system_log("KNOWLEDGE_EMAIL_NOTE: cancelled")
-                    skipped_count += 1
-                    continue
-
-                selected_attachments_raw = metadata.get("attachments", [])
-                selected_attachments = (
-                    [item for item in selected_attachments_raw if isinstance(item, dict)]
-                    if isinstance(selected_attachments_raw, list)
-                    else []
-                )
-                logger.info("KNOWLEDGE_EMAIL_NOTE: attachments selected=%s", len(selected_attachments))
-                self.system_log(f"KNOWLEDGE_EMAIL_NOTE: attachments selected={len(selected_attachments)}")
+                # Capture must be one click: suggestions remain editable later in the inbox.
+                metadata = {
+                    "title": title,
+                    "content": content,
+                    "source": "email",
+                    "area": str(suggestions.get("area") or ""),
+                    "type": str(suggestions.get("type") or ""),
+                    "topic_id": None,
+                    "tags": [str(tag) for tag in suggestions.get("tags", ["Email"]) if str(tag).strip()],
+                }
+                selected_attachments = email_attachments
+                logger.info("KNOWLEDGE_EMAIL_NOTE: captura rápida adjuntos=%s", len(selected_attachments))
                 selected_indexes = {attachment.get("_dialog_index") for attachment in selected_attachments}
                 selected_names = {self._attachment_filename(attachment) for attachment in selected_attachments}
                 for index, attachment in enumerate(email_attachments):
@@ -2192,6 +2171,8 @@ class EmailManagerWindow(tk.Toplevel):
                         source_type=str(metadata.get("source") or "email"),
                         source_id=str(row["gmail_id"] or gmail_id),
                         summary=note_summary,
+                        inbox_status="inbox",
+                        capture_source="email",
                     )
                     action = "crear"
                     imported_attachments, attachment_errors = self._import_email_attachments_to_knowledge(
@@ -2199,6 +2180,7 @@ class EmailManagerWindow(tk.Toplevel):
                         item_id=item_id,
                         attachments=selected_attachments,
                     )
+                self.knowledge_repo.set_inbox_status(item_id, "inbox")
                 self.email_repo.mark_as_knowledge(gmail_id, item_id)
                 logger.info("EMAIL_TO_KNOWLEDGE: correo=%s nota=%s acción=%s", gmail_id, item_id, action)
                 self.system_log(f"EMAIL_TO_KNOWLEDGE: correo={gmail_id} nota={item_id} acción={action}")
