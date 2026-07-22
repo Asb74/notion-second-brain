@@ -61,6 +61,30 @@ def test_update_topic_and_item_topic() -> None:
     assert repo.get_item(item_id)["topic_id"] == topic_id
 
 
+def test_manual_items_keep_their_view_status_and_update_without_duplicates() -> None:
+    repo = _repo()
+    inbox_id = repo.create_item("Bandeja", "Contenido", inbox_status="inbox")
+    classified_id = repo.create_item("Biblioteca", "Contenido", inbox_status="classified")
+
+    assert [row["id"] for row in repo.list_items(inbox_status="inbox")] == [inbox_id]
+    assert [row["id"] for row in repo.list_items(inbox_status="classified")] == [classified_id]
+
+    assert repo.update_item(inbox_id, "Bandeja editada", "Nuevo", inbox_status="classified") == 1
+    assert repo.get_item(inbox_id)["title"] == "Bandeja editada"
+    assert repo.get_item(inbox_id)["inbox_status"] == "classified"
+    assert repo.get_item(inbox_id)["processed_at"]
+    assert len(repo.list_items(inbox_status="classified")) == 2
+
+
+def test_update_item_preserves_inbox_status_when_not_requested() -> None:
+    repo = _repo()
+    item_id = repo.create_item("Entrada", "Contenido", inbox_status="inbox")
+
+    repo.update_item(item_id, "Entrada editada", "Nuevo")
+
+    assert repo.get_item(item_id)["inbox_status"] == "inbox"
+
+
 def test_items_and_topics_support_global_area_tipo_text() -> None:
     repo = _repo()
     topic_id = repo.create_topic("Tema global", area="General", description="Descripción")

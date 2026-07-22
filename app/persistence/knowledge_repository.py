@@ -358,20 +358,29 @@ class KnowledgeRepository:
         topic_id: int | None = None,
         area: str = "",
         tipo: str = "",
-    ) -> None:
+        inbox_status: str | None = None,
+    ) -> int:
         cleaned_title = title.strip()
         if not cleaned_title:
             raise ValueError("El título no puede estar vacío")
         cleaned_area = area.strip() or self._legacy_area_name(area_id)
         cleaned_tipo = tipo.strip() or self._legacy_type_name(item_type_id)
-        self.conn.execute(
+        if inbox_status is not None and inbox_status not in {"inbox", "classified", "archived", "discarded"}:
+            raise ValueError("Estado de bandeja no válido")
+        now = self._now()
+        status_fields = ""
+        status_params: list[object] = []
+        if inbox_status is not None:
+            status_fields = ", inbox_status = ?, processed_at = ?"
+            status_params = [inbox_status, now if inbox_status != "inbox" else None]
+        cursor = self.conn.execute(
             """
             UPDATE knowledge_items
             SET title = ?, content = ?, summary = ?, area_id = ?, area = ?, topic_id = ?,
-                item_type_id = ?, tipo = ?, status = ?, updated_at = ?
+                item_type_id = ?, tipo = ?, status = ?, updated_at = ?""" + status_fields + """
             WHERE id = ?
             """,
-            (
+            [
                 cleaned_title,
                 content,
                 summary,
@@ -381,13 +390,17 @@ class KnowledgeRepository:
                 item_type_id,
                 cleaned_tipo,
                 status.strip() or "active",
-                self._now(),
+                now,
+                *status_params,
                 item_id,
-            ),
+            ],
         )
+        if cursor.rowcount != 1:
+            raise ValueError(f"No existe la nota id={item_id}")
         self.set_tags_for_item(item_id, tags or [])
         self.conn.commit()
         self.reindex_item(item_id)
+        return int(cursor.rowcount)
 
     def get_item(self, item_id: int) -> sqlite3.Row | None:
         return self.conn.execute(
