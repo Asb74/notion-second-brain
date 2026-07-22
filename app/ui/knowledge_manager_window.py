@@ -225,7 +225,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self.topic_filter_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh_items())
         self.type_filter_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh_items())
         ttk.Label(filters, text="Vista").grid(row=1, column=0, sticky="w", pady=(6, 0))
-        self.inbox_view_combo = ttk.Combobox(filters, textvariable=self.inbox_view_var, state="readonly", values=("inbox", "classified", "all"), width=16)
+        self.inbox_view_combo = ttk.Combobox(filters, textvariable=self.inbox_view_var, state="readonly", values=("inbox", "classified", "archived", "todo", "all"), width=16)
         self.inbox_view_combo.grid(row=1, column=1, sticky="ew", padx=(4, 8), pady=(6, 0))
         self.inbox_view_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh_items())
 
@@ -1038,7 +1038,8 @@ class KnowledgeManagerWindow(tk.Toplevel):
         tipo = self._selected_filter_value(self.type_filter_var.get(), "Todos")
         topic_id = self._selected_filter_id(self.topic_filter_var.get(), self.topic_filter_by_name, "Todos")
         view = self.inbox_view_var.get()
-        rows = self.repo.list_items(self.search_var.get(), area=area, tipo=tipo, topic_id=topic_id, inbox_status="inbox" if view == "inbox" else "classified" if view == "classified" else None)
+        view_status = view if view in {"inbox", "classified", "archived"} else None
+        rows = self.repo.list_items(self.search_var.get(), area=area, tipo=tipo, topic_id=topic_id, inbox_status=view_status)
         if view == "inbox":
             rows = sorted(rows, key=lambda row: (str(row["captured_at"] or row["created_at"] or ""), int(row["id"])), reverse=True)
         else:
@@ -1122,12 +1123,13 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self.tree.selection_remove(self.tree.selection())
         self.title_var.set("")
         self.tags_var.set("")
+        self.area_var.set("")
         self.topic_var.set("")
+        self.type_var.set("")
         self.source_var.set("manual")
         self.content_text.delete("1.0", "end")
         self.summary_text.delete("1.0", "end")
         self._update_summary_controls()
-        self.title_var.set("")
         self.refresh_attachments()
         self.refresh_ocr_tab()
         self.refresh_note_entities()
@@ -1273,19 +1275,82 @@ class KnowledgeManagerWindow(tk.Toplevel):
         return [tag.strip() for tag in self.tags_var.get().split(",") if tag.strip()]
 
     def save_item(self) -> int | None:
+        return self._save_current_item()
+
+    def _status_for_save(self, requested_status: str | None) -> str:
+        if requested_status is not None:
+            return requested_status
+        view = self.inbox_view_var.get().strip().lower()
+        return "inbox" if view == "inbox" else "classified"
+
+    def _select_saved_item(self, item_id: int) -> None:
+        """Reveal a saved item if it belongs to the current filtered view."""
+        self.refresh_items()
+        note_iid = f"note:{item_id}"
+        if not self.tree.exists(note_iid):
+            logger.info("KNOWLEDGE_UI: saved item not visible in current view id=%s", item_id)
+            return
+        parent_iid = self.tree.parent(note_iid)
+        while parent_iid:
+            self.tree.item(parent_iid, open=True)
+            parent_iid = self.tree.parent(parent_iid)
+        self.tree.selection_set(note_iid)
+        self.tree.focus(note_iid)
+        self.tree.see(note_iid)
+        logger.info("KNOWLEDGE_UI: item seleccionado tras guardar id=%s", item_id)
+
+    def _save_current_item(self, *, requested_status: str | None = None, silent: bool = False) -> int | None:
+        """Create or update the form's note, retaining its ID for follow-up actions."""
         title = self.title_var.get().strip()
         if not title:
-            messagebox.showwarning("Knowledge Manager", "El título es obligatorio.")
+            if not silent:
+                messagebox.showwarning("Knowledge Manager", "Introduce un título antes de guardar.", parent=self)
+            return None
+        status = self._status_for_save(requested_status)
+        logger.info(
+            "KNOWLEDGE_SAVE: inicio item_id=%s vista=%s requested_status=%s",
+            self.current_item_id, self.inbox_view_var.get(), requested_status,
+        )
+        content = self.content_text.get("1.0", "end").strip()
+        summary = self.summary_text.get("1.0", "end").strip()
+        area = self.areas_by_name.get(self.area_var.get(), self.area_var.get().strip())
+        tipo = self.types_by_name.get(self.type_var.get(), self.type_var.get().strip())
+        topic_id = self.topics_by_name.get(self.topic_var.get())
+        tags = self._tags_from_entry()
+        try:
+            if self.current_item_id is None:
+                logger.info("KNOWLEDGE_SAVE: creando título=%s status=%s", title, status)
+                item_id = self.repo.create_item(
+                    title=title, content=content, area=area, tipo=tipo, topic_id=topic_id,
+                    tags=tags, source_type=self.source_var.get().strip() or "manual",
+                    summary=summary, inbox_status=status,
+                )
+                self.current_item_id = item_id
+                logger.info("KNOWLEDGE_SAVE: creado item_id=%s", item_id)
+            else:
+                item_id = self.current_item_id
+                logger.info("KNOWLEDGE_SAVE: actualizando item_id=%s", item_id)
+                self.repo.update_item(
+                    item_id=item_id, title=title, content=content, area=area, tipo=tipo,
+                    topic_id=topic_id, tags=tags, summary=summary, inbox_status=status,
+                )
+                logger.info("KNOWLEDGE_SAVE: actualizado item_id=%s", item_id)
+            self._update_summary_controls()
+            self._select_saved_item(item_id)
+            self.refresh_attachments()
+            self.refresh_note_entities()
+            self.status_var.set(f"Nota guardada id={item_id}")
+            return item_id
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("KNOWLEDGE_SAVE: error %s", exc)
+            if not silent:
+                messagebox.showerror("Knowledge Manager", f"No se pudo guardar la nota.\n\n{exc}", parent=self)
+            self.status_var.set("Error al guardar la nota")
             return None
 
     def classify_current_item(self) -> None:
-        if self.current_item_id is None:
-            messagebox.showwarning("Bandeja de entrada", "Selecciona una entrada.", parent=self)
-            return
-        if self.save_item() is not None:
-            self.repo.set_inbox_status(self.current_item_id, "classified")
+        if self._save_current_item(requested_status="classified") is not None:
             self.status_var.set("Entrada clasificada y guardada")
-            self.refresh_items()
 
     def discard_current_item(self) -> None:
         if self.current_item_id is None:
@@ -1295,53 +1360,6 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self.current_item_id = None
         self.new_item()
         self.refresh_items()
-        content = self.content_text.get("1.0", "end").strip()
-        summary = self.summary_text.get("1.0", "end").strip()
-        area = self.areas_by_name.get(self.area_var.get(), "")
-        tipo = self.types_by_name.get(self.type_var.get(), "")
-        topic_id = self.topics_by_name.get(self.topic_var.get())
-        tags = self._tags_from_entry()
-        try:
-            if self.current_item_id is None:
-                item_id = self.repo.create_item(
-                    title=title,
-                    content=content,
-                    area=area,
-                    tipo=tipo,
-                    topic_id=topic_id,
-                    tags=tags,
-                    source_type=self.source_var.get().strip() or "manual",
-                    summary=summary,
-                )
-                self.current_item_id = item_id
-                logger.info("KNOWLEDGE: nota creada id=%s", item_id)
-                self.status_var.set(f"Nota creada id={item_id}")
-            else:
-                self.repo.update_item(
-                    item_id=self.current_item_id,
-                    title=title,
-                    content=content,
-                    area=area,
-                    tipo=tipo,
-                    topic_id=topic_id,
-                    tags=tags,
-                    summary=summary,
-                )
-                logger.info("KNOWLEDGE: nota actualizada id=%s", self.current_item_id)
-                self.status_var.set(f"Nota actualizada id={self.current_item_id}")
-            self._update_summary_controls()
-            self.refresh_items()
-            if self.current_item_id is not None:
-                current_iid = f"note:{self.current_item_id}"
-                if self.tree.exists(current_iid):
-                    self.tree.selection_set(current_iid)
-                self.refresh_attachments()
-                self.refresh_note_entities()
-            return self.current_item_id
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("No se pudo guardar la nota de conocimiento")
-            messagebox.showerror("Knowledge Manager", f"No se pudo guardar la nota.\n\n{exc}")
-            return None
 
     def delete_item(self) -> None:
         if self.current_item_id is None:
@@ -2674,13 +2692,25 @@ class KnowledgeManagerWindow(tk.Toplevel):
     def _ensure_current_item_saved(self) -> int | None:
         if self.current_item_id is not None:
             return self.current_item_id
+        logger.info("KNOWLEDGE_ATTACHMENT: guardado previo requerido")
         if not messagebox.askyesno(
             "Añadir adjunto",
             "La nota debe guardarse antes de añadir adjuntos. ¿Quieres guardarla ahora?",
             parent=self,
         ):
             return None
-        return self.save_item()
+        item_id = self._save_current_item(silent=True)
+        if item_id is None:
+            logger.error("KNOWLEDGE_ATTACHMENT: guardado previo falló")
+            messagebox.showerror(
+                "Añadir adjunto",
+                "No se pudo guardar la nota; el adjunto no se ha añadido.",
+                parent=self,
+            )
+            return None
+        self.current_item_id = item_id
+        logger.info("KNOWLEDGE_ATTACHMENT: guardado previo completado item_id=%s", item_id)
+        return item_id
 
     def add_attachments(self) -> None:
         item_id = self._ensure_current_item_saved()
