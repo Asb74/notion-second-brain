@@ -184,6 +184,10 @@ def ensure_knowledge_schema(conn: sqlite3.Connection) -> None:
             status TEXT NOT NULL DEFAULT 'active',
             created_at TEXT NOT NULL,
             updated_at TEXT,
+            inbox_status TEXT NOT NULL DEFAULT 'classified',
+            capture_source TEXT,
+            captured_at TEXT,
+            processed_at TEXT,
             FOREIGN KEY(area_id) REFERENCES knowledge_areas(id),
             FOREIGN KEY(topic_id) REFERENCES knowledge_topics(id),
             FOREIGN KEY(item_type_id) REFERENCES knowledge_item_types(id)
@@ -199,6 +203,15 @@ def ensure_knowledge_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE knowledge_items ADD COLUMN tipo TEXT")
     if "indexed_text" not in knowledge_item_columns:
         conn.execute("ALTER TABLE knowledge_items ADD COLUMN indexed_text TEXT")
+    if "inbox_status" not in knowledge_item_columns:
+        conn.execute("ALTER TABLE knowledge_items ADD COLUMN inbox_status TEXT NOT NULL DEFAULT 'classified'")
+    if "capture_source" not in knowledge_item_columns:
+        conn.execute("ALTER TABLE knowledge_items ADD COLUMN capture_source TEXT")
+    if "captured_at" not in knowledge_item_columns:
+        conn.execute("ALTER TABLE knowledge_items ADD COLUMN captured_at TEXT")
+    if "processed_at" not in knowledge_item_columns:
+        conn.execute("ALTER TABLE knowledge_items ADD COLUMN processed_at TEXT")
+    conn.execute("UPDATE knowledge_items SET inbox_status = 'classified' WHERE inbox_status IS NULL OR TRIM(inbox_status) = ''")
     knowledge_topic_columns = _table_columns(conn, "knowledge_topics")
     if "area" not in knowledge_topic_columns:
         conn.execute("ALTER TABLE knowledge_topics ADD COLUMN area TEXT")
@@ -283,6 +296,12 @@ def ensure_knowledge_schema(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_topics_area ON knowledge_topics(area_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_topics_area_text ON knowledge_topics(area)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_items_source ON knowledge_items(source_type, source_id)")
+    try:
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_items_source_unique ON knowledge_items(source_type, source_id) WHERE source_id IS NOT NULL AND TRIM(source_id) != ''")
+    except sqlite3.IntegrityError:
+        # Older databases can contain duplicates; repository validation remains active.
+        pass
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_items_inbox ON knowledge_items(inbox_status, captured_at DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_items_title ON knowledge_items(title)")
     knowledge_attachment_columns = _table_columns(conn, "knowledge_attachments")
     if "ocr_text" not in knowledge_attachment_columns:

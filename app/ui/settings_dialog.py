@@ -80,6 +80,10 @@ class SettingsDialog(tk.Toplevel):
             "prop_prioridad": tk.StringVar(),
             "auto_check_email": tk.BooleanVar(),
             "email_interval": tk.IntVar(),
+            "knowledge_auto_download_enabled": tk.BooleanVar(),
+            "knowledge_auto_download_interval_minutes": tk.IntVar(),
+            "knowledge_auto_download_on_startup": tk.BooleanVar(),
+            "knowledge_auto_download_silent": tk.BooleanVar(),
             "process_attachments": tk.BooleanVar(),
             "notifications_enabled": tk.BooleanVar(),
             "notifications_toast": tk.BooleanVar(),
@@ -284,6 +288,15 @@ class SettingsDialog(tk.Toplevel):
         self._add_field(body, 1, "Activar revisión automática", self.config_vars["auto_check_email"], "checkbox")
         self._add_field(body, 2, "Intervalo (segundos)", self.config_vars["email_interval"], "number")
         self._add_field(body, 3, "Procesar adjuntos", self.config_vars["process_attachments"], "checkbox")
+        capture = ttk.LabelFrame(body, text="CAPTURA AUTOMÁTICA DE CONOCIMIENTO", padding=8)
+        capture.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(18, 0))
+        capture.columnconfigure(1, weight=1)
+        ttk.Checkbutton(capture, text="Activar descarga automática de conocimiento", variable=self.config_vars["knowledge_auto_download_enabled"]).grid(row=0, column=0, columnspan=2, sticky="w", pady=2)
+        ttk.Label(capture, text="Intervalo (minutos):").grid(row=1, column=0, sticky="w", pady=2)
+        ttk.Entry(capture, textvariable=self.config_vars["knowledge_auto_download_interval_minutes"], width=10).grid(row=1, column=1, sticky="w", pady=2)
+        ttk.Checkbutton(capture, text="Ejecutar al iniciar la aplicación", variable=self.config_vars["knowledge_auto_download_on_startup"]).grid(row=2, column=0, columnspan=2, sticky="w", pady=2)
+        ttk.Checkbutton(capture, text="Procesar en segundo plano sin mostrar avisos", variable=self.config_vars["knowledge_auto_download_silent"]).grid(row=3, column=0, columnspan=2, sticky="w", pady=2)
+        ttk.Button(capture, text="Descargar ahora", command=lambda: self.master.event_generate("<<KnowledgeDownloadNow>>")).grid(row=4, column=0, sticky="w", pady=(6, 0))
 
     def _build_notifications_tab(self) -> None:
         body = self._create_tab_body(self.tab_notifications)
@@ -435,6 +448,7 @@ class SettingsDialog(tk.Toplevel):
         profile = runtime_config.get("user_profile", {})
         email_settings = runtime_config.get("email_settings", {})
         email_account = runtime_config.get("email_account", {})
+        knowledge_auto_download = runtime_config.get("knowledge_auto_download", {})
         config = {
             "notion_token": self._current.notion_token,
             "notion_database_id": self._current.notion_database_id,
@@ -456,6 +470,10 @@ class SettingsDialog(tk.Toplevel):
             "prop_prioridad": self._current.prop_prioridad,
             "auto_check_email": bool(email_settings.get("auto_check", True)),
             "email_interval": int(email_settings.get("interval", 60)),
+            "knowledge_auto_download_enabled": bool(knowledge_auto_download.get("enabled", False)),
+            "knowledge_auto_download_interval_minutes": int(knowledge_auto_download.get("interval_minutes", 10)),
+            "knowledge_auto_download_on_startup": bool(knowledge_auto_download.get("on_startup", False)),
+            "knowledge_auto_download_silent": bool(knowledge_auto_download.get("silent", True)),
             "process_attachments": True,
             "notifications_enabled": True,
             "notifications_toast": True,
@@ -539,6 +557,9 @@ class SettingsDialog(tk.Toplevel):
         if interval <= 0:
             messagebox.showerror("Validación", "El intervalo de revisión debe ser mayor que 0.", parent=self)
             return False
+        if int(self.config_vars["knowledge_auto_download_interval_minutes"].get() or 0) <= 0:
+            messagebox.showerror("Validación", "El intervalo de captura de conocimiento debe ser mayor que 0.", parent=self)
+            return False
 
         if bool(self.config_vars["notion_enabled"].get()) and not str(self.config_vars["notion_token"].get()).strip():
             messagebox.showwarning(
@@ -605,6 +626,12 @@ class SettingsDialog(tk.Toplevel):
                 "auto_check": bool(self.config_vars["auto_check_email"].get()),
                 "interval": max(10, int(self.config_vars["email_interval"].get() or 60)),
             }
+            config["knowledge_auto_download"] = {
+                "enabled": bool(self.config_vars["knowledge_auto_download_enabled"].get()),
+                "interval_minutes": max(1, int(self.config_vars["knowledge_auto_download_interval_minutes"].get() or 10)),
+                "on_startup": bool(self.config_vars["knowledge_auto_download_on_startup"].get()),
+                "silent": bool(self.config_vars["knowledge_auto_download_silent"].get()),
+            }
             config["order_validation"] = {
                 "required_fields": [
                     field
@@ -616,6 +643,7 @@ class SettingsDialog(tk.Toplevel):
                 "tesseract_path": str(self.config_vars["ocr_tesseract_path"].get()).strip(),
             }
             self.config_manager.save(config)
+            self.master.event_generate("<<KnowledgeDownloadSettingsChanged>>")
             self.destroy()
         except Exception as exc:  # pragma: no cover - defensive UI safeguard
             messagebox.showerror(

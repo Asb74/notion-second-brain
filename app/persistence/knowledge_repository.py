@@ -245,6 +245,8 @@ class KnowledgeRepository:
         topic_id: int | None = None,
         area: str = "",
         tipo: str = "",
+        inbox_status: str = "classified",
+        capture_source: str = "",
     ) -> int:
         cleaned_title = title.strip()
         if not cleaned_title:
@@ -258,8 +260,8 @@ class KnowledgeRepository:
             """
             INSERT INTO knowledge_items(
                 title, content, summary, area_id, area, topic_id, item_type_id, tipo, source_type,
-                source_id, source_path, status, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+                source_id, source_path, status, inbox_status, capture_source, captured_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
             """,
             (
                 cleaned_title,
@@ -273,6 +275,9 @@ class KnowledgeRepository:
                 cleaned_source_type,
                 source_id.strip(),
                 source_path.strip(),
+                inbox_status if inbox_status in {"inbox", "classified", "archived", "discarded"} else "classified",
+                capture_source.strip() or cleaned_source_type,
+                now if inbox_status == "inbox" else None,
                 now,
                 now,
             ),
@@ -282,6 +287,23 @@ class KnowledgeRepository:
         self.conn.commit()
         self.reindex_item(item_id)
         return item_id
+
+    def get_item_by_source(self, source_type: str, source_id: str) -> sqlite3.Row | None:
+        return self.conn.execute("SELECT * FROM knowledge_items WHERE source_type = ? AND source_id = ? LIMIT 1", (source_type.strip(), source_id.strip())).fetchone()
+
+    def count_inbox_items(self) -> int:
+        row = self.conn.execute("SELECT COUNT(*) AS count FROM knowledge_items WHERE status != 'deleted' AND inbox_status = 'inbox'").fetchone()
+        count = int(row["count"] if row else 0)
+        logger.info("KNOWLEDGE_INBOX: contador actualizado pendientes=%s", count)
+        return count
+
+    def set_inbox_status(self, item_id: int, inbox_status: str) -> None:
+        if inbox_status not in {"inbox", "classified", "archived", "discarded"}:
+            raise ValueError("Estado de bandeja no válido")
+        now = self._now()
+        self.conn.execute("UPDATE knowledge_items SET inbox_status = ?, processed_at = ?, updated_at = ? WHERE id = ?", (inbox_status, now if inbox_status != "inbox" else None, now, item_id))
+        self.conn.commit()
+        logger.info("KNOWLEDGE_INBOX: entrada %s id=%s", "clasificada" if inbox_status == "classified" else "descartada" if inbox_status == "discarded" else "actualizada", item_id)
 
     @staticmethod
     def _summary_for_new_item(source_type: str, summary: str) -> str:
@@ -392,6 +414,7 @@ class KnowledgeRepository:
         topic_id: int | None = None,
         area: str | None = None,
         tipo: str | None = None,
+        inbox_status: str | None = None,
     ) -> list[sqlite3.Row]:
         clauses = ["ki.status != 'deleted'"]
         params: list[object] = []
@@ -464,10 +487,13 @@ class KnowledgeRepository:
         if topic_id is not None:
             clauses.append("ki.topic_id = ?")
             params.append(topic_id)
+        if inbox_status:
+            clauses.append("ki.inbox_status = ?")
+            params.append(inbox_status)
         params.append(max(1, int(limit)))
         return self.conn.execute(
             f"""
-            SELECT ki.id, ki.title, ki.source_type, ki.updated_at, ki.created_at,
+            SELECT ki.id, ki.title, ki.source_type, ki.capture_source, ki.inbox_status, ki.captured_at, ki.updated_at, ki.created_at,
                    COALESCE(NULLIF(ki.area, ''), ka.name) AS area_name,
                    kt.name AS topic_name,
                    COALESCE(NULLIF(ki.tipo, ''), kit.name) AS item_type_name,

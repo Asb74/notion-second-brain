@@ -75,7 +75,7 @@ def open_file_with_default_app(path: Path) -> None:
 class KnowledgeManagerWindow(tk.Toplevel):
     """Basic CRUD interface for manual and sourced knowledge notes."""
 
-    def __init__(self, parent: tk.Misc, db_connection: sqlite3.Connection):
+    def __init__(self, parent: tk.Misc, db_connection: sqlite3.Connection, initial_view: str = "classified"):
         super().__init__(parent)
         self.repo = KnowledgeRepository(db_connection)
         self.masters_repo = MastersRepository(db_connection)
@@ -104,6 +104,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self.tags_var = tk.StringVar()
         self.source_var = tk.StringVar(value="manual")
         self.status_var = tk.StringVar(value="Listo")
+        self.inbox_view_var = tk.StringVar(value=initial_view)
         self._summary_generation_in_progress = False
         self._entities_window: KnowledgeEntitiesWindow | None = None
 
@@ -181,6 +182,10 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self.area_filter_combo.bind("<<ComboboxSelected>>", self._on_area_filter_changed)
         self.topic_filter_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh_items())
         self.type_filter_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh_items())
+        ttk.Label(filters, text="Vista").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        self.inbox_view_combo = ttk.Combobox(filters, textvariable=self.inbox_view_var, state="readonly", values=("inbox", "classified", "all"), width=16)
+        self.inbox_view_combo.grid(row=1, column=1, sticky="ew", padx=(4, 8), pady=(6, 0))
+        self.inbox_view_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh_items())
 
         columns = ("type", "source", "updated")
         self.tree = ttk.Treeview(left, columns=columns, show="tree headings", selectmode="browse")
@@ -213,6 +218,8 @@ class KnowledgeManagerWindow(tk.Toplevel):
         ttk.Button(note_buttons, text="Guardar", command=self.save_item).grid(row=0, column=1, sticky="ew", padx=4, pady=3)
         ttk.Button(note_buttons, text="Eliminar", command=self.delete_item).grid(row=1, column=0, sticky="ew", padx=4, pady=3)
         ttk.Button(note_buttons, text="Refrescar", command=self.refresh_items).grid(row=1, column=1, sticky="ew", padx=4, pady=3)
+        ttk.Button(note_buttons, text="Clasificar y guardar", command=self.classify_current_item).grid(row=2, column=0, sticky="ew", padx=4, pady=3)
+        ttk.Button(note_buttons, text="Descartar", command=self.discard_current_item).grid(row=2, column=1, sticky="ew", padx=4, pady=3)
         note_buttons.columnconfigure(0, weight=1)
         note_buttons.columnconfigure(1, weight=1)
 
@@ -988,16 +995,12 @@ class KnowledgeManagerWindow(tk.Toplevel):
         area = self._selected_filter_value(self.area_filter_var.get(), "Todas")
         tipo = self._selected_filter_value(self.type_filter_var.get(), "Todos")
         topic_id = self._selected_filter_id(self.topic_filter_var.get(), self.topic_filter_by_name, "Todos")
-        rows = self.repo.list_items(self.search_var.get(), area=area, tipo=tipo, topic_id=topic_id)
-        rows = sorted(
-            rows,
-            key=lambda row: (
-                str(row["area_name"] or "Sin área").casefold(),
-                str(row["topic_name"] or "Sin tema").casefold(),
-                str(row["title"] or "").casefold(),
-                int(row["id"]),
-            ),
-        )
+        view = self.inbox_view_var.get()
+        rows = self.repo.list_items(self.search_var.get(), area=area, tipo=tipo, topic_id=topic_id, inbox_status="inbox" if view == "inbox" else "classified" if view == "classified" else None)
+        if view == "inbox":
+            rows = sorted(rows, key=lambda row: (str(row["captured_at"] or row["created_at"] or ""), int(row["id"])), reverse=True)
+        else:
+            rows = sorted(rows, key=lambda row: (str(row["area_name"] or "Sin área").casefold(), str(row["topic_name"] or "Sin tema").casefold(), str(row["title"] or "").casefold(), int(row["id"])))
         area_nodes: dict[str, str] = {}
         topic_nodes: dict[tuple[str, str], str] = {}
         for row in rows:
@@ -1035,7 +1038,13 @@ class KnowledgeManagerWindow(tk.Toplevel):
                 self.status_var.set(f"{len(rows)} notas cargadas")
         else:
             self.status_var.set(f"{len(rows)} notas cargadas")
+        pending = self.repo.count_inbox_items()
+        self.status_var.set(f"Bandeja de entrada ({pending}) · {len(rows)} entradas en la vista")
         logger.info("KNOWLEDGE_TREE: árbol reconstruido items=%s", len(rows))
+
+    def set_inbox_view(self, view: str) -> None:
+        self.inbox_view_var.set("inbox" if view == "inbox" else "classified" if view == "classified" else "all")
+        self.refresh_items()
 
     @staticmethod
     def _search_match_snippet(row: sqlite3.Row, search: str, context: int = 70) -> str:
@@ -1226,6 +1235,24 @@ class KnowledgeManagerWindow(tk.Toplevel):
         if not title:
             messagebox.showwarning("Knowledge Manager", "El título es obligatorio.")
             return None
+
+    def classify_current_item(self) -> None:
+        if self.current_item_id is None:
+            messagebox.showwarning("Bandeja de entrada", "Selecciona una entrada.", parent=self)
+            return
+        if self.save_item() is not None:
+            self.repo.set_inbox_status(self.current_item_id, "classified")
+            self.status_var.set("Entrada clasificada y guardada")
+            self.refresh_items()
+
+    def discard_current_item(self) -> None:
+        if self.current_item_id is None:
+            messagebox.showwarning("Bandeja de entrada", "Selecciona una entrada.", parent=self)
+            return
+        self.repo.set_inbox_status(self.current_item_id, "discarded")
+        self.current_item_id = None
+        self.new_item()
+        self.refresh_items()
         content = self.content_text.get("1.0", "end").strip()
         summary = self.summary_text.get("1.0", "end").strip()
         area = self.areas_by_name.get(self.area_var.get(), "")
