@@ -202,6 +202,26 @@ def test_update_item_summary_persists_summary_without_changing_content() -> None
     assert "Resumen IA bajo demanda" in item["indexed_text"]
 
 
+def test_update_item_summary_persists_ai_generation_metadata() -> None:
+    repo = _repo()
+    item_id = repo.create_item(title="Nota", content="Contenido", source_type="manual")
+
+    repo.update_item_summary(
+        item_id,
+        "Resumen",
+        summary_type="executive_extended",
+        summary_model="modelo-prueba",
+        summary_source_hash="abc123",
+        summary_custom_prompt=None,
+    )
+
+    item = repo.get_item(item_id)
+    assert item["summary_type"] == "executive_extended"
+    assert item["summary_model"] == "modelo-prueba"
+    assert item["summary_source_hash"] == "abc123"
+    assert item["summary_generated_at"]
+
+
 def test_knowledge_index_includes_note_metadata_and_search_combines_filters() -> None:
     repo = _repo()
     repo.create_topic("Tema A", area="General")
