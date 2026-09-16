@@ -172,6 +172,11 @@ def ensure_knowledge_schema(conn: sqlite3.Connection) -> None:
             title TEXT NOT NULL,
             content TEXT,
             summary TEXT,
+            summary_type TEXT,
+            summary_generated_at TEXT,
+            summary_model TEXT,
+            summary_source_hash TEXT,
+            summary_custom_prompt TEXT,
             area_id INTEGER,
             area TEXT,
             topic_id INTEGER,
@@ -211,6 +216,9 @@ def ensure_knowledge_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE knowledge_items ADD COLUMN captured_at TEXT")
     if "processed_at" not in knowledge_item_columns:
         conn.execute("ALTER TABLE knowledge_items ADD COLUMN processed_at TEXT")
+    for column in ("summary_type", "summary_generated_at", "summary_model", "summary_source_hash", "summary_custom_prompt"):
+        if column not in knowledge_item_columns:
+            conn.execute(f"ALTER TABLE knowledge_items ADD COLUMN {column} TEXT")
     conn.execute("UPDATE knowledge_items SET inbox_status = 'classified' WHERE inbox_status IS NULL OR TRIM(inbox_status) = ''")
     knowledge_topic_columns = _table_columns(conn, "knowledge_topics")
     if "area" not in knowledge_topic_columns:

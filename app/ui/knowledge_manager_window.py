@@ -28,6 +28,7 @@ except Exception:  # noqa: BLE001
     DND_FILES = None
 
 from app.config.config_paths import app_data_dir, knowledge_attachments_dir
+from app.core.openai_client import MODEL_NAME
 from app.core.knowledge_events import knowledge_event_bus
 from app.persistence.knowledge_repository import KnowledgeRepository
 from app.persistence.masters_repository import MastersRepository
@@ -35,8 +36,11 @@ from app.services.knowledge_indexer_service import get_effective_ocr_origin, get
 from app.services.mobile_firebase_publish_service import MobileFirebasePublishError, MobileFirebasePublishService
 from app.services.mobile_notes_import_service import MobileNotesImportError, MobileNotesImportService, MobileNotesImportSummary
 from app.services.knowledge_summary_service import (
+    DEFAULT_SUMMARY_TYPE,
+    SUMMARY_PROFILES,
     KnowledgeSummaryConfigError,
     KnowledgeSummaryGenerationError,
+    calculate_summary_source_hash,
     generate_knowledge_summary,
 )
 from app.ui.app_icons import apply_app_icon
@@ -107,6 +111,8 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self.status_var = tk.StringVar(value="Listo")
         self.inbox_view_var = tk.StringVar(value=initial_view)
         self._summary_generation_in_progress = False
+        self.summary_type_var = tk.StringVar(value=SUMMARY_PROFILES[DEFAULT_SUMMARY_TYPE].label)
+        self.summary_custom_prompt_var = tk.StringVar()
         self._entities_window: KnowledgeEntitiesWindow | None = None
         self._unsubscribe_knowledge_created = knowledge_event_bus.subscribe_knowledge_created(
             self._on_knowledge_created
@@ -350,7 +356,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
                 break
 
         summary_tab.columnconfigure(0, weight=1)
-        summary_tab.rowconfigure(1, weight=1)
+        summary_tab.rowconfigure(2, weight=1)
         summary_header = ttk.Frame(summary_tab)
         summary_header.grid(row=0, column=0, sticky="ew", pady=(0, 6))
         ttk.Label(summary_header, text="Resumen").pack(side="left")
@@ -362,8 +368,24 @@ class KnowledgeManagerWindow(tk.Toplevel):
             command=self.generate_ai_summary,
         )
         self.summary_ai_button.pack(side="right")
+        ttk.Label(summary_header, text="Tipo de resumen:").pack(side="left", padx=(18, 6))
+        self.summary_type_combo = ttk.Combobox(
+            summary_header,
+            textvariable=self.summary_type_var,
+            values=[profile.label for profile in SUMMARY_PROFILES.values()],
+            state="readonly",
+            width=20,
+        )
+        self.summary_type_combo.pack(side="left")
+        self.summary_type_combo.bind("<<ComboboxSelected>>", lambda _event: self._update_custom_prompt_visibility())
+        self.summary_custom_frame = ttk.Frame(summary_tab)
+        self.summary_custom_frame.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+        self.summary_custom_frame.columnconfigure(1, weight=1)
+        ttk.Label(self.summary_custom_frame, text="Instrucciones para el resumen").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Entry(self.summary_custom_frame, textvariable=self.summary_custom_prompt_var).grid(row=0, column=1, sticky="ew")
+        self._update_custom_prompt_visibility()
         self.summary_text = ScrolledText(summary_tab, wrap="word", height=24)
-        self.summary_text.grid(row=1, column=0, sticky="nsew")
+        self.summary_text.grid(row=2, column=0, sticky="nsew")
         self.summary_text.bind("<KeyRelease>", lambda _event: self._update_summary_controls())
 
         attachments_tab.columnconfigure(0, weight=1)
@@ -1129,6 +1151,10 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self.source_var.set("manual")
         self.content_text.delete("1.0", "end")
         self.summary_text.delete("1.0", "end")
+        if hasattr(self, "summary_type_var"):
+            self.summary_type_var.set(SUMMARY_PROFILES[DEFAULT_SUMMARY_TYPE].label)
+            self.summary_custom_prompt_var.set("")
+            self._update_custom_prompt_visibility()
         self._update_summary_controls()
         self.refresh_attachments()
         self.refresh_ocr_tab()
@@ -1158,7 +1184,14 @@ class KnowledgeManagerWindow(tk.Toplevel):
         self.content_text.insert("1.0", str(row["content"] or ""))
         self.summary_text.delete("1.0", "end")
         self.summary_text.insert("1.0", str(row["summary"] or ""))
+        if hasattr(self, "summary_type_var"):
+            stored_type = str(row["summary_type"] or "") if "summary_type" in row.keys() else ""
+            self.summary_type_var.set(SUMMARY_PROFILES.get(stored_type, SUMMARY_PROFILES[DEFAULT_SUMMARY_TYPE]).label)
+            custom = str(row["summary_custom_prompt"] or "") if "summary_custom_prompt" in row.keys() else ""
+            self.summary_custom_prompt_var.set(custom)
+            self._update_custom_prompt_visibility()
         self._update_summary_controls()
+        self._detect_stale_summary(row)
         self.refresh_attachments()
         self.refresh_ocr_tab()
         self.refresh_note_entities()
@@ -1167,10 +1200,37 @@ class KnowledgeManagerWindow(tk.Toplevel):
     def _current_summary(self) -> str:
         return self.summary_text.get("1.0", "end").strip()
 
+    def _selected_summary_type(self) -> str:
+        label = self.summary_type_var.get() if hasattr(self, "summary_type_var") else ""
+        return next((key for key, profile in SUMMARY_PROFILES.items() if profile.label == label), DEFAULT_SUMMARY_TYPE)
+
+    def _update_custom_prompt_visibility(self) -> None:
+        if not hasattr(self, "summary_custom_frame"):
+            return
+        if self._selected_summary_type() == "custom":
+            self.summary_custom_frame.grid()
+        else:
+            self.summary_custom_frame.grid_remove()
+
+    def _detect_stale_summary(self, row: sqlite3.Row) -> None:
+        stored_hash = str(row["summary_source_hash"] or "") if "summary_source_hash" in row.keys() else ""
+        if not stored_hash or not str(row["summary"] or "").strip():
+            return
+        note = dict(row)
+        note["tags"] = self.repo.get_tags_for_item(int(row["id"]))
+        if calculate_summary_source_hash(note) != stored_hash:
+            self.summary_status_label.configure(
+                text="El contenido ha cambiado desde que se generó este resumen.",
+                foreground="#a05a00",
+            )
+            logger.info("KNOWLEDGE_SUMMARY: stale summary detected note_id=%s", row["id"])
+
     def _update_summary_controls(self) -> None:
         summary = self._current_summary() if hasattr(self, "summary_text") else ""
         if hasattr(self, "summary_status_label"):
-            self.summary_status_label.configure(text="" if summary else "No existe resumen generado.")
+            self.summary_status_label.configure(
+                text="" if summary else "No existe resumen generado.", foreground="#666666"
+            )
         if hasattr(self, "summary_ai_button"):
             text = "Regenerar resumen IA" if summary else "Generar resumen IA"
             state = "disabled" if self._summary_generation_in_progress else "normal"
@@ -1197,38 +1257,54 @@ class KnowledgeManagerWindow(tk.Toplevel):
             return
         note = dict(row)
         note["tags"] = self.repo.get_tags_for_item(note_id)
+        summary_type = self._selected_summary_type()
+        custom_prompt = self.summary_custom_prompt_var.get().strip() if hasattr(self, "summary_custom_prompt_var") else ""
+        if summary_type == "custom" and not custom_prompt:
+            messagebox.showwarning("Resumen IA", "Escribe instrucciones para el resumen personalizado.", parent=self)
+            return
+        source_hash = calculate_summary_source_hash(note)
         self._summary_generation_in_progress = True
         self._update_summary_controls()
         self.status_var.set("Generando resumen IA...")
         self.configure(cursor="watch")
-        threading.Thread(target=self._generate_ai_summary_worker, args=(note_id, note), daemon=True).start()
+        threading.Thread(
+            target=self._generate_ai_summary_worker,
+            args=(note_id, note, summary_type, custom_prompt, source_hash),
+            daemon=True,
+        ).start()
 
-    def _generate_ai_summary_worker(self, note_id: int, note: dict[str, object]) -> None:
+    def _generate_ai_summary_worker(
+        self, note_id: int, note: dict[str, object], summary_type: str,
+        custom_prompt: str, source_hash: str,
+    ) -> None:
         try:
-            summary = generate_knowledge_summary(note)
+            summary = generate_knowledge_summary(note, summary_type=summary_type, custom_prompt=custom_prompt)
         except KnowledgeSummaryConfigError as exc:
             try:
-                self.after(0, self._finish_ai_summary_generation, note_id, None, exc)
+                self.after(0, self._finish_ai_summary_generation, note_id, None, exc, summary_type, custom_prompt, source_hash)
             except tk.TclError:
                 pass
         except KnowledgeSummaryGenerationError as exc:
             try:
-                self.after(0, self._finish_ai_summary_generation, note_id, None, exc)
+                self.after(0, self._finish_ai_summary_generation, note_id, None, exc, summary_type, custom_prompt, source_hash)
             except tk.TclError:
                 pass
         except Exception as exc:  # noqa: BLE001
             logger.exception("KNOWLEDGE_SUMMARY: error reason=%s", exc)
             try:
-                self.after(0, self._finish_ai_summary_generation, note_id, None, exc)
+                self.after(0, self._finish_ai_summary_generation, note_id, None, exc, summary_type, custom_prompt, source_hash)
             except tk.TclError:
                 pass
         else:
             try:
-                self.after(0, self._finish_ai_summary_generation, note_id, summary, None)
+                self.after(0, self._finish_ai_summary_generation, note_id, summary, None, summary_type, custom_prompt, source_hash)
             except tk.TclError:
                 logger.info("KNOWLEDGE_SUMMARY: ventana cerrada antes de guardar resultado")
 
-    def _finish_ai_summary_generation(self, note_id: int, summary: str | None, error: Exception | None) -> None:
+    def _finish_ai_summary_generation(
+        self, note_id: int, summary: str | None, error: Exception | None,
+        summary_type: str = DEFAULT_SUMMARY_TYPE, custom_prompt: str = "", source_hash: str = "",
+    ) -> None:
         self._summary_generation_in_progress = False
         self.configure(cursor="")
         self._update_summary_controls()
@@ -1248,8 +1324,11 @@ class KnowledgeManagerWindow(tk.Toplevel):
                 self.status_var.set("Error al generar resumen IA")
             return
         try:
-            self.repo.update_item_summary(note_id, summary)
-            logger.info("KNOWLEDGE_SUMMARY: saved note_id=%s", note_id)
+            self.repo.update_item_summary(
+                note_id, summary, summary_type=summary_type, summary_model=MODEL_NAME,
+                summary_source_hash=source_hash, summary_custom_prompt=custom_prompt or None,
+            )
+            logger.info("KNOWLEDGE_SUMMARY: saved type=%s note_id=%s", summary_type, note_id)
         except Exception as exc:  # noqa: BLE001
             logger.exception("KNOWLEDGE_SUMMARY: error reason=%s", exc)
             messagebox.showerror(
