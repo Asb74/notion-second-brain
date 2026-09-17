@@ -46,13 +46,14 @@ from app.services.knowledge_summary_service import (
 from app.ui.app_icons import apply_app_icon
 from app.ui.knowledge_entities_window import KnowledgeEntitiesWindow
 from app.ui.knowledge_bulk_ocr_dialog import KnowledgeBulkOcrDialog
+from app.ui.knowledge_bulk_transcription_dialog import KnowledgeBulkTranscriptionDialog
 from app.ui.knowledge_query_dialog import KnowledgeQueryDialog
 from app.ui.dictation_widgets import attach_dictation
 from app.ui.tooltips import add_tooltip
 
 logger = logging.getLogger(__name__)
 
-AUDIO_ATTACHMENT_EXTENSIONS = {".mp3", ".wav", ".m4a", ".ogg"}
+AUDIO_ATTACHMENT_EXTENSIONS = {".m4a", ".mp3", ".wav", ".mp4", ".mpeg", ".mpga", ".webm", ".ogg"}
 EXCEL_ATTACHMENT_EXTENSIONS = {".xls", ".xlsx", ".xlsm", ".xltx", ".ods"}
 WORD_ATTACHMENT_EXTENSIONS = {".doc", ".docx", ".odt"}
 PDF_ATTACHMENT_EXTENSIONS = {".pdf"}
@@ -278,6 +279,7 @@ class KnowledgeManagerWindow(tk.Toplevel):
         ttk.Button(ai_buttons, text="Reindexar", command=self.reindex_knowledge).grid(row=1, column=0, sticky="ew", padx=4, pady=3)
         ttk.Button(ai_buttons, text="Reindexar OCR", command=self.reindex_knowledge_with_ocr).grid(row=1, column=1, sticky="ew", padx=4, pady=3)
         ttk.Button(ai_buttons, text="OCR masivo", command=self.open_bulk_ocr_dialog).grid(row=2, column=0, columnspan=2, sticky="ew", padx=4, pady=3)
+        ttk.Button(ai_buttons, text="Transcripción masiva", command=self.open_bulk_transcription_dialog).grid(row=3, column=0, columnspan=2, sticky="ew", padx=4, pady=3)
         ai_buttons.columnconfigure(0, weight=1)
         ai_buttons.columnconfigure(1, weight=1)
 
@@ -322,16 +324,19 @@ class KnowledgeManagerWindow(tk.Toplevel):
         add_tooltip(source_entry, "Origen del contenido: manual, email, audio, PDF, Evernote, etc.")
 
         notebook = ttk.Notebook(right)
+        self.notebook = notebook
         notebook.grid(row=6, column=0, columnspan=2, sticky="nsew", pady=(8, 0))
 
         content_tab = ttk.Frame(notebook, padding=6)
         summary_tab = ttk.Frame(notebook, padding=6)
         attachments_tab = ttk.Frame(notebook, padding=6)
+        transcription_tab = ttk.Frame(notebook, padding=6)
         ocr_tab = ttk.Frame(notebook, padding=6)
         entities_tab = ttk.Frame(notebook, padding=6)
         notebook.add(content_tab, text="Contenido")
         notebook.add(summary_tab, text="Resumen")
         notebook.add(attachments_tab, text="Adjuntos")
+        notebook.add(transcription_tab, text="Transcripción")
         notebook.add(ocr_tab, text="OCR")
         notebook.add(entities_tab, text="Entidades")
 
@@ -405,6 +410,9 @@ class KnowledgeManagerWindow(tk.Toplevel):
         ttk.Button(attachment_buttons, text="OCR / Mejorar", command=self.ocr_selected_attachment).pack(side="left", padx=(0, 6))
         ttk.Button(attachment_buttons, text="Ver OCR", command=self.view_selected_attachment_ocr).pack(side="left", padx=(0, 6))
         ttk.Button(attachment_buttons, text="OCR nota", command=self.ocr_current_note_attachments).pack(side="left")
+        self.attachment_transcription_button = ttk.Button(
+            attachment_buttons, text="Transcripción", command=self.transcribe_selected_attachment
+        )
 
         self.attachments_paned = ttk.PanedWindow(attachments_tab, orient="vertical")
         self.attachments_paned.grid(row=1, column=0, sticky="nsew")
@@ -434,6 +442,23 @@ class KnowledgeManagerWindow(tk.Toplevel):
         ttk.Label(ocr_tab, textvariable=self.ocr_info_var).grid(row=1, column=0, sticky="ew", pady=(0, 4))
         self.ocr_text = ScrolledText(ocr_tab, wrap="word", height=24)
         self.ocr_text.grid(row=2, column=0, sticky="nsew")
+
+        transcription_tab.columnconfigure(0, weight=1)
+        transcription_tab.rowconfigure(2, weight=1)
+        transcript_buttons = ttk.Frame(transcription_tab)
+        transcript_buttons.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        ttk.Label(transcript_buttons, text="Audio:").pack(side="left", padx=(0, 4))
+        self.transcript_attachment_var = tk.StringVar()
+        self.transcript_attachment_combo = ttk.Combobox(transcript_buttons, textvariable=self.transcript_attachment_var, state="readonly", width=38)
+        self.transcript_attachment_combo.pack(side="left", padx=(0, 6))
+        self.transcript_attachment_combo.bind("<<ComboboxSelected>>", self._on_transcript_attachment_selected)
+        ttk.Button(transcript_buttons, text="Guardar corrección", command=self.save_transcript_correction).pack(side="left", padx=(0, 6))
+        ttk.Button(transcript_buttons, text="Retranscribir", command=self.transcribe_tab_attachment).pack(side="left", padx=(0, 6))
+        ttk.Button(transcript_buttons, text="Copiar", command=self.copy_transcript_text).pack(side="left")
+        self.transcript_info_var = tk.StringVar(value="Selecciona una nota con audio.")
+        ttk.Label(transcription_tab, textvariable=self.transcript_info_var).grid(row=1, column=0, sticky="ew", pady=(0, 4))
+        self.transcript_text = ScrolledText(transcription_tab, wrap="word", height=24)
+        self.transcript_text.grid(row=2, column=0, sticky="nsew")
 
         entities_tab.columnconfigure(0, weight=1)
         entities_tab.rowconfigure(1, weight=1)
@@ -1459,6 +1484,14 @@ class KnowledgeManagerWindow(tk.Toplevel):
         """Open the manual controlled bulk OCR dialog for pending Knowledge attachments."""
         KnowledgeBulkOcrDialog(self, self.repo, on_finished=self._after_bulk_ocr_finished)
 
+    def open_bulk_transcription_dialog(self) -> None:
+        KnowledgeBulkTranscriptionDialog(self, self.repo, on_finished=self._after_bulk_transcription_finished)
+
+    def _after_bulk_transcription_finished(self) -> None:
+        self.refresh_items()
+        self.refresh_attachments()
+        self.refresh_transcription_tab()
+
     def _after_bulk_ocr_finished(self) -> None:
         self.refresh_items()
         self.refresh_attachments()
@@ -1613,7 +1646,16 @@ class KnowledgeManagerWindow(tk.Toplevel):
         attachment_id = self._selected_attachment_id()
         if attachment_id is None:
             self._clear_attachment_preview()
+            self.attachment_transcription_button.pack_forget()
             return
+        row = self.repo.get_attachment(attachment_id)
+        from app.services.knowledge_transcription_service import is_audio_file
+        if row is not None and is_audio_file(row["stored_path"], row["mime_type"] or ""):
+            label = "Ver transcripción" if str(row["transcript_text"] or "").strip() else "Transcribir"
+            self.attachment_transcription_button.configure(text=label)
+            self.attachment_transcription_button.pack(side="left", padx=(6, 0))
+        else:
+            self.attachment_transcription_button.pack_forget()
         self._show_attachment_preview(attachment_id)
 
     def _schedule_attachment_preview_refresh(self, _event: tk.Event | None = None) -> None:
@@ -2396,6 +2438,106 @@ class KnowledgeManagerWindow(tk.Toplevel):
                     row["created_at"] or "",
                 ),
             )
+        self.refresh_transcription_tab()
+
+    @staticmethod
+    def _format_duration(seconds: object) -> str:
+        try:
+            total = int(float(seconds or 0))
+            return f"{total // 3600:02d}:{total % 3600 // 60:02d}:{total % 60:02d}"
+        except (TypeError, ValueError):
+            return "—"
+
+    def _selected_transcript_attachment_id(self) -> int | None:
+        value = self.transcript_attachment_var.get() if hasattr(self, "transcript_attachment_var") else ""
+        try:
+            return int(value.split(" | ", 1)[0])
+        except (ValueError, TypeError):
+            return None
+
+    def refresh_transcription_tab(self) -> None:
+        if not hasattr(self, "transcript_text"):
+            return
+        previous = self._selected_transcript_attachment_id()
+        rows = self.repo.list_audio_attachments(self.current_item_id) if self.current_item_id else []
+        values = [f"{row['id']} | {row['original_filename']} | {row['transcript_status'] or 'pendiente'} | {self._format_duration(row['transcript_duration'])}" for row in rows]
+        self.transcript_attachment_combo.configure(values=values)
+        selected = previous if any(int(row["id"]) == previous for row in rows) else (int(rows[0]["id"]) if rows else None)
+        if selected is None:
+            self.transcript_attachment_var.set("")
+            self.transcript_text.delete("1.0", "end")
+            self.transcript_info_var.set("Esta nota no tiene adjuntos de audio.")
+            return
+        value = next(value for value in values if value.startswith(f"{selected} | "))
+        self.transcript_attachment_var.set(value)
+        self._load_transcript_attachment(selected)
+
+    def _on_transcript_attachment_selected(self, _event: tk.Event | None = None) -> None:
+        attachment_id = self._selected_transcript_attachment_id()
+        if attachment_id:
+            self._load_transcript_attachment(attachment_id)
+
+    def _load_transcript_attachment(self, attachment_id: int) -> None:
+        row = self.repo.get_attachment(attachment_id)
+        if row is None:
+            return
+        self.transcript_text.delete("1.0", "end")
+        self.transcript_text.insert("1.0", str(row["transcript_text"] or ""))
+        self.transcript_info_var.set(
+            f"Archivo: {row['original_filename']} | Estado: {row['transcript_status'] or 'pendiente'} | Motor: {row['transcript_engine'] or '—'} | "
+            f"Idioma: {row['transcript_language'] or '—'} | Duración: {self._format_duration(row['transcript_duration'])} | Fecha: {row['transcript_updated_at'] or '—'}"
+        )
+
+    def transcribe_selected_attachment(self) -> None:
+        attachment_id = self._selected_attachment_id()
+        if not attachment_id:
+            return
+        row = self.repo.get_attachment(attachment_id)
+        if row is not None and str(row["transcript_text"] or "").strip():
+            self.refresh_transcription_tab()
+            values = list(self.transcript_attachment_combo["values"])
+            selected = next((value for value in values if value.startswith(f"{attachment_id} | ")), "")
+            if selected:
+                self.transcript_attachment_var.set(selected)
+                self._load_transcript_attachment(attachment_id)
+            self.notebook.select(self.transcript_text.master)
+            return
+        self._start_transcription(attachment_id)
+
+    def transcribe_tab_attachment(self) -> None:
+        attachment_id = self._selected_transcript_attachment_id()
+        if attachment_id:
+            self._start_transcription(attachment_id)
+
+    def _start_transcription(self, attachment_id: int) -> None:
+        self.status_var.set("Transcribiendo audio...")
+        threading.Thread(target=self._transcription_worker, args=(attachment_id,), daemon=True).start()
+
+    def _transcription_worker(self, attachment_id: int) -> None:
+        result = self.repo.transcribe_attachment(attachment_id)
+        self.after(0, self._finish_transcription, result)
+
+    def _finish_transcription(self, result: dict[str, object]) -> None:
+        self.refresh_attachments()
+        self.refresh_items()
+        status = str(result.get("status") or "error")
+        self.status_var.set("Audio transcrito" if status == "ok" else f"Transcripción: {status}")
+        if status not in {"ok", "empty"}:
+            messagebox.showerror("Transcripción", str(result.get("error") or "No se pudo transcribir."), parent=self)
+
+    def save_transcript_correction(self) -> None:
+        attachment_id = self._selected_transcript_attachment_id()
+        if attachment_id is None:
+            return
+        self.repo.save_attachment_transcript_correction(attachment_id, self.transcript_text.get("1.0", "end-1c"))
+        self.refresh_transcription_tab()
+        self.refresh_items()
+        self.status_var.set("Corrección de transcripción guardada.")
+
+    def copy_transcript_text(self) -> None:
+        self.clipboard_clear()
+        self.clipboard_append(self.transcript_text.get("1.0", "end-1c"))
+        self.status_var.set("Transcripción copiada.")
 
     def _attachment_ocr_texts(self, row: sqlite3.Row) -> tuple[str, str, str]:
         raw = str(row["ocr_text_raw"] or row["ocr_text"] or "") if "ocr_text_raw" in row.keys() else str(row["ocr_text"] or "")

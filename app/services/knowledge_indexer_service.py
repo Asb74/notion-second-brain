@@ -257,6 +257,12 @@ def build_indexed_text(note: dict[str, Any] | Any, attachments: list[dict[str, A
             parts.append(f"[{marker}: {filename or 'adjunto'}]\n{ocr_text}")
             if normalized_ocr_text:
                 parts.append(f"[{marker}_NORMALIZADO: {filename or 'adjunto'}]\n{normalized_ocr_text}")
+        transcript = str(_value(attachment, "transcript_text", "") or "").strip()
+        transcript_status = str(_value(attachment, "transcript_status", "") or "").lower()
+        # A failed retry deliberately retains the last good text; it remains a
+        # valid Knowledge source rather than disappearing from search.
+        if transcript and transcript_status not in {"empty", "ignored"}:
+            parts.append(f"[TRANSCRIPCIÓN: {filename or 'audio'}]\n{transcript}")
 
     indexed_text = "\n".join(part for part in parts if part).strip()
     return _trim(indexed_text, MAX_INDEXED_TEXT_CHARS, context=f"note_id={_value(note, 'id', '')}")
