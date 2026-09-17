@@ -345,9 +345,25 @@ def ensure_knowledge_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE knowledge_attachments ADD COLUMN ai_ocr_created_at TEXT")
     if "ai_ocr_status" not in knowledge_attachment_columns:
         conn.execute("ALTER TABLE knowledge_attachments ADD COLUMN ai_ocr_status TEXT")
+    # Audio transcription belongs to the attachment.  Keep this as an additive
+    # migration so databases created by every previous Nexus release remain valid.
+    transcription_columns = {
+        "transcript_text": "TEXT",
+        "transcript_status": "TEXT",
+        "transcript_engine": "TEXT",
+        "transcript_language": "TEXT",
+        "transcript_updated_at": "TEXT",
+        "transcript_duration": "REAL",
+        "transcript_error": "TEXT",
+    }
+    knowledge_attachment_columns = _table_columns(conn, "knowledge_attachments")
+    for column, sql_type in transcription_columns.items():
+        if column not in knowledge_attachment_columns:
+            conn.execute(f"ALTER TABLE knowledge_attachments ADD COLUMN {column} {sql_type}")
 
     conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_items_indexed_text ON knowledge_items(indexed_text)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_attachments_item ON knowledge_attachments(item_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_attachments_transcript_status ON knowledge_attachments(transcript_status)")
 
     conn.execute(
         """

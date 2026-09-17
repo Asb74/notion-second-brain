@@ -768,6 +768,113 @@ class KnowledgeRepository:
             (attachment_id,),
         ).fetchone()
 
+    def list_audio_attachments(
+        self, item_id: int | None = None, *, include_errors: bool = True, pending_only: bool = False
+    ) -> list[sqlite3.Row]:
+        """Return supported audio attachments, optionally restricted to bulk candidates."""
+        from app.services.knowledge_transcription_service import is_audio_file
+
+        query = "SELECT * FROM knowledge_attachments"
+        params: list[object] = []
+        if item_id is not None:
+            query += " WHERE item_id = ?"
+            params.append(item_id)
+        rows = self.conn.execute(query + " ORDER BY created_at ASC, id ASC", params).fetchall()
+        audio_rows = [row for row in rows if is_audio_file(row["stored_path"], row["mime_type"] or "")]
+        if pending_only:
+            allowed = {"", "pending"} | ({"error"} if include_errors else set())
+            audio_rows = [row for row in audio_rows if str(row["transcript_status"] or "").lower() in allowed]
+        return audio_rows
+
+    def set_attachment_transcript_running(self, attachment_id: int) -> None:
+        self.conn.execute(
+            "UPDATE knowledge_attachments SET transcript_status = 'running', transcript_error = NULL, updated_at = ? WHERE id = ?",
+            (self._now(), attachment_id),
+        )
+        self.conn.commit()
+
+    def save_attachment_transcription(self, attachment_id: int, result: dict[str, object]) -> dict[str, object]:
+        """Persist a provider result without destroying good text when a retry fails."""
+        row = self.get_attachment(attachment_id)
+        if row is None:
+            return {"ok": False, "message": "Adjunto no encontrado."}
+        text = str(result.get("text") or "").strip()
+        status = str(result.get("status") or "error").lower()
+        if status == "ok" and not text:
+            status = "empty"
+        valid_statuses = {"pending", "running", "ok", "empty", "error", "unavailable", "ignored"}
+        if status not in valid_statuses:
+            status = "error"
+        previous = str(row["transcript_text"] or "").strip()
+        saved_text = text if text else previous if status in {"error", "unavailable"} else ""
+        now = self._now()
+        self.conn.execute(
+            """UPDATE knowledge_attachments SET transcript_text = ?, transcript_status = ?,
+               transcript_engine = ?, transcript_language = ?, transcript_updated_at = ?,
+               transcript_duration = ?, transcript_error = ?, updated_at = ? WHERE id = ?""",
+            (saved_text, status, str(result.get("engine") or ""), str(result.get("language") or ""),
+             now, result.get("duration"), str(result.get("error") or "") or None, now, attachment_id),
+        )
+        self.conn.commit()
+        logger.info("KNOWLEDGE_TRANSCRIPTION: saved attachment_id=%s", attachment_id)
+        item_id = int(row["item_id"])
+        if text and status == "ok":
+            self.reindex_item(item_id)
+            logger.info("KNOWLEDGE_TRANSCRIPTION: reindexed note_id=%s", item_id)
+            logger.info("KNOWLEDGE_TRANSCRIPTION: entities recalculated note_id=%s", item_id)
+        return {"ok": status == "ok", "status": status, "item_id": item_id, "text": saved_text}
+
+    def transcribe_attachment(self, attachment_id: int, language: str = "es", engine: str | None = None) -> dict[str, object]:
+        from app.services.knowledge_transcription_service import transcribe_audio
+
+        row = self.get_attachment(attachment_id)
+        if row is None:
+            return {"ok": False, "status": "error", "error": "Adjunto no encontrado."}
+        logger.info("KNOWLEDGE_TRANSCRIPTION: requested attachment_id=%s", attachment_id)
+        self.set_attachment_transcript_running(attachment_id)
+        logger.info("KNOWLEDGE_TRANSCRIPTION: started filename=%s", row["original_filename"])
+        result = transcribe_audio(row["stored_path"], language=language, engine=engine)
+        saved = self.save_attachment_transcription(attachment_id, result)
+        return {**result, **saved}
+
+    def save_attachment_transcript_correction(self, attachment_id: int, text: str) -> dict[str, object]:
+        row = self.get_attachment(attachment_id)
+        if row is None:
+            return {"ok": False, "message": "Adjunto no encontrado."}
+        corrected = text.strip()
+        status = "ok" if corrected else "empty"
+        now = self._now()
+        self.conn.execute(
+            """UPDATE knowledge_attachments SET transcript_text = ?, transcript_status = ?,
+               transcript_updated_at = ?, transcript_error = NULL, updated_at = ? WHERE id = ?""",
+            (corrected, status, now, now, attachment_id),
+        )
+        self.conn.commit()
+        self.reindex_item(int(row["item_id"]))
+        return {"ok": bool(corrected), "status": status, "item_id": int(row["item_id"])}
+
+    def bulk_transcribe(self, attachment_ids: list[int], *, language: str = "es", cancel_event: object | None = None,
+                        progress: object | None = None) -> dict[str, int | bool]:
+        stats = {"ok": 0, "empty": 0, "errors": 0, "pending": 0}
+        logger.info("KNOWLEDGE_BULK_TRANSCRIPTION: started total=%s", len(attachment_ids))
+        for index, attachment_id in enumerate(attachment_ids, 1):
+            if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
+                stats["pending"] = len(attachment_ids) - index + 1
+                break
+            logger.info("KNOWLEDGE_BULK_TRANSCRIPTION: item=%s/%s", index, len(attachment_ids))
+            if callable(progress):
+                progress(index, len(attachment_ids), attachment_id)
+            result = self.transcribe_attachment(attachment_id, language=language)
+            status = str(result.get("status") or "error")
+            if status == "ok":
+                stats["ok"] += 1
+            elif status == "empty":
+                stats["empty"] += 1
+            else:
+                stats["errors"] += 1
+        logger.info("KNOWLEDGE_BULK_TRANSCRIPTION: finished ok=%s empty=%s errors=%s", stats["ok"], stats["empty"], stats["errors"])
+        return {**stats, "cancelled": stats["pending"] > 0}
+
     def delete_attachment(self, attachment_id: int) -> None:
         row = self.get_attachment(attachment_id)
         item_id = int(row["item_id"]) if row is not None else None
